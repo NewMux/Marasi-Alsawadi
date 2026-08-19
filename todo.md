@@ -27,7 +27,7 @@
 - [x] Add a public read-only interactive demo mode that bypasses production authentication and backend dependencies.
 - [x] Populate the public demo mode with clearly labelled representative operational records across all ten workspaces.
 - [x] Prevent public demo visitors from performing live data mutations while keeping navigation and workspace exploration interactive.
-- [ ] Verify and redeploy the interactive client demo to Vercel.
+- [x] Verify and redeploy the interactive client demo to Vercel. (Production deployment `96cae9b` is Ready; verified active alias: https://marasi-alsawadi-platform.vercel.app.)
 - [x] Compare the current platform with the manual revenue workbook and real resort operating workflow to assess digital-transformation coverage.
 - [x] Document the ERP capability gaps and a prioritized next-phase transformation roadmap.
 - [x] Save a new recoverable checkpoint covering the Vercel demo configuration and ERP assessment documents.
