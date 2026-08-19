@@ -33,7 +33,7 @@
 - [x] Save a new recoverable checkpoint covering the Vercel demo configuration and ERP assessment documents.
 - [x] Compare the current platform with the manual revenue workbook and real resort operating workflow to assess digital-transformation coverage.
 - [x] Document the ERP capability gaps and a prioritized next-phase transformation roadmap.
-- [ ] Save the finalized Vercel demo and ERP assessment state as a checkpoint and record its version in the handover notes.
+- [x] Save the finalized Vercel demo and ERP assessment state as a checkpoint and record its version in the handover notes (version `6ef5f79b`, documented in `docs/handover_notes.md`).
 - [x] Add a visual booking-date calendar and date-conflict guidance to the reservation workflow.
 - [x] Simplify the Aqua Park workspace to a concise ticket-sale and gate-entry workflow.
 - [x] Add explicit room-number selection and display to the Housekeeping workspace and task records.
