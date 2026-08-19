@@ -1,92 +1,336 @@
-import { eq } from "drizzle-orm";
+import { and, desc, eq, gte, lte, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users } from "../drizzle/schema";
-import { ENV } from './_core/env';
+import {
+  activityLog, aquaParkCapacity, aquaParkTickets, dailyTasks,
+  financeEntries, guests, housekeepingTasks, inventoryItems,
+  maintenanceRequests, propertyUnits, reservations, staffProfiles,
+  staffShifts, users, workbookImports,
+  type InsertUser
+} from "../drizzle/schema";
+import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
-// Lazily create the drizzle instance so local tooling can run without a DB.
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
-    try {
-      _db = drizzle(process.env.DATABASE_URL);
-    } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
-      _db = null;
-    }
+    try { _db = drizzle(process.env.DATABASE_URL); }
+    catch (e) { console.warn("[DB] connect failed", e); }
   }
   return _db;
 }
 
+// ─── Auth helpers ─────────────────────────────────────────────────────────────
 export async function upsertUser(user: InsertUser): Promise<void> {
-  if (!user.openId) {
-    throw new Error("User openId is required for upsert");
-  }
-
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot upsert user: database not available");
-    return;
-  }
-
-  try {
-    const values: InsertUser = {
-      openId: user.openId,
-    };
-    const updateSet: Record<string, unknown> = {};
-
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
-
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
-
-    textFields.forEach(assignNullable);
-
-    if (user.lastSignedIn !== undefined) {
-      values.lastSignedIn = user.lastSignedIn;
-      updateSet.lastSignedIn = user.lastSignedIn;
-    }
-    if (user.role !== undefined) {
-      values.role = user.role;
-      updateSet.role = user.role;
-    } else if (user.openId === ENV.ownerOpenId) {
-      values.role = 'admin';
-      updateSet.role = 'admin';
-    }
-
-    if (!values.lastSignedIn) {
-      values.lastSignedIn = new Date();
-    }
-
-    if (Object.keys(updateSet).length === 0) {
-      updateSet.lastSignedIn = new Date();
-    }
-
-    await db.insert(users).values(values).onDuplicateKeyUpdate({
-      set: updateSet,
-    });
-  } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
-    throw error;
-  }
+  if (!user.openId) throw new Error("openId required");
+  const db = await getDb(); if (!db) return;
+  const isOwner = user.openId === ENV.ownerOpenId;
+  const role = isOwner ? "admin" : (user.role ?? "staff");
+  await db.insert(users).values({ ...user, role, lastSignedIn: new Date() })
+    .onDuplicateKeyUpdate({ set: { name: user.name, email: user.email, loginMethod: user.loginMethod, lastSignedIn: new Date(), ...(isOwner ? { role: "admin" } : {}) } });
 }
 
 export async function getUserByOpenId(openId: string) {
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot get user: database not available");
-    return undefined;
-  }
-
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-
-  return result.length > 0 ? result[0] : undefined;
+  const db = await getDb(); if (!db) return undefined;
+  const r = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
+  return r[0];
 }
 
-// TODO: add feature queries here as your schema grows.
+// ─── Activity log ─────────────────────────────────────────────────────────────
+export async function logActivity(userId: number | undefined, action: string, entityType?: string, entityId?: number, details?: string) {
+  const db = await getDb(); if (!db) return;
+  await db.insert(activityLog).values({ userId, action, entityType, entityId, details });
+}
+
+// ─── Property units ───────────────────────────────────────────────────────────
+export async function listUnits() {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(propertyUnits).orderBy(propertyUnits.code);
+}
+export async function createUnit(data: typeof propertyUnits.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  const r = await db.insert(propertyUnits).values(data);
+  return r[0];
+}
+export async function updateUnitStatus(id: number, status: typeof propertyUnits.$inferSelect["status"]) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.update(propertyUnits).set({ status }).where(eq(propertyUnits.id, id));
+}
+
+// ─── Guests ───────────────────────────────────────────────────────────────────
+export async function listGuests() {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(guests).orderBy(desc(guests.createdAt));
+}
+export async function createGuest(data: typeof guests.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.insert(guests).values(data);
+  const r = await db.select().from(guests).orderBy(desc(guests.id)).limit(1);
+  return r[0];
+}
+
+// ─── Reservations ─────────────────────────────────────────────────────────────
+export async function listReservations(filters?: { status?: string; unitId?: number }) {
+  const db = await getDb(); if (!db) return [];
+  let q = db.select({ r: reservations, g: guests, u: propertyUnits })
+    .from(reservations)
+    .leftJoin(guests, eq(reservations.guestId, guests.id))
+    .leftJoin(propertyUnits, eq(reservations.unitId, propertyUnits.id))
+    .orderBy(desc(reservations.createdAt));
+  return q;
+}
+export type ReservationDraft = {
+  guestId: number; unitId: number; checkIn: string; checkOut: string;
+  adults: number; children: number; ratePerNight: string; totalAmount: string;
+  status?: "pending" | "confirmed" | "checked_in" | "checked_out" | "cancelled";
+  source?: string; notes?: string; createdBy: number;
+};
+
+export function isQaReservationRecord(reservation: { notes?: string | null }) {
+  return reservation.notes === "QA-only reservation";
+}
+
+export function buildReservationValues(data: ReservationDraft, kind: "room" | "chalet") {
+  const bookingSources = new Set(["walk_in", "phone", "online", "agent"]);
+  const source = bookingSources.has(data.source ?? "") ? data.source as "walk_in" | "phone" | "online" | "agent" : "walk_in";
+  return {
+    reference: `MAS-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`,
+    kind,
+    guestId: data.guestId,
+    unitId: data.unitId,
+    checkInAt: new Date(`${data.checkIn}T12:00:00.000Z`),
+    checkOutAt: new Date(`${data.checkOut}T12:00:00.000Z`),
+    adults: data.adults,
+    children: data.children,
+    quantity: 1,
+    unitRate: Math.round(Number(data.ratePerNight)),
+    totalAmount: Math.round(Number(data.totalAmount)),
+    status: data.status ?? "pending",
+    source,
+    notes: data.notes,
+    createdBy: data.createdBy,
+  };
+}
+
+export async function createReservation(data: ReservationDraft) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  const unit = await db.select({ type: propertyUnits.type }).from(propertyUnits).where(eq(propertyUnits.id, data.unitId)).limit(1);
+  const kind = unit[0]?.type === "chalet" ? "chalet" : "room";
+  await db.insert(reservations).values(buildReservationValues(data, kind));
+  const r = await db.select().from(reservations).orderBy(desc(reservations.id)).limit(1);
+  return r[0]!;
+}
+export async function updateReservationStatus(id: number, status: typeof reservations.$inferSelect["status"]) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.update(reservations).set({ status }).where(eq(reservations.id, id));
+}
+export async function getOccupiedDates(unitId: number) {
+  const db = await getDb(); if (!db) return [];
+  return db.select({ checkIn: reservations.checkInAt, checkOut: reservations.checkOutAt, status: reservations.status })
+    .from(reservations)
+    .where(and(eq(reservations.unitId, unitId), or(eq(reservations.status, "confirmed"), eq(reservations.status, "checked_in"))));
+}
+
+// ─── Aqua park ────────────────────────────────────────────────────────────────
+export async function getAquaCapacity(date: string) {
+  const db = await getDb(); if (!db) return null;
+  const r = await db.select().from(aquaParkCapacity).where(sql`${aquaParkCapacity.date} = ${date}`).limit(1);
+  return r[0] ?? null;
+}
+export async function setAquaCapacity(date: string, maxCapacity: number, updatedBy?: number) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.insert(aquaParkCapacity).values({ date: date as any, maxCapacity, updatedBy })
+    .onDuplicateKeyUpdate({ set: { maxCapacity, updatedBy } });
+}
+export async function listAquaTickets(date: string) {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(aquaParkTickets).where(sql`${aquaParkTickets.date} = ${date}`).orderBy(desc(aquaParkTickets.createdAt));
+}
+export async function createAquaTicket(data: typeof aquaParkTickets.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.insert(aquaParkTickets).values(data);
+  const r = await db.select().from(aquaParkTickets).orderBy(desc(aquaParkTickets.id)).limit(1);
+  return r[0]!;
+}
+export async function recordEntry(ticketId: number) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.update(aquaParkTickets).set({ entered: true, enteredAt: new Date() }).where(eq(aquaParkTickets.id, ticketId));
+}
+
+// ─── Housekeeping ─────────────────────────────────────────────────────────────
+export async function listHousekeepingTasks(date?: string) {
+  const db = await getDb(); if (!db) return [];
+  const base = db.select({ t: housekeepingTasks, u: propertyUnits, s: staffProfiles })
+    .from(housekeepingTasks)
+    .leftJoin(propertyUnits, eq(housekeepingTasks.unitId, propertyUnits.id))
+    .leftJoin(staffProfiles, eq(housekeepingTasks.assignedTo, staffProfiles.id))
+    .orderBy(desc(housekeepingTasks.createdAt));
+  return base;
+}
+export async function createHousekeepingTask(data: typeof housekeepingTasks.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.insert(housekeepingTasks).values(data);
+  const r = await db.select().from(housekeepingTasks).orderBy(desc(housekeepingTasks.id)).limit(1);
+  return r[0]!;
+}
+export async function updateHousekeepingTask(id: number, data: Partial<typeof housekeepingTasks.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.update(housekeepingTasks).set(data).where(eq(housekeepingTasks.id, id));
+}
+
+// ─── Maintenance ──────────────────────────────────────────────────────────────
+export async function listMaintenanceRequests() {
+  const db = await getDb(); if (!db) return [];
+  return db.select({ r: maintenanceRequests, u: propertyUnits, s: staffProfiles })
+    .from(maintenanceRequests)
+    .leftJoin(propertyUnits, eq(maintenanceRequests.unitId, propertyUnits.id))
+    .leftJoin(staffProfiles, eq(maintenanceRequests.assignedTo, staffProfiles.id))
+    .orderBy(desc(maintenanceRequests.createdAt));
+}
+export async function createMaintenanceRequest(data: typeof maintenanceRequests.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.insert(maintenanceRequests).values(data);
+  const r = await db.select().from(maintenanceRequests).orderBy(desc(maintenanceRequests.id)).limit(1);
+  return r[0]!;
+}
+export async function updateMaintenanceRequest(id: number, data: Partial<typeof maintenanceRequests.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.update(maintenanceRequests).set(data).where(eq(maintenanceRequests.id, id));
+}
+
+// ─── Inventory ────────────────────────────────────────────────────────────────
+export async function listInventory() {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(inventoryItems).orderBy(inventoryItems.category, inventoryItems.name);
+}
+export async function createInventoryItem(data: typeof inventoryItems.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.insert(inventoryItems).values(data);
+  const r = await db.select().from(inventoryItems).orderBy(desc(inventoryItems.id)).limit(1);
+  return r[0]!;
+}
+export async function updateInventoryItem(id: number, data: Partial<typeof inventoryItems.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.update(inventoryItems).set(data).where(eq(inventoryItems.id, id));
+}
+
+// ─── Staff ────────────────────────────────────────────────────────────────────
+export async function listStaff() {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(staffProfiles).where(eq(staffProfiles.isActive, true)).orderBy(staffProfiles.department, staffProfiles.fullName);
+}
+export async function createStaffProfile(data: typeof staffProfiles.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.insert(staffProfiles).values(data);
+  const r = await db.select().from(staffProfiles).orderBy(desc(staffProfiles.id)).limit(1);
+  return r[0]!;
+}
+export async function listShifts(from?: string, to?: string) {
+  const db = await getDb(); if (!db) return [];
+  return db.select({ s: staffShifts, p: staffProfiles })
+    .from(staffShifts)
+    .leftJoin(staffProfiles, eq(staffShifts.staffId, staffProfiles.id))
+    .orderBy(staffShifts.startTime);
+}
+export async function createShift(data: typeof staffShifts.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.insert(staffShifts).values(data);
+  const r = await db.select().from(staffShifts).orderBy(desc(staffShifts.id)).limit(1);
+  return r[0]!;
+}
+export async function listDailyTasks(staffId?: number) {
+  const db = await getDb(); if (!db) return [];
+  const q = db.select({ t: dailyTasks, s: staffProfiles })
+    .from(dailyTasks)
+    .leftJoin(staffProfiles, eq(dailyTasks.assignedTo, staffProfiles.id))
+    .orderBy(desc(dailyTasks.createdAt));
+  return q;
+}
+export async function createDailyTask(data: typeof dailyTasks.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.insert(dailyTasks).values(data);
+  const r = await db.select().from(dailyTasks).orderBy(desc(dailyTasks.id)).limit(1);
+  return r[0]!;
+}
+export async function updateDailyTask(id: number, data: Partial<typeof dailyTasks.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.update(dailyTasks).set(data).where(eq(dailyTasks.id, id));
+}
+
+// ─── Finance ──────────────────────────────────────────────────────────────────
+export async function listFinanceEntries(from?: string, to?: string, stream?: string) {
+  const db = await getDb(); if (!db) return [];
+  const conditions: any[] = [];
+  if (from) conditions.push(sql`${financeEntries.date} >= ${from}`);
+  if (to) conditions.push(sql`${financeEntries.date} <= ${to}`);
+  if (stream) conditions.push(eq(financeEntries.stream, stream as any));
+  const q = db.select().from(financeEntries).orderBy(desc(financeEntries.date));
+  return conditions.length ? q.where(and(...conditions)) : q;
+}
+export async function createFinanceEntry(data: typeof financeEntries.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.insert(financeEntries).values(data);
+  const r = await db.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
+  return r[0]!;
+}
+export async function getRevenueSummary(from: string, to: string) {
+  const db = await getDb(); if (!db) return [];
+  return db.select({
+    stream: financeEntries.stream,
+    type: financeEntries.type,
+    total: sql<number>`COALESCE(SUM(${financeEntries.amount}),0)`,
+  }).from(financeEntries)
+    .where(sql`${financeEntries.date} >= ${from} AND ${financeEntries.date} <= ${to}`)
+    .groupBy(financeEntries.stream, financeEntries.type);
+}
+export async function getOccupancyStats(from: string, to: string) {
+  const db = await getDb(); if (!db) return { totalUnits: 0, occupiedNights: 0 };
+  const [unitCount] = await db.select({ c: sql<number>`COUNT(*)` }).from(propertyUnits);
+  const [stayCount] = await db.select({ c: sql<number>`COUNT(*)` }).from(reservations)
+    .where(and(
+      or(eq(reservations.status, "checked_in"), eq(reservations.status, "checked_out"), eq(reservations.status, "confirmed")),
+      sql`DATE(${reservations.checkInAt}) >= ${from}`,
+      sql`DATE(${reservations.checkOutAt}) <= ${to}`
+    ));
+  return { totalUnits: Number(unitCount?.c ?? 0), occupiedNights: Number(stayCount?.c ?? 0) };
+}
+export async function getAquaAttendance(from: string, to: string) {
+  const db = await getDb(); if (!db) return 0;
+  const [r] = await db.select({ total: sql<number>`COALESCE(SUM(${aquaParkTickets.quantity}),0)` })
+    .from(aquaParkTickets)
+    .where(sql`${aquaParkTickets.date} >= ${from} AND ${aquaParkTickets.date} <= ${to}`);
+  return Number(r?.total ?? 0);
+}
+
+// ─── Workbook imports ─────────────────────────────────────────────────────────
+export async function listWorkbookImports() {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(workbookImports).orderBy(desc(workbookImports.createdAt));
+}
+export async function createWorkbookImport(data: typeof workbookImports.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.insert(workbookImports).values(data);
+  const r = await db.select().from(workbookImports).orderBy(desc(workbookImports.id)).limit(1);
+  return r[0]!;
+}
+
+// ─── Admin ────────────────────────────────────────────────────────────────────
+export async function listUsers() {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(users).orderBy(users.name);
+}
+export async function updateUserRole(id: number, role: "staff" | "manager" | "admin") {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.update(users).set({ role }).where(eq(users.id, id));
+}
+export async function linkStaffToUser(staffId: number, userId: number) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.update(staffProfiles).set({ userId }).where(eq(staffProfiles.id, staffId));
+}
+export async function getActivityLog(limit = 50) {
+  const db = await getDb(); if (!db) return [];
+  return db.select({ l: activityLog, u: users })
+    .from(activityLog)
+    .leftJoin(users, eq(activityLog.userId, users.id))
+    .orderBy(desc(activityLog.createdAt))
+    .limit(limit);
+}

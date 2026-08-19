@@ -1,0 +1,33 @@
+import { describe, expect, it } from "vitest";
+import { buildReservationValues, isQaReservationRecord } from "./db";
+import { recordFromJoin } from "./routers/platform";
+
+describe("reservation compatibility values", () => {
+  it("maps the booking form contract to the live reservation table fields", () => {
+    const values = buildReservationValues({
+      guestId: 9, unitId: 4, checkIn: "2026-08-19", checkOut: "2026-08-21",
+      adults: 2, children: 1, ratePerNight: "800", totalAmount: "1600",
+      status: "confirmed", source: "direct", notes: "QA-only reservation", createdBy: 1,
+    }, "chalet");
+
+    expect(values).toMatchObject({
+      kind: "chalet", guestId: 9, unitId: 4, adults: 2, children: 1,
+      unitRate: 800, totalAmount: 1600, status: "confirmed", source: "walk_in",
+      notes: "QA-only reservation",
+    });
+    expect(values.reference).toMatch(/^MAS-[A-Z0-9]+-[A-Z0-9]+$/);
+    expect(values.checkInAt.toISOString()).toBe("2026-08-19T12:00:00.000Z");
+    expect(values.checkOutAt.toISOString()).toBe("2026-08-21T12:00:00.000Z");
+  });
+
+  it("only treats explicitly labelled records as reusable QA reservations", () => {
+    expect(isQaReservationRecord({ notes: "QA-only reservation" })).toBe(true);
+    expect(isQaReservationRecord({ notes: null })).toBe(false);
+  });
+
+  it("unwraps each joined operational record shape used by QA idempotence checks", () => {
+    expect(recordFromJoin({ r: { id: 1 } })).toEqual({ id: 1 });
+    expect(recordFromJoin({ t: { title: "QA opening readiness walk" } })).toEqual({ title: "QA opening readiness walk" });
+    expect(recordFromJoin({ s: { staffId: 3 } })).toEqual({ staffId: 3 });
+  });
+});
