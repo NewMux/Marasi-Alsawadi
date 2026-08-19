@@ -18,6 +18,8 @@ The finalized ERP-refinement checkpoint is **`6ef5f79b`**. It preserves the cale
 
 The full automated suite now passes: **6 test files / 15 tests**, followed by a clean production build. Phone-width visual checks confirmed the refined Reservations, Aqua Park, Housekeeping, **HR & Workforce**, and Finance Control screens render correctly. The Vercel dashboard showed production deployment **`96cae9b`** as **Ready** after the GitHub push, and the active alias above was verified to open the public interactive demo directly. Live finance-browser checks created and approved a clearly labelled QA settlement (OMR 100) and QA petty-cash request (OMR 25), and confirmed the empty-request validation message. A live housekeeping QA task was also completed, and HR & Workforce now explicitly tells the operator to select a staff member before attendance or leave submission; both actions are guarded by focused regression tests. The only remaining interactive browser item is a reservation-form conflict submission using the native selector.
 
+The client-facing **HR & Workforce** rename was committed and pushed to GitHub `main` as **`b12c6ac`**. The active public alias was subsequently verified to have refreshed: it opens the interactive demo without authentication and displays **HR & Workforce** in both navigation and the workspace heading.
+
 ## Next operational checks
 
 1. Synchronize the local checkpoint changes to GitHub `main`.
