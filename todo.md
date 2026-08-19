@@ -20,7 +20,7 @@
 - [x] Create a Vercel project and deploy the platform from the GitHub `main` branch.
 - [x] Supersede authenticated-route verification for the public no-backend client demo.
 - [x] Verify that the public Vercel deployment renders the unauthenticated secure sign-in shell.
-- [ ] Save a recoverable handover checkpoint for the GitHub and Vercel deployment configuration.
+- [x] Save a recoverable handover checkpoint for the GitHub and Vercel deployment configuration.
 - [x] Add a public read-only interactive demo mode that bypasses production authentication and backend dependencies.
 - [x] Populate the public demo mode with clearly labelled representative operational records across all ten workspaces.
 - [x] Prevent public demo visitors from performing live data mutations while keeping navigation and workspace exploration interactive.
@@ -28,3 +28,9 @@
 - [x] Populate the public demo mode with clearly labelled representative operational records across all ten workspaces.
 - [x] Prevent public demo visitors from performing live data mutations while keeping navigation and workspace exploration interactive.
 - [ ] Verify and redeploy the interactive client demo to Vercel.
+- [x] Compare the current platform with the manual revenue workbook and real resort operating workflow to assess digital-transformation coverage.
+- [x] Document the ERP capability gaps and a prioritized next-phase transformation roadmap.
+- [x] Save a new recoverable checkpoint covering the Vercel demo configuration and ERP assessment documents.
+- [x] Compare the current platform with the manual revenue workbook and real resort operating workflow to assess digital-transformation coverage.
+- [x] Document the ERP capability gaps and a prioritized next-phase transformation roadmap.
+- [ ] Save the finalized Vercel demo and ERP assessment state as a checkpoint and record its version in the handover notes.
