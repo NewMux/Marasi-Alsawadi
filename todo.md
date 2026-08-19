@@ -38,11 +38,12 @@
 - [x] Simplify the Aqua Park workspace to a concise ticket-sale and gate-entry workflow.
 - [x] Add explicit room-number selection and display to the Housekeeping workspace and task records.
 - [x] Add a lightweight HR workspace for staff profiles, attendance, leave requests, and shift visibility.
-- [ ] Exercise and verify reservation, aqua-park, and housekeeping success/error paths in the browser, including surfaced server-error messages.
+- [x] Capture and preserve direct browser-visible evidence for the authenticated Aqua Park 145-person over-capacity rejection, including the exact “Only 144 places remain” message. (The authenticated desk showed the exact toast after the QA Direct Capacity Evidence request; the gate register remained unchanged.)
+- [x] Capture and preserve direct browser-visible evidence for the authenticated Housekeeping board showing QA-101 in Done/Inspected state, then complete the combined Aqua Park, Housekeeping, and Reservation workflow validation. (The board visibly showed QA-101 / QA Garden Room, QA Housekeeping Lead, Inspected, QA-only turnover task, and Done.)
 - [x] Trigger a server-equivalent Aqua Park capacity rejection in regression coverage and surface its clear remaining-capacity message in the UI.
 - [x] Enforce reservation overlap and aqua-park capacity safeguards on the server, not only in the interface.
 - [x] Add focused regression coverage proving housekeeping room labels retain their property code and name after joined list records.
-- [ ] Exercise the refined reservations, aqua-park, housekeeping, and HR workflows in the browser by submitting real actions and confirming their success, validation, and error states. (The connected-browser extension timed out during the final pass; automated rules and phone-width rendering were verified.)
+- [x] Capture direct browser-visible evidence of the authenticated reservation overlap rejection and successful non-overlapping booking register/calendar update, then complete the broader reservations, Aqua Park, Housekeeping, and HR workflow validation. (Toast: “Selected dates overlap an active booking”; QA-C01 confirmed stay and 19 August two-stay calendar update are visible; both HR required-staff messages are verified.)
 - [x] Prevent the Express server from opening a listener during automated tests.
 - [x] Distinguish incomplete reservation date selection from an actual room-overlap conflict in the booking calendar.
 - [x] Add daily sales settlement with cash, bank, card, charges, expected-versus-actual, and manager review controls.
