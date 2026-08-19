@@ -51,3 +51,4 @@
 - [x] Correct mobile bottom-navigation label overflow so the ERP workspaces remain usable on phone screens.
 - [x] Verify the Simple HR leave form shows the required-staff feedback in the live browser, then complete the shared attendance-and-leave validation item. (Both live forms show “Select a staff member before continuing”; focused mutation-guard tests pass.)
 - [x] Add focused regression coverage that asserts both Simple HR workflow handlers block their mutations when no staff member is selected.
+- [x] Rename all client-facing “Simple HR” workspace labels to “HR & Workforce”. (Live ERP, navigation, and public demo updated; 15 tests and production build pass.)

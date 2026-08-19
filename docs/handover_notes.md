@@ -2,7 +2,7 @@
 
 ## Current recoverable baseline
 
-The finalized ERP-refinement checkpoint is **`6ef5f79b`**. It preserves the calendar reservation safeguards, simplified Aqua Park day-pass desk, room-first housekeeping, Simple HR, finance-control additions, public demo mode, and phone-width navigation refinement.
+The finalized ERP-refinement checkpoint is **`6ef5f79b`**. It preserves the calendar reservation safeguards, simplified Aqua Park day-pass desk, room-first housekeeping, HR & Workforce, finance-control additions, public demo mode, and phone-width navigation refinement.
 
 ## Delivery references
 
@@ -16,7 +16,7 @@ The finalized ERP-refinement checkpoint is **`6ef5f79b`**. It preserves the cale
 
 ## Validation record
 
-The full automated suite now passes: **6 test files / 15 tests**, followed by a clean production build. Phone-width visual checks confirmed the refined Reservations, Aqua Park, Housekeeping, Simple HR, and Finance Control screens render correctly. The Vercel dashboard showed production deployment **`96cae9b`** as **Ready** after the GitHub push, and the active alias above was verified to open the public interactive demo directly. Live finance-browser checks created and approved a clearly labelled QA settlement (OMR 100) and QA petty-cash request (OMR 25), and confirmed the empty-request validation message. A live housekeeping QA task was also completed, and Simple HR now explicitly tells the operator to select a staff member before attendance or leave submission; both actions are guarded by focused regression tests. The only remaining interactive browser item is a reservation-form conflict submission using the native selector.
+The full automated suite now passes: **6 test files / 15 tests**, followed by a clean production build. Phone-width visual checks confirmed the refined Reservations, Aqua Park, Housekeeping, **HR & Workforce**, and Finance Control screens render correctly. The Vercel dashboard showed production deployment **`96cae9b`** as **Ready** after the GitHub push, and the active alias above was verified to open the public interactive demo directly. Live finance-browser checks created and approved a clearly labelled QA settlement (OMR 100) and QA petty-cash request (OMR 25), and confirmed the empty-request validation message. A live housekeeping QA task was also completed, and HR & Workforce now explicitly tells the operator to select a staff member before attendance or leave submission; both actions are guarded by focused regression tests. The only remaining interactive browser item is a reservation-form conflict submission using the native selector.
 
 ## Next operational checks
 

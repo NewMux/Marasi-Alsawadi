@@ -18,7 +18,7 @@ const items: NavItem[] = [
   { label: "Housekeeping", mobileLabel: "Rooms", path: "/housekeeping", icon: ClipboardCheck, roles: ["staff", "manager", "admin"] },
   { label: "Maintenance", mobileLabel: "Repairs", path: "/maintenance", icon: Wrench, roles: ["staff", "manager", "admin"] },
   { label: "Inventory", mobileLabel: "Stock", path: "/inventory", icon: Package, roles: ["manager", "admin"] },
-  { label: "Simple HR", mobileLabel: "HR", path: "/team", icon: Users, roles: ["manager", "admin"] },
+  { label: "HR & Workforce", mobileLabel: "HR", path: "/team", icon: Users, roles: ["manager", "admin"] },
   { label: "Revenue", mobileLabel: "Revenue", path: "/revenue", icon: Gauge, roles: ["manager", "admin"] },
   { label: "Management Reports", mobileLabel: "Reports", path: "/reports", icon: Ticket, roles: ["manager", "admin"] },
   { label: "Access & Property", mobileLabel: "Admin", path: "/administration", icon: ShieldCheck, roles: ["admin"] },
