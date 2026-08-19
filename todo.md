@@ -12,3 +12,9 @@
 - [x] Verify the QA reservation in Reservations or Guest Stays, the low-stock inventory alerts, and the QA staff shift and daily task in their operator-facing workspaces.
 - [x] Verify the confirmed QA reservation is shown correctly in the Guest Stays workspace.
 - [x] Save a recoverable project checkpoint after the successful final test and production build.
+- [x] Review production deployment requirements and repository configuration for GitHub and Vercel.
+- [ ] Add a Vercel-compatible serverless entry point and routing configuration for the full-stack application.
+- [x] Add a Vercel-compatible serverless entry point and routing configuration for the full-stack application.
+- [ ] Create and push the verified platform source to a GitHub repository.
+- [ ] Create a Vercel project, configure required production environment variables, and deploy the platform.
+- [ ] Verify the Vercel-hosted application and document deployment access.

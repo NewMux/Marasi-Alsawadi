@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildReservationValues, isQaReservationRecord } from "./db";
+import { createApp } from "./_core/index";
 import { recordFromJoin } from "./routers/platform";
 
 describe("reservation compatibility values", () => {
@@ -29,5 +30,10 @@ describe("reservation compatibility values", () => {
     expect(recordFromJoin({ r: { id: 1 } })).toEqual({ id: 1 });
     expect(recordFromJoin({ t: { title: "QA opening readiness walk" } })).toEqual({ title: "QA opening readiness walk" });
     expect(recordFromJoin({ s: { staffId: 3 } })).toEqual({ staffId: 3 });
+  });
+
+  it("creates an Express app without starting a listener for Vercel functions", () => {
+    expect(typeof createApp).toBe("function");
+    expect(typeof createApp()).toBe("function");
   });
 });
