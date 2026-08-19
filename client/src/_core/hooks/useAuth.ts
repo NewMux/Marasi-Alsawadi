@@ -1,4 +1,5 @@
 import { startLogin } from "@/const";
+import { isPublicDemoMode } from "@/lib/demoMode";
 import { trpc } from "@/lib/trpc";
 import { TRPCClientError } from "@trpc/client";
 import { useCallback, useEffect, useMemo } from "react";
@@ -15,8 +16,10 @@ export function useAuth(options?: UseAuthOptions) {
   // desync it from an in-flight login's `state`.
   const { redirectOnUnauthenticated = false, redirectPath } = options ?? {};
   const utils = trpc.useUtils();
+  const demoMode = isPublicDemoMode();
 
   const meQuery = trpc.auth.me.useQuery(undefined, {
+    enabled: !demoMode,
     retry: false,
     refetchOnWindowFocus: false,
   });
@@ -28,6 +31,10 @@ export function useAuth(options?: UseAuthOptions) {
   });
 
   const logout = useCallback(async () => {
+    if (demoMode) {
+      window.location.assign("/");
+      return;
+    }
     try {
       await logoutMutation.mutateAsync();
     } catch (error: unknown) {
@@ -48,20 +55,22 @@ export function useAuth(options?: UseAuthOptions) {
       utils.auth.me.setData(undefined, null);
       await utils.auth.me.invalidate();
     }
-  }, [logoutMutation, utils]);
+  }, [demoMode, logoutMutation, utils]);
 
   const state = useMemo(() => {
+    const demoUser = demoMode ? { id: 0, name: "Client presentation", email: "demo@marasi.example", role: "admin", isDemo: true } : null;
     localStorage.setItem(
       "manus-runtime-user-info",
-      JSON.stringify(meQuery.data)
+      JSON.stringify(demoUser ?? meQuery.data)
     );
     return {
-      user: meQuery.data ?? null,
-      loading: meQuery.isLoading || logoutMutation.isPending,
+      user: demoUser ?? meQuery.data ?? null,
+      loading: demoMode ? false : meQuery.isLoading || logoutMutation.isPending,
       error: meQuery.error ?? logoutMutation.error ?? null,
-      isAuthenticated: Boolean(meQuery.data),
+      isAuthenticated: Boolean(demoUser ?? meQuery.data),
     };
   }, [
+    demoMode,
     meQuery.data,
     meQuery.error,
     meQuery.isLoading,
@@ -70,7 +79,7 @@ export function useAuth(options?: UseAuthOptions) {
   ]);
 
   useEffect(() => {
-    if (!redirectOnUnauthenticated) return;
+    if (!redirectOnUnauthenticated || demoMode) return;
     if (meQuery.isLoading || logoutMutation.isPending) return;
     if (state.user) return;
     if (typeof window === "undefined") return;
@@ -83,6 +92,7 @@ export function useAuth(options?: UseAuthOptions) {
       startLogin();
     }
   }, [
+    demoMode,
     redirectOnUnauthenticated,
     redirectPath,
     logoutMutation.isPending,

@@ -44,3 +44,9 @@ The guest submission action returned to an idle state without refreshing the gue
 - Inventory visibly shows all three QA items with purchasing alerts: **QA Beverage Cups** (8 / 15 sleeves), **QA Linen Set** (4 / 10 sets), and **QA Wristbands** (12 / 25 rolls).
 - The Team & Shifts workspace shows both QA staff profiles, the high-priority **QA opening readiness walk** assigned to QA Housekeeping Lead, and its scheduled 08:00–16:00 QA shift.
 - The Guest Stays register shows QA Guest Alpha’s confirmed 19–20 August QA Garden Room stay with its **check in** action available, proving the stay lifecycle handoff is visible to front office staff.
+
+## External hosting handover — 19 August 2026
+
+- Source was published to **https://github.com/NewMux/Marasi-Alsawadi** on the `main` branch.
+- The linked NewMux Vercel project `prj_Q5o6yhVkHDYJ99Mto1WcucHfQ6e5` completed production deployment `02a99cd` successfully.
+- The public Vercel URL **https://marasi-alsawadi-platform-7o2gk6odl-new-mux.vercel.app** renders the application’s secure sign-in shell. Production database and OAuth environment values remain to be configured in Vercel before authenticated operational workflows can be used there.

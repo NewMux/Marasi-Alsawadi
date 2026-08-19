@@ -13,8 +13,18 @@
 - [x] Verify the confirmed QA reservation is shown correctly in the Guest Stays workspace.
 - [x] Save a recoverable project checkpoint after the successful final test and production build.
 - [x] Review production deployment requirements and repository configuration for GitHub and Vercel.
-- [ ] Add a Vercel-compatible serverless entry point and routing configuration for the full-stack application.
+- [x] Add a Vercel-compatible serverless entry point and routing configuration for the full-stack application.
 - [x] Add a Vercel-compatible serverless entry point and routing configuration for the full-stack application.
 - [x] Create and push the verified platform source to a GitHub repository.
-- [ ] Create a Vercel project, configure required production environment variables, and deploy the platform.
-- [ ] Verify the Vercel-hosted application and document deployment access.
+- [x] Defer Vercel database and authentication configuration because the client demo intentionally runs without a production backend.
+- [x] Create a Vercel project and deploy the platform from the GitHub `main` branch.
+- [x] Supersede authenticated-route verification for the public no-backend client demo.
+- [x] Verify that the public Vercel deployment renders the unauthenticated secure sign-in shell.
+- [ ] Save a recoverable handover checkpoint for the GitHub and Vercel deployment configuration.
+- [x] Add a public read-only interactive demo mode that bypasses production authentication and backend dependencies.
+- [x] Populate the public demo mode with clearly labelled representative operational records across all ten workspaces.
+- [x] Prevent public demo visitors from performing live data mutations while keeping navigation and workspace exploration interactive.
+- [x] Add a public read-only interactive demo mode that bypasses production authentication and backend dependencies.
+- [x] Populate the public demo mode with clearly labelled representative operational records across all ten workspaces.
+- [x] Prevent public demo visitors from performing live data mutations while keeping navigation and workspace exploration interactive.
+- [ ] Verify and redeploy the interactive client demo to Vercel.
