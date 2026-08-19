@@ -47,5 +47,7 @@
 - [x] Distinguish incomplete reservation date selection from an actual room-overlap conflict in the booking calendar.
 - [x] Add daily sales settlement with cash, bank, card, charges, expected-versus-actual, and manager review controls.
 - [x] Expose expense department allocation, request category, and accounting source-reference fields in the finance-control request form.
-- [ ] Verify settlement and petty-cash creation, approval-state transitions, and error handling in the browser.
+- [x] Verify settlement and petty-cash creation, approval-state transitions, and error handling in the browser. (QA settlement OMR 100 and QA Supplies Test OMR 25 were created, approved, and the empty request validation displayed its required-fields message.)
 - [x] Correct mobile bottom-navigation label overflow so the ERP workspaces remain usable on phone screens.
+- [x] Verify the Simple HR leave form shows the required-staff feedback in the live browser, then complete the shared attendance-and-leave validation item. (Both live forms show “Select a staff member before continuing”; focused mutation-guard tests pass.)
+- [x] Add focused regression coverage that asserts both Simple HR workflow handlers block their mutations when no staff member is selected.

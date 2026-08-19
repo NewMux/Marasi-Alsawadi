@@ -16,7 +16,7 @@ The finalized ERP-refinement checkpoint is **`6ef5f79b`**. It preserves the cale
 
 ## Validation record
 
-The complete automated suite passed: **4 test files / 10 tests**, followed by a clean production build. Phone-width visual checks confirmed the refined Reservations, Aqua Park, Housekeeping, Simple HR, and Finance Control screens render correctly. The Vercel dashboard showed production deployment **`96cae9b`** as **Ready** after the GitHub push, and the active alias above was verified to open the public interactive demo directly. Interactive form submissions and user-facing server-error states remain to be exercised when the connected browser is available; its extension timed out during the final pass.
+The full automated suite now passes: **6 test files / 15 tests**, followed by a clean production build. Phone-width visual checks confirmed the refined Reservations, Aqua Park, Housekeeping, Simple HR, and Finance Control screens render correctly. The Vercel dashboard showed production deployment **`96cae9b`** as **Ready** after the GitHub push, and the active alias above was verified to open the public interactive demo directly. Live finance-browser checks created and approved a clearly labelled QA settlement (OMR 100) and QA petty-cash request (OMR 25), and confirmed the empty-request validation message. A live housekeeping QA task was also completed, and Simple HR now explicitly tells the operator to select a staff member before attendance or leave submission; both actions are guarded by focused regression tests. The only remaining interactive browser item is a reservation-form conflict submission using the native selector.
 
 ## Next operational checks
 
