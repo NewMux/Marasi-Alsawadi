@@ -1,20 +1,21 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
-  createAquaTicket, createDailyTask, createFinanceEntry, createGuest,
+  createAquaTicket, createDailyTask, createFinanceEntry, createGuest, createPettyCashRequest,
   createHousekeepingTask, createInventoryItem, createMaintenanceRequest,
-  createReservation, createShift, createStaffProfile, createUnit,
+  createLeaveRequest, createReservation, createShift, createStaffProfile, createUnit,
   createWorkbookImport, getActivityLog, getAquaAttendance, getAquaCapacity,
   getOccupancyStats, getRevenueSummary, linkStaffToUser,
-  listAquaTickets, listDailyTasks, listFinanceEntries, listGuests,
+  isValidDateRange, listAquaTickets, listAttendance, listDailyTasks, listFinanceEntries, listGuests,
   listHousekeepingTasks, listInventory, listMaintenanceRequests,
-  listReservations, listShifts, listStaff, listUnits, listUsers,
-  isQaReservationRecord, listWorkbookImports, logActivity, recordEntry, setAquaCapacity,
+  listDailySettlements, listLeaveRequests, listPettyCashRequests, listReservations, listShifts, listStaff, listUnits, listUsers,
+  hasReservationOverlap, isQaReservationRecord, listWorkbookImports, logActivity, recordAttendance, recordEntry, reviewDailySettlement, reviewLeaveRequest, reviewPettyCashRequest, saveDailySettlement, setAquaCapacity,
   updateDailyTask, updateHousekeepingTask, updateInventoryItem,
   updateMaintenanceRequest, updateReservationStatus, updateUnitStatus,
   updateUserRole,
 } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
+import { canIssueAquaTickets, remainingAquaCapacity } from "../operationRules";
 
 const managerProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (ctx.user.role !== "manager" && ctx.user.role !== "admin")
@@ -78,6 +79,10 @@ export const platformRouter = router({
       ratePerNight: z.string(), totalAmount: z.string(),
       source: z.string().optional(), notes: z.string().optional(),
     })).mutation(async ({ input, ctx }) => {
+      const existingReservations = await listReservations();
+      if (hasReservationOverlap(existingReservations, input.unitId, input.checkIn, input.checkOut)) {
+        throw new TRPCError({ code: "CONFLICT", message: "This room already has an active booking on the selected dates" });
+      }
       const res = await createReservation({ ...input, createdBy: ctx.user.id } as any);
       await logActivity(ctx.user.id, "reservation.create", "reservation", res.id);
       await createFinanceEntry({
@@ -109,6 +114,13 @@ export const platformRouter = router({
       pricePerTicket: z.string(), totalAmount: z.string(),
       ticketType: z.enum(["adult", "child", "group"]).default("adult"),
     })).mutation(async ({ input, ctx }) => {
+      const capacity = await getAquaCapacity(input.date);
+      const issued = await listAquaTickets(input.date);
+      const bookedQuantity = issued.reduce((sum: number, ticket: any) => sum + Number(ticket.quantity), 0);
+      const maxCapacity = Number(capacity?.maxCapacity ?? 150);
+      if (!canIssueAquaTickets(maxCapacity, bookedQuantity, input.quantity)) {
+        throw new TRPCError({ code: "CONFLICT", message: `Only ${remainingAquaCapacity(maxCapacity, bookedQuantity)} aqua-park places remain for this date` });
+      }
       const ticket = await createAquaTicket({ ...input, issuedBy: ctx.user.id } as any);
       await createFinanceEntry({
         date: input.date, stream: "aqua_park", type: "revenue",
@@ -223,6 +235,41 @@ export const platformRouter = router({
       await logActivity(ctx.user.id, "shift.create", "staff_shift", shift.id);
       return shift;
     }),
+    listAttendance: managerProcedure.input(z.object({ workDate: z.string().optional() }).optional())
+      .query(({ input }) => listAttendance(input?.workDate)),
+    recordAttendance: managerProcedure.input(z.object({
+      staffId: z.number(), workDate: z.string(),
+      status: z.enum(["present", "late", "absent", "leave"]).default("present"),
+      clockInAt: z.string().optional(), clockOutAt: z.string().optional(), notes: z.string().optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const record = await recordAttendance({
+        ...input,
+        workDate: input.workDate as any,
+        clockInAt: input.clockInAt ? new Date(input.clockInAt) : undefined,
+        clockOutAt: input.clockOutAt ? new Date(input.clockOutAt) : undefined,
+        recordedBy: ctx.user.id,
+      } as any);
+      await logActivity(ctx.user.id, "attendance.record", "staff_attendance", record.id, `${input.staffId}:${input.workDate}:${input.status}`);
+      return record;
+    }),
+    listLeaveRequests: managerProcedure.query(() => listLeaveRequests()),
+    createLeaveRequest: managerProcedure.input(z.object({
+      staffId: z.number(), leaveType: z.enum(["annual", "sick", "unpaid", "other"]).default("annual"),
+      startDate: z.string(), endDate: z.string(), notes: z.string().optional(),
+    })).mutation(async ({ input, ctx }) => {
+      if (!isValidDateRange(input.startDate, input.endDate)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Leave end date must be on or after the start date" });
+      }
+      const request = await createLeaveRequest({ ...input, startDate: input.startDate as any, endDate: input.endDate as any } as any);
+      await logActivity(ctx.user.id, "leave.request", "staff_leave_request", request.id, `${input.staffId}:${input.startDate}-${input.endDate}`);
+      return request;
+    }),
+    reviewLeaveRequest: managerProcedure.input(z.object({
+      id: z.number(), status: z.enum(["approved", "rejected", "cancelled"]),
+    })).mutation(async ({ input, ctx }) => {
+      await reviewLeaveRequest(input.id, input.status, ctx.user.id);
+      await logActivity(ctx.user.id, "leave.review", "staff_leave_request", input.id, input.status);
+    }),
     listTasks: protectedProcedure.query(() => listDailyTasks()),
     createTask: managerProcedure.input(z.object({
       title: z.string().min(1), description: z.string().optional(),
@@ -270,6 +317,36 @@ export const platformRouter = router({
       mapping: z.string().optional(), fileKey: z.string().optional(),
     })).mutation(async ({ input, ctx }) => {
       return createWorkbookImport({ ...input, importedBy: ctx.user.id });
+    }),
+    settlements: router({
+      list: managerProcedure.query(() => listDailySettlements()),
+      save: managerProcedure.input(z.object({
+        businessDate: z.string(), department: z.enum(["aqua_park", "rooms", "fnb", "events", "general"]),
+        expectedAmount: z.string(), cashAmount: z.string(), bankAmount: z.string(), cardAmount: z.string(), bankCharges: z.string(), notes: z.string().optional(),
+      })).mutation(async ({ input, ctx }) => {
+        const settlement = await saveDailySettlement({ ...input, businessDate: input.businessDate as any, submittedBy: ctx.user.id, status: "submitted" } as any);
+        await logActivity(ctx.user.id, "settlement.submit", "daily_settlement", settlement.id, `${input.businessDate}:${input.department}`);
+        return settlement;
+      }),
+      approve: managerProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+        await reviewDailySettlement(input.id, ctx.user.id);
+        await logActivity(ctx.user.id, "settlement.approve", "daily_settlement", input.id);
+      }),
+    }),
+    pettyCash: router({
+      list: managerProcedure.query(() => listPettyCashRequests()),
+      request: protectedProcedure.input(z.object({
+        requestDate: z.string(), department: z.enum(["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]),
+        category: z.enum(["petty_cash", "expense", "reimbursement"]), amount: z.string().min(1), payee: z.string().min(1), purpose: z.string().min(1), sourceReference: z.string().optional(),
+      })).mutation(async ({ input, ctx }) => {
+        const request = await createPettyCashRequest({ ...input, requestDate: input.requestDate as any, requestedBy: ctx.user.id } as any);
+        await logActivity(ctx.user.id, "petty_cash.request", "petty_cash_request", request.id, `${input.department}:${input.amount}`);
+        return request;
+      }),
+      review: managerProcedure.input(z.object({ id: z.number(), status: z.enum(["approved", "paid", "rejected"]) })).mutation(async ({ input, ctx }) => {
+        await reviewPettyCashRequest(input.id, input.status, ctx.user.id);
+        await logActivity(ctx.user.id, "petty_cash.review", "petty_cash_request", input.id, input.status);
+      }),
     }),
   }),
 

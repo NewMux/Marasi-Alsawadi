@@ -34,3 +34,18 @@
 - [x] Compare the current platform with the manual revenue workbook and real resort operating workflow to assess digital-transformation coverage.
 - [x] Document the ERP capability gaps and a prioritized next-phase transformation roadmap.
 - [ ] Save the finalized Vercel demo and ERP assessment state as a checkpoint and record its version in the handover notes.
+- [x] Add a visual booking-date calendar and date-conflict guidance to the reservation workflow.
+- [x] Simplify the Aqua Park workspace to a concise ticket-sale and gate-entry workflow.
+- [x] Add explicit room-number selection and display to the Housekeeping workspace and task records.
+- [x] Add a lightweight HR workspace for staff profiles, attendance, leave requests, and shift visibility.
+- [ ] Exercise and verify reservation, aqua-park, and housekeeping success/error paths in the browser, including surfaced server-error messages.
+- [x] Trigger a server-equivalent Aqua Park capacity rejection in regression coverage and surface its clear remaining-capacity message in the UI.
+- [x] Enforce reservation overlap and aqua-park capacity safeguards on the server, not only in the interface.
+- [x] Add focused regression coverage proving housekeeping room labels retain their property code and name after joined list records.
+- [ ] Exercise the refined reservations, aqua-park, housekeeping, and HR workflows in the browser by submitting real actions and confirming their success, validation, and error states. (The connected-browser extension timed out during the final pass; automated rules and phone-width rendering were verified.)
+- [x] Prevent the Express server from opening a listener during automated tests.
+- [x] Distinguish incomplete reservation date selection from an actual room-overlap conflict in the booking calendar.
+- [x] Add daily sales settlement with cash, bank, card, charges, expected-versus-actual, and manager review controls.
+- [x] Expose expense department allocation, request category, and accounting source-reference fields in the finance-control request form.
+- [ ] Verify settlement and petty-cash creation, approval-state transitions, and error handling in the browser.
+- [x] Correct mobile bottom-navigation label overflow so the ERP workspaces remain usable on phone screens.

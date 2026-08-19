@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildReservationValues, isQaReservationRecord } from "./db";
+import { buildReservationValues, hasReservationOverlap, isQaReservationRecord } from "./db";
 import { createApp } from "./_core/index";
 import { recordFromJoin } from "./routers/platform";
 
@@ -24,6 +24,13 @@ describe("reservation compatibility values", () => {
   it("only treats explicitly labelled records as reusable QA reservations", () => {
     expect(isQaReservationRecord({ notes: "QA-only reservation" })).toBe(true);
     expect(isQaReservationRecord({ notes: null })).toBe(false);
+  });
+
+  it("blocks same-unit active stays that overlap and permits adjacent stays", () => {
+    const active = [{ r: { unitId: 4, status: "confirmed", checkInAt: new Date("2026-08-20T12:00:00Z"), checkOutAt: new Date("2026-08-22T12:00:00Z") } }];
+    expect(hasReservationOverlap(active, 4, "2026-08-21", "2026-08-23")).toBe(true);
+    expect(hasReservationOverlap(active, 4, "2026-08-22", "2026-08-24")).toBe(false);
+    expect(hasReservationOverlap(active, 4, "2026-08-22", "2026-08-22")).toBe(true);
   });
 
   it("unwraps each joined operational record shape used by QA idempotence checks", () => {

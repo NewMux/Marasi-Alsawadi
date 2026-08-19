@@ -50,3 +50,10 @@ The guest submission action returned to an idle state without refreshing the gue
 - Source was published to **https://github.com/NewMux/Marasi-Alsawadi** on the `main` branch.
 - The linked NewMux Vercel project `prj_Q5o6yhVkHDYJ99Mto1WcucHfQ6e5` completed production deployment `02a99cd` successfully.
 - The public Vercel URL **https://marasi-alsawadi-platform-7o2gk6odl-new-mux.vercel.app** renders the application’s secure sign-in shell. Production database and OAuth environment values remain to be configured in Vercel before authenticated operational workflows can be used there.
+
+## ERP workflow refinement validation — 19 August 2026
+
+- The authenticated Reservations workspace now presents a 14-day booking calendar, room/chalet selection, clear date fields, booking estimate, and the correct initial guidance to select a later check-out date. It no longer mislabels an incomplete date selection as an overlap.
+- The authenticated Aqua Park workspace now presents a deliberately concise day-pass desk: operating date, available capacity, guest/group name, people count, pass type, price, total-to-collect, and a one-tap gate register.
+- The authenticated Housekeeping workspace verifies that task creation uses an explicit room-number/chalet-code selector and the task board prominently displays `QA-101`, the room name, assignee, status, and completion action.
+- The connected browser timed out while opening the Simple HR route; automated test, type-check, and production-build validation remain green for its attendance and leave workflow.

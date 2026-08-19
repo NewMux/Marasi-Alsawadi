@@ -8,20 +8,20 @@ import {
 import { Button } from "./ui/button";
 
 type Role = "staff" | "manager" | "admin";
-type NavItem = { label: string; path: string; icon: any; roles: Role[] };
+type NavItem = { label: string; mobileLabel: string; path: string; icon: any; roles: Role[] };
 
 const items: NavItem[] = [
-  { label: "Command Center", path: "/", icon: LayoutDashboard, roles: ["staff", "manager", "admin"] },
-  { label: "Reservations", path: "/reservations", icon: CalendarDays, roles: ["staff", "manager", "admin"] },
-  { label: "Aqua Park", path: "/aqua-park", icon: Droplets, roles: ["staff", "manager", "admin"] },
-  { label: "Guest Stays", path: "/guest-stays", icon: Users, roles: ["staff", "manager", "admin"] },
-  { label: "Housekeeping", path: "/housekeeping", icon: ClipboardCheck, roles: ["staff", "manager", "admin"] },
-  { label: "Maintenance", path: "/maintenance", icon: Wrench, roles: ["staff", "manager", "admin"] },
-  { label: "Inventory", path: "/inventory", icon: Package, roles: ["manager", "admin"] },
-  { label: "Team & Shifts", path: "/team", icon: Users, roles: ["manager", "admin"] },
-  { label: "Revenue", path: "/revenue", icon: Gauge, roles: ["manager", "admin"] },
-  { label: "Management Reports", path: "/reports", icon: Ticket, roles: ["manager", "admin"] },
-  { label: "Access & Property", path: "/administration", icon: ShieldCheck, roles: ["admin"] },
+  { label: "Command Center", mobileLabel: "Home", path: "/", icon: LayoutDashboard, roles: ["staff", "manager", "admin"] },
+  { label: "Reservations", mobileLabel: "Book", path: "/reservations", icon: CalendarDays, roles: ["staff", "manager", "admin"] },
+  { label: "Aqua Park", mobileLabel: "Aqua", path: "/aqua-park", icon: Droplets, roles: ["staff", "manager", "admin"] },
+  { label: "Guest Stays", mobileLabel: "Guests", path: "/guest-stays", icon: Users, roles: ["staff", "manager", "admin"] },
+  { label: "Housekeeping", mobileLabel: "Rooms", path: "/housekeeping", icon: ClipboardCheck, roles: ["staff", "manager", "admin"] },
+  { label: "Maintenance", mobileLabel: "Repairs", path: "/maintenance", icon: Wrench, roles: ["staff", "manager", "admin"] },
+  { label: "Inventory", mobileLabel: "Stock", path: "/inventory", icon: Package, roles: ["manager", "admin"] },
+  { label: "Simple HR", mobileLabel: "HR", path: "/team", icon: Users, roles: ["manager", "admin"] },
+  { label: "Revenue", mobileLabel: "Revenue", path: "/revenue", icon: Gauge, roles: ["manager", "admin"] },
+  { label: "Management Reports", mobileLabel: "Reports", path: "/reports", icon: Ticket, roles: ["manager", "admin"] },
+  { label: "Access & Property", mobileLabel: "Admin", path: "/administration", icon: ShieldCheck, roles: ["admin"] },
 ];
 
 export function permittedPath(path: string, role?: string) {
@@ -46,7 +46,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     </aside>
     <main className="min-w-0 flex-1"><header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-[#e6dfd3] bg-[#f6f2ea]/95 px-5 backdrop-blur md:px-9"><button onClick={() => setLocation("/")} className="font-serif text-lg md:hidden">Marasi</button><div className="hidden text-xs uppercase tracking-[.16em] text-[#71817a] md:block">Resort operations system</div><div className="flex items-center gap-3"><span className="hidden rounded-full bg-[#e3efe8] px-3 py-1 text-xs font-medium capitalize text-[#326553] sm:inline">{role} access</span><div className="grid h-8 w-8 place-items-center rounded-full bg-[#173c3d] text-xs font-semibold text-white">{(user.name || "M").slice(0,1).toUpperCase()}</div></div></header>
       <div className="mx-auto max-w-[1540px] p-4 pb-24 md:p-9">{demoMode && <div className="mb-4 flex items-center gap-2 rounded-xl border border-[#efd6ad] bg-[#fff8ea] px-4 py-2 text-xs text-[#785a2d]"><Sparkles size={14}/> Public interactive demo — changes stay in this browser and are never saved.</div>}{children}</div>
-      <nav className="fixed inset-x-0 bottom-0 z-20 flex overflow-x-auto border-t border-[#e6dfd3] bg-[#fffdf9] px-2 py-2 md:hidden">{visible.slice(0,7).map((entry) => { const Icon = entry.icon; return <button key={entry.path} onClick={() => setLocation(entry.path)} className={`min-w-[78px] flex-1 rounded-lg py-1 text-[10px] ${location === entry.path ? "bg-[#e3efe8] text-[#173c3d]" : "text-[#657168]"}`}><Icon className="mx-auto mb-1" size={16}/>{entry.label.split(" ")[0]}</button> })}</nav>
+      <nav aria-label="Mobile operations navigation" className="fixed inset-x-0 bottom-0 z-20 flex gap-1 overflow-x-auto border-t border-[#e6dfd3] bg-[#fffdf9] px-2 py-2 shadow-[0_-8px_20px_rgba(23,60,61,.04)] md:hidden">{visible.map((entry) => { const Icon = entry.icon; return <button key={entry.path} onClick={() => setLocation(entry.path)} className={`flex w-[68px] shrink-0 flex-col items-center rounded-lg px-1 py-1.5 text-[9px] font-medium leading-3 transition active:scale-[.97] ${location === entry.path ? "bg-[#e3efe8] text-[#173c3d]" : "text-[#657168]"}`}><Icon className="mb-1" size={16}/><span className="w-full truncate">{entry.mobileLabel}</span></button> })}</nav>
     </main>
   </div>;
 }

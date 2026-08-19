@@ -1,5 +1,5 @@
 import {
-  int, mysqlEnum, mysqlTable, text, timestamp, varchar, decimal, boolean, date
+  int, mysqlEnum, mysqlTable, text, timestamp, varchar, decimal, boolean, date, unique
 } from "drizzle-orm/mysql-core";
 
 // ─── Users & Auth ────────────────────────────────────────────────────────────
@@ -166,6 +166,33 @@ export const staffShifts = mysqlTable("staff_shifts", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+export const staffAttendance = mysqlTable("staff_attendance", {
+  id: int("id").autoincrement().primaryKey(),
+  staffId: int("staffId").notNull(),
+  workDate: date("workDate").notNull(),
+  status: mysqlEnum("status", ["present", "late", "absent", "leave"]).default("present").notNull(),
+  clockInAt: timestamp("clockInAt"),
+  clockOutAt: timestamp("clockOutAt"),
+  notes: text("notes"),
+  recordedBy: int("recordedBy"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const staffLeaveRequests = mysqlTable("staff_leave_requests", {
+  id: int("id").autoincrement().primaryKey(),
+  staffId: int("staffId").notNull(),
+  leaveType: mysqlEnum("leaveType", ["annual", "sick", "unpaid", "other"]).default("annual").notNull(),
+  startDate: date("startDate").notNull(),
+  endDate: date("endDate").notNull(),
+  status: mysqlEnum("status", ["pending", "approved", "rejected", "cancelled"]).default("pending").notNull(),
+  notes: text("notes"),
+  reviewedBy: int("reviewedBy"),
+  reviewedAt: timestamp("reviewedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
 // ─── Daily Tasks ──────────────────────────────────────────────────────────────
 export const dailyTasks = mysqlTable("daily_tasks", {
   id: int("id").autoincrement().primaryKey(),
@@ -197,6 +224,47 @@ export const financeEntries = mysqlTable("finance_entries", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 export type FinanceEntry = typeof financeEntries.$inferSelect;
+
+// ─── Daily Settlement / Cash Control ──────────────────────────────────────────
+export const dailySettlements = mysqlTable("daily_settlements", {
+  id: int("id").autoincrement().primaryKey(),
+  businessDate: date("businessDate").notNull(),
+  department: mysqlEnum("department", ["aqua_park", "rooms", "fnb", "events", "general"]).default("general").notNull(),
+  expectedAmount: decimal("expectedAmount", { precision: 12, scale: 2 }).default("0").notNull(),
+  cashAmount: decimal("cashAmount", { precision: 12, scale: 2 }).default("0").notNull(),
+  bankAmount: decimal("bankAmount", { precision: 12, scale: 2 }).default("0").notNull(),
+  cardAmount: decimal("cardAmount", { precision: 12, scale: 2 }).default("0").notNull(),
+  bankCharges: decimal("bankCharges", { precision: 12, scale: 2 }).default("0").notNull(),
+  status: mysqlEnum("status", ["draft", "submitted", "approved", "variance"]).default("draft").notNull(),
+  notes: text("notes"),
+  submittedBy: int("submittedBy"),
+  reviewedBy: int("reviewedBy"),
+  reviewedAt: timestamp("reviewedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({
+  businessDepartmentUnique: unique("daily_settlement_business_department").on(table.businessDate, table.department),
+}));
+export type DailySettlement = typeof dailySettlements.$inferSelect;
+
+// ─── Expense / Petty Cash ─────────────────────────────────────────────────────
+export const pettyCashRequests = mysqlTable("petty_cash_requests", {
+  id: int("id").autoincrement().primaryKey(),
+  requestDate: date("requestDate").notNull(),
+  department: mysqlEnum("department", ["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]).default("general").notNull(),
+  category: mysqlEnum("category", ["petty_cash", "expense", "reimbursement"]).default("expense").notNull(),
+  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
+  payee: varchar("payee", { length: 128 }).notNull(),
+  purpose: varchar("purpose", { length: 256 }).notNull(),
+  sourceReference: varchar("sourceReference", { length: 96 }),
+  status: mysqlEnum("status", ["pending", "approved", "paid", "rejected"]).default("pending").notNull(),
+  requestedBy: int("requestedBy").notNull(),
+  approvedBy: int("approvedBy"),
+  approvedAt: timestamp("approvedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type PettyCashRequest = typeof pettyCashRequests.$inferSelect;
 
 // ─── Activity Log ─────────────────────────────────────────────────────────────
 export const activityLog = mysqlTable("activity_log", {

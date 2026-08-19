@@ -2,9 +2,9 @@ import { and, desc, eq, gte, lte, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   activityLog, aquaParkCapacity, aquaParkTickets, dailyTasks,
-  financeEntries, guests, housekeepingTasks, inventoryItems,
+  dailySettlements, financeEntries, guests, housekeepingTasks, inventoryItems,
   maintenanceRequests, propertyUnits, reservations, staffProfiles,
-  staffShifts, users, workbookImports,
+  pettyCashRequests, staffAttendance, staffLeaveRequests, staffShifts, users, workbookImports,
   type InsertUser
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
@@ -87,6 +87,18 @@ export type ReservationDraft = {
 
 export function isQaReservationRecord(reservation: { notes?: string | null }) {
   return reservation.notes === "QA-only reservation";
+}
+
+export function hasReservationOverlap(records: unknown[], unitId: number, checkIn: string, checkOut: string) {
+  if (!checkIn || !checkOut || checkIn >= checkOut) return true;
+  return records.some((entry: any) => {
+    const reservation = entry?.r ?? entry;
+    if (reservation?.unitId !== unitId || ["cancelled", "checked_out"].includes(reservation?.status)) return false;
+    if (!reservation?.checkInAt || !reservation?.checkOutAt) return false;
+    const existingCheckIn = new Date(reservation.checkInAt).toISOString().slice(0, 10);
+    const existingCheckOut = new Date(reservation.checkOutAt).toISOString().slice(0, 10);
+    return checkIn < existingCheckOut && checkOut > existingCheckIn;
+  });
 }
 
 export function buildReservationValues(data: ReservationDraft, kind: "room" | "chalet") {
@@ -237,6 +249,51 @@ export async function createShift(data: typeof staffShifts.$inferInsert) {
   const r = await db.select().from(staffShifts).orderBy(desc(staffShifts.id)).limit(1);
   return r[0]!;
 }
+export function isValidDateRange(startDate: string, endDate: string) {
+  return Boolean(startDate && endDate && startDate <= endDate);
+}
+export async function listAttendance(workDate?: string) {
+  const db = await getDb(); if (!db) return [];
+  const query = db.select({ a: staffAttendance, s: staffProfiles })
+    .from(staffAttendance)
+    .leftJoin(staffProfiles, eq(staffAttendance.staffId, staffProfiles.id))
+    .orderBy(desc(staffAttendance.workDate), staffProfiles.fullName);
+  return workDate ? query.where(sql`${staffAttendance.workDate} = ${workDate}`) : query;
+}
+export async function recordAttendance(data: typeof staffAttendance.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  const existing = await db.select().from(staffAttendance).where(and(
+    eq(staffAttendance.staffId, data.staffId),
+    sql`${staffAttendance.workDate} = ${data.workDate}`,
+  )).limit(1);
+  if (existing[0]) {
+    await db.update(staffAttendance).set({
+      status: data.status, clockInAt: data.clockInAt, clockOutAt: data.clockOutAt,
+      notes: data.notes, recordedBy: data.recordedBy,
+    }).where(eq(staffAttendance.id, existing[0].id));
+    return existing[0];
+  }
+  await db.insert(staffAttendance).values(data);
+  const record = await db.select().from(staffAttendance).orderBy(desc(staffAttendance.id)).limit(1);
+  return record[0]!;
+}
+export async function listLeaveRequests() {
+  const db = await getDb(); if (!db) return [];
+  return db.select({ l: staffLeaveRequests, s: staffProfiles })
+    .from(staffLeaveRequests)
+    .leftJoin(staffProfiles, eq(staffLeaveRequests.staffId, staffProfiles.id))
+    .orderBy(desc(staffLeaveRequests.createdAt));
+}
+export async function createLeaveRequest(data: typeof staffLeaveRequests.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.insert(staffLeaveRequests).values(data);
+  const request = await db.select().from(staffLeaveRequests).orderBy(desc(staffLeaveRequests.id)).limit(1);
+  return request[0]!;
+}
+export async function reviewLeaveRequest(id: number, status: "approved" | "rejected" | "cancelled", reviewedBy: number) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.update(staffLeaveRequests).set({ status, reviewedBy, reviewedAt: new Date() }).where(eq(staffLeaveRequests.id, id));
+}
 export async function listDailyTasks(staffId?: number) {
   const db = await getDb(); if (!db) return [];
   const q = db.select({ t: dailyTasks, s: staffProfiles })
@@ -271,6 +328,42 @@ export async function createFinanceEntry(data: typeof financeEntries.$inferInser
   await db.insert(financeEntries).values(data);
   const r = await db.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
   return r[0]!;
+}
+export function settlementVariance(values: { expectedAmount?: unknown; cashAmount?: unknown; bankAmount?: unknown; cardAmount?: unknown; bankCharges?: unknown }) {
+  const expected = Number(values.expectedAmount ?? 0);
+  const actualNet = Number(values.cashAmount ?? 0) + Number(values.bankAmount ?? 0) + Number(values.cardAmount ?? 0) - Number(values.bankCharges ?? 0);
+  return Math.round((actualNet - expected) * 100) / 100;
+}
+export async function listDailySettlements() {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(dailySettlements).orderBy(desc(dailySettlements.businessDate));
+}
+export async function saveDailySettlement(data: typeof dailySettlements.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  const variance = settlementVariance(data);
+  const department = data.department ?? "general";
+  const status = Math.abs(variance) > 0.009 ? "variance" : (data.status ?? "submitted");
+  await db.insert(dailySettlements).values({ ...data, department, status }).onDuplicateKeyUpdate({ set: { ...data, department, status } });
+  const result = await db.select().from(dailySettlements).where(and(eq(dailySettlements.businessDate, data.businessDate), eq(dailySettlements.department, department))).limit(1);
+  return result[0]!;
+}
+export async function reviewDailySettlement(id: number, reviewerId: number) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.update(dailySettlements).set({ status: "approved", reviewedBy: reviewerId, reviewedAt: new Date() }).where(eq(dailySettlements.id, id));
+}
+export async function listPettyCashRequests() {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(pettyCashRequests).orderBy(desc(pettyCashRequests.requestDate), desc(pettyCashRequests.createdAt));
+}
+export async function createPettyCashRequest(data: typeof pettyCashRequests.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.insert(pettyCashRequests).values(data);
+  const result = await db.select().from(pettyCashRequests).orderBy(desc(pettyCashRequests.id)).limit(1);
+  return result[0]!;
+}
+export async function reviewPettyCashRequest(id: number, status: "approved" | "paid" | "rejected", reviewerId: number) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.update(pettyCashRequests).set({ status, approvedBy: reviewerId, approvedAt: new Date() }).where(eq(pettyCashRequests.id, id));
 }
 export async function getRevenueSummary(from: string, to: string) {
   const db = await getDb(); if (!db) return [];

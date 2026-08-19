@@ -72,3 +72,7 @@ Do **not** position it as a completed ERP until the financial-control, settlemen
 
 [1]: file:///home/ubuntu/upload/AR-Revenue-2026-15082026.xlsx "AR-Revenue-2026-15082026.xlsx — user-supplied manual operating workbook"
 [2]: https://github.com/NewMux/Marasi-Alsawadi "Marasi Alsawadi platform source repository"
+
+## Recoverable project state
+
+The assessment and public interactive-demo configuration were preserved in project checkpoint **`046e6268`** on 19 August 2026.

@@ -1,6 +1,7 @@
 import { AlertTriangle, BedDouble, CalendarDays, CheckCircle2, ClipboardCheck, Droplets, Gauge, Package, Users, Wrench } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
+import { DemoCalendarBookings, DemoRoomHousekeeping, DemoSimpleAqua, DemoSimpleHR } from "./DemoERPEnhancements";
 
 const money = (value: number) => `OMR ${value.toLocaleString("en-OM")}`;
 const cx = (...values: Array<string | false | undefined>) => values.filter(Boolean).join(" ");
@@ -50,13 +51,13 @@ export default function DemoOperationsPage() {
 
   const content = useMemo(() => {
     const arrivalRows = reservations.map((entry) => <div key={entry.id} className="flex flex-wrap items-center justify-between gap-3 border-t border-[#eee8dd] py-3 first:border-t-0"><div><div className="font-medium">{entry.guest}</div><div className="text-xs text-[#7a867f]">{entry.unit} · {entry.stay}</div></div><Badge tone={entry.status === "checked_in" ? "green" : "amber"}>{entry.status.replace("_", " ")}</Badge></div>);
-    if (location === "/reservations") return <ReservationsView reservations={reservations} setReservations={setReservations} created={created} setCreated={setCreated}/>;
-    if (location === "/aqua-park") return <AquaView admitted={admitted} setAdmitted={setAdmitted}/>;
+    if (location === "/reservations") return <DemoCalendarBookings reservations={reservations} setReservations={setReservations} created={created} setCreated={setCreated}/>;
+    if (location === "/aqua-park") return <DemoSimpleAqua/>;
     if (location === "/guest-stays") return <GuestStaysView reservations={reservations} setReservations={setReservations}/>;
-    if (location === "/housekeeping") return <HousekeepingView status={housekeeping} setStatus={setHousekeeping}/>;
+    if (location === "/housekeeping") return <DemoRoomHousekeeping status={housekeeping} setStatus={setHousekeeping}/>;
     if (location === "/maintenance") return <MaintenanceView open={maintenanceOpen} setOpen={setMaintenanceOpen}/>;
     if (location === "/inventory") return <InventoryView inventory={inventory} setInventory={setInventory}/>;
-    if (location === "/team") return <TeamView taskDone={taskDone} setTaskDone={setTaskDone}/>;
+    if (location === "/team") return <DemoSimpleHR/>;
     if (location === "/revenue") return <RevenueView/>;
     if (location === "/reports") return <ReportsView/>;
     if (location === "/administration") return <AdministrationView/>;
