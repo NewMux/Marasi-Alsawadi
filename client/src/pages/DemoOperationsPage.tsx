@@ -2,6 +2,7 @@ import { AlertTriangle, BedDouble, CalendarDays, CheckCircle2, ClipboardCheck, D
 import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { DemoCalendarBookings, DemoRoomHousekeeping, DemoSimpleAqua, DemoSimpleHR } from "./DemoERPEnhancements";
+import { DemoAdministration, DemoInventory, DemoMaintenance, DemoReports, DemoRevenue } from "./DemoBackOfficeEnhancements";
 
 const money = (value: number) => `OMR ${value.toLocaleString("en-OM")}`;
 const cx = (...values: Array<string | false | undefined>) => values.filter(Boolean).join(" ");
@@ -54,13 +55,13 @@ export default function DemoOperationsPage() {
     if (location === "/reservations") return <DemoCalendarBookings reservations={reservations} setReservations={setReservations} created={created} setCreated={setCreated}/>;
     if (location === "/aqua-park") return <DemoSimpleAqua/>;
     if (location === "/guest-stays") return <GuestStaysView reservations={reservations} setReservations={setReservations}/>;
-    if (location === "/housekeeping") return <DemoRoomHousekeeping status={housekeeping} setStatus={setHousekeeping}/>;
-    if (location === "/maintenance") return <MaintenanceView open={maintenanceOpen} setOpen={setMaintenanceOpen}/>;
-    if (location === "/inventory") return <InventoryView inventory={inventory} setInventory={setInventory}/>;
+    if (location === "/housekeeping") return <DemoRoomHousekeeping/>;
+    if (location === "/maintenance") return <DemoMaintenance/>;
+    if (location === "/inventory") return <DemoInventory/>;
     if (location === "/team") return <DemoSimpleHR/>;
-    if (location === "/revenue") return <RevenueView/>;
-    if (location === "/reports") return <ReportsView/>;
-    if (location === "/administration") return <AdministrationView/>;
+    if (location === "/revenue") return <DemoRevenue/>;
+    if (location === "/reports") return <DemoReports/>;
+    if (location === "/administration") return <DemoAdministration/>;
     return <><Heading eyebrow="Today at a glance" title="Command Center" description="A guided operational view of accommodation, aqua park, guest services, and commercial performance."/><DemoNotice/><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><Metric icon={BedDouble} label="Occupied units" value="3 / 18" note="Live occupancy sample"/><Metric icon={CalendarDays} label="Active reservations" value={String(activeReservations)} note="Rooms & chalets"/><Metric icon={ClipboardCheck} label="Rooms needing attention" value={housekeeping === "dirty" ? "1" : "0"} note="Turnover queue" tone="amber"/><Metric icon={Wrench} label="Open maintenance" value={maintenanceOpen ? "1" : "0"} note="Guest-impacting work" tone="red"/></div><div className="mt-6 grid gap-6 xl:grid-cols-[1.3fr_.7fr]"><Panel><Subheading title="Today’s arrival board" hint="Explore Guest Stays to progress the illustrated stay lifecycle."/>{arrivalRows}</Panel><Panel className="bg-[#1d4849] text-white"><Subheading title="Operations pulse" hint="Presentation snapshot"/><div className="space-y-3"><div className="rounded-xl bg-white/10 p-3"><p className="text-[10px] uppercase tracking-[.14em] text-[#b5c8c3]">Aqua park gate</p><p className="mt-1 font-medium">{admitted} visitors admitted</p></div><div className="rounded-xl bg-white/10 p-3"><p className="text-[10px] uppercase tracking-[.14em] text-[#b5c8c3]">Inventory</p><p className="mt-1 font-medium">{lowStock} replenishment alerts</p></div><div className="rounded-xl bg-white/10 p-3"><p className="text-[10px] uppercase tracking-[.14em] text-[#b5c8c3]">Daily task</p><p className="mt-1 font-medium">{taskDone ? "Opening walk completed" : "Opening walk in progress"}</p></div></div></Panel></div></>;
   }, [admitted, created, housekeeping, inventory, location, maintenanceOpen, reservations, taskDone]);
   return <div>{content}</div>;
