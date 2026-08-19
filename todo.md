@@ -52,8 +52,9 @@
 - [x] Verify the Simple HR leave form shows the required-staff feedback in the live browser, then complete the shared attendance-and-leave validation item. (Both live forms show “Select a staff member before continuing”; focused mutation-guard tests pass.)
 - [x] Add focused regression coverage that asserts both Simple HR workflow handlers block their mutations when no staff member is selected.
 - [x] Rename all client-facing “Simple HR” workspace labels to “HR & Workforce”. (Live ERP, navigation, and public demo updated; 15 tests and production build pass.)
-- [ ] Upgrade the public Vercel demo from a presentation walkthrough to a browser-local functional ERP prototype with clear create, edit, and status-management workflows.
-- [ ] Add a reusable mobile-friendly modal and feedback pattern for public-demo record creation and management actions.
-- [ ] Make the public-demo HR & Workforce workspace support adding employees, recording attendance, creating leave requests, and scheduling shifts.
-- [ ] Make the public-demo Guest Stays, Housekeeping, Maintenance, Inventory, Revenue, Reports, and Administration workspaces support representative browser-local operational actions.
-- [ ] Validate the expanded public-demo workflows on desktop and phone widths, then publish the updated client-testing link.
+- [x] Upgrade the public Vercel demo from a presentation walkthrough to a browser-local functional ERP prototype with clear create, edit, and status-management workflows.
+- [x] Add a reusable mobile-friendly modal and feedback pattern for public-demo record creation and management actions.
+- [x] Make the public-demo HR & Workforce workspace support adding employees, recording attendance, creating leave requests, and scheduling shifts.
+- [x] Make the public-demo Guest Stays, Housekeeping, Maintenance, Inventory, Revenue, Reports, and Administration workspaces support representative browser-local operational actions.
+- [x] Complete phone-width validation for the remaining expanded public-demo modules—Aqua Park, Guest Stays, Housekeeping, Inventory, Reports, and Administration—then finalize the cross-module mobile sign-off. (All ten public workspaces have now passed browser-local desktop action checks and 375 px visual review.)
+- [x] Enable an explicit local demo-preview route so the public interactive interface can be checked at phone width before final release sign-off. (Use `?demo=1`; focused routing tests added.)
