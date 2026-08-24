@@ -1,33 +1,20 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { startLogin } from "@/const";
 import { useLocation } from "wouter";
-import {
-  CalendarDays, ClipboardCheck, Droplets, Gauge, LayoutDashboard, LogOut,
-  Package, Settings, ShieldCheck, Sparkles, Ticket, Users, Wrench,
-} from "lucide-react";
+import { Gauge, LogOut, Sparkles, Ticket } from "lucide-react";
 import { Button } from "./ui/button";
 
 type Role = "staff" | "manager" | "admin";
 type NavItem = { label: string; mobileLabel: string; path: string; icon: any; roles: Role[] };
 
 const items: NavItem[] = [
-  { label: "Command Center", mobileLabel: "Home", path: "/", icon: LayoutDashboard, roles: ["staff", "manager", "admin"] },
-  { label: "Reservations", mobileLabel: "Book", path: "/reservations", icon: CalendarDays, roles: ["staff", "manager", "admin"] },
-  { label: "Ticket Desk", mobileLabel: "Tickets", path: "/tickets", icon: Ticket, roles: ["staff", "manager", "admin"] },
-  { label: "Aqua Park", mobileLabel: "Aqua", path: "/aqua-park", icon: Droplets, roles: ["staff", "manager", "admin"] },
-  { label: "Guest Stays", mobileLabel: "Guests", path: "/guest-stays", icon: Users, roles: ["staff", "manager", "admin"] },
-  { label: "Housekeeping", mobileLabel: "Rooms", path: "/housekeeping", icon: ClipboardCheck, roles: ["staff", "manager", "admin"] },
-  { label: "Maintenance", mobileLabel: "Repairs", path: "/maintenance", icon: Wrench, roles: ["staff", "manager", "admin"] },
-  { label: "Inventory", mobileLabel: "Stock", path: "/inventory", icon: Package, roles: ["manager", "admin"] },
-  { label: "HR & Workforce", mobileLabel: "HR", path: "/team", icon: Users, roles: ["manager", "admin"] },
-  { label: "Revenue", mobileLabel: "Revenue", path: "/revenue", icon: Gauge, roles: ["manager", "admin"] },
-  { label: "Management Reports", mobileLabel: "Reports", path: "/reports", icon: Ticket, roles: ["manager", "admin"] },
-  { label: "Access & Property", mobileLabel: "Admin", path: "/administration", icon: ShieldCheck, roles: ["admin"] },
+  { label: "Ticket & Customers", mobileLabel: "Tickets", path: "/tickets", icon: Ticket, roles: ["staff", "manager", "admin"] },
+  { label: "Expenses & Report", mobileLabel: "Finance", path: "/finance", icon: Gauge, roles: ["manager", "admin"] },
 ];
 
 export function permittedPath(path: string, role?: string) {
   const item = items.find((entry) => entry.path === path);
-  return !item || (role ? item.roles.includes(role as Role) : false);
+  return Boolean(item && role && item.roles.includes(role as Role));
 }
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -40,12 +27,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const visible = items.filter((entry) => entry.roles.includes(role));
   return <div className="min-h-screen bg-[#f6f2ea] text-[#173c3d] md:flex">
     <aside className="hidden w-[276px] shrink-0 flex-col bg-[#173c3d] px-4 py-6 text-white md:flex">
-      <button onClick={() => setLocation("/")} className="mb-10 flex items-center gap-3 px-3 text-left"><div className="grid h-10 w-10 place-items-center rounded-xl bg-[#c28d4e] text-[#173c3d]"><Sparkles size={19}/></div><div><div className="font-serif text-xl leading-5">Marasi</div><div className="text-[10px] uppercase tracking-[.2em] text-[#b5c8c3]">Alsawadi Resort</div></div></button>
-      <div className="mb-3 px-3 text-[10px] uppercase tracking-[.18em] text-[#93aaa4]">Operations</div>
+      <button onClick={() => setLocation("/tickets")} className="mb-10 flex items-center gap-3 px-3 text-left"><div className="grid h-10 w-10 place-items-center rounded-xl bg-[#c28d4e] text-[#173c3d]"><Sparkles size={19}/></div><div><div className="font-serif text-xl leading-5">Marasi</div><div className="text-[10px] uppercase tracking-[.2em] text-[#b5c8c3]">Alsawadi Resort</div></div></button>
+      <div className="mb-3 px-3 text-[10px] uppercase tracking-[.18em] text-[#93aaa4]">Core operations</div>
       <nav className="space-y-1">{visible.map((entry) => { const active = location === entry.path; const Icon = entry.icon; return <button key={entry.path} onClick={() => setLocation(entry.path)} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition ${active ? "bg-[#fffdf9] text-[#173c3d] shadow" : "text-[#d7e2dd] hover:bg-white/10"}`}><Icon size={17}/><span>{entry.label}</span></button>; })}</nav>
       <div className="mt-auto rounded-2xl border border-white/10 bg-white/5 p-3"><div className="flex items-center gap-3"><div className="grid h-9 w-9 place-items-center rounded-full bg-[#dce7e1] text-sm font-semibold text-[#173c3d]">{(user.name || "M").slice(0,1).toUpperCase()}</div><div className="min-w-0"><div className="truncate text-sm">{user.name || "Marasi user"}</div><div className="capitalize text-xs text-[#b5c8c3]">{demoMode ? "interactive demo" : role}</div></div></div><button onClick={logout} className="mt-3 flex w-full items-center gap-2 rounded-lg px-1 py-1 text-xs text-[#b5c8c3] hover:text-white"><LogOut size={14}/>{demoMode ? "Reset demo" : "Sign out"}</button></div>
     </aside>
-    <main className="min-w-0 flex-1"><header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-[#e6dfd3] bg-[#f6f2ea]/95 px-5 backdrop-blur md:px-9"><button onClick={() => setLocation("/")} className="font-serif text-lg md:hidden">Marasi</button><div className="hidden text-xs uppercase tracking-[.16em] text-[#71817a] md:block">Resort operations system</div><div className="flex items-center gap-3"><span className="hidden rounded-full bg-[#e3efe8] px-3 py-1 text-xs font-medium capitalize text-[#326553] sm:inline">{role} access</span><div className="grid h-8 w-8 place-items-center rounded-full bg-[#173c3d] text-xs font-semibold text-white">{(user.name || "M").slice(0,1).toUpperCase()}</div></div></header>
+    <main className="min-w-0 flex-1"><header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-[#e6dfd3] bg-[#f6f2ea]/95 px-5 backdrop-blur md:px-9"><button onClick={() => setLocation("/tickets")} className="font-serif text-lg md:hidden">Marasi</button><div className="hidden text-xs uppercase tracking-[.16em] text-[#71817a] md:block">Ticketing & expense control</div><div className="flex items-center gap-3"><span className="hidden rounded-full bg-[#e3efe8] px-3 py-1 text-xs font-medium capitalize text-[#326553] sm:inline">{role} access</span><div className="grid h-8 w-8 place-items-center rounded-full bg-[#173c3d] text-xs font-semibold text-white">{(user.name || "M").slice(0,1).toUpperCase()}</div></div></header>
       <div className="mx-auto max-w-[1540px] p-4 pb-24 md:p-9">{demoMode && <div className="mb-4 flex items-center gap-2 rounded-xl border border-[#efd6ad] bg-[#fff8ea] px-4 py-2 text-xs text-[#785a2d]"><Sparkles size={14}/> Public interactive demo — changes stay in this browser and are never saved.</div>}{children}</div>
       <nav aria-label="Mobile operations navigation" className="fixed inset-x-0 bottom-0 z-20 flex gap-1 overflow-x-auto border-t border-[#e6dfd3] bg-[#fffdf9] px-2 py-2 shadow-[0_-8px_20px_rgba(23,60,61,.04)] md:hidden">{visible.map((entry) => { const Icon = entry.icon; return <button key={entry.path} onClick={() => setLocation(entry.path)} className={`flex w-[68px] shrink-0 flex-col items-center rounded-lg px-1 py-1.5 text-[9px] font-medium leading-3 transition active:scale-[.97] ${location === entry.path ? "bg-[#e3efe8] text-[#173c3d]" : "text-[#657168]"}`}><Icon className="mb-1" size={16}/><span className="w-full truncate">{entry.mobileLabel}</span></button> })}</nav>
     </main>

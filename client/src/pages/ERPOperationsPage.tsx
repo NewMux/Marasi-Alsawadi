@@ -149,13 +149,9 @@ function OperationalFinanceExtension() {
 
 export default function ERPOperationsPage() {
   const { user } = useAuth(); const [location, setLocation] = useLocation();
-  useEffect(() => { if (user && !permittedPath(location, user.role)) setLocation("/"); }, [location, setLocation, user]);
+  useEffect(() => { if (user && !permittedPath(location, user.role)) setLocation("/tickets"); }, [location, setLocation, user]);
   if (user && !permittedPath(location, user.role)) return null;
-  if (location === "/reservations") return <ReservationCalendar/>;
   if (location === "/tickets") return <TransactionTicketDesk/>;
-  if (location === "/aqua-park") return <SimpleAquaPark/>;
-  if (location === "/housekeeping") return <RoomNumberHousekeeping/>;
-  if (location === "/team") return <SimpleHR/>;
-  if (location === "/revenue") return <><FinanceControl/><OperationalFinanceExtension/><DetailedExpenseRequest/></>;
-  return <OperationsPage/>;
+  if (location === "/finance") return <OperationalFinanceExtension/>;
+  return <TransactionTicketDesk/>;
 }

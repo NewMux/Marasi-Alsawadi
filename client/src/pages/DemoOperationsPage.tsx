@@ -1,5 +1,5 @@
 import { AlertTriangle, BedDouble, CalendarDays, CheckCircle2, ClipboardCheck, Droplets, Gauge, Package, Ticket, Users, Wrench } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { DemoCalendarBookings, DemoRoomHousekeeping, DemoSimpleAqua, DemoSimpleHR } from "./DemoERPEnhancements";
 import { DemoAdministration, DemoInventory, DemoMaintenance, DemoReports, DemoRevenue } from "./DemoBackOfficeEnhancements";
@@ -33,7 +33,7 @@ type DemoTransaction = { id: number; ticketNumber: string; customer: string; pho
 type DemoExpense = { id: number; category: string; date: string; amount: number; description: string };
 
 export default function DemoOperationsPage() {
-  const [location] = useLocation();
+  const [location, setLocation] = useLocation();
   const [reservations, setReservations] = useState<Reservation[]>([
     { id: 1, guest: "Layla Al-Hinai", unit: "Garden Room · GR-204", stay: "19–21 Aug", status: "checked_in", total: 360 },
     { id: 2, guest: "Oman Family Group", unit: "Lagoon Chalet · LC-03", stay: "19–20 Aug", status: "confirmed", total: 425 },
@@ -54,21 +54,13 @@ export default function DemoOperationsPage() {
   const [expenses, setExpenses] = useState<DemoExpense[]>([]);
   const activeReservations = reservations.filter((entry) => entry.status !== "checked_out").length;
   const lowStock = inventory.filter((entry) => entry.onHand < entry.par).length;
+  useEffect(() => { if (location !== "/tickets" && location !== "/finance") setLocation("/tickets?demo=1"); }, [location, setLocation]);
 
   const content = useMemo(() => {
     const arrivalRows = reservations.map((entry) => <div key={entry.id} className="flex flex-wrap items-center justify-between gap-3 border-t border-[#eee8dd] py-3 first:border-t-0"><div><div className="font-medium">{entry.guest}</div><div className="text-xs text-[#7a867f]">{entry.unit} · {entry.stay}</div></div><Badge tone={entry.status === "checked_in" ? "green" : "amber"}>{entry.status.replace("_", " ")}</Badge></div>);
-    if (location === "/reservations") return <DemoCalendarBookings reservations={reservations} setReservations={setReservations} created={created} setCreated={setCreated}/>;
     if (location === "/tickets") return <DemoTicketDesk transactions={transactions} setTransactions={setTransactions}/>;
-    if (location === "/aqua-park") return <DemoSimpleAqua/>;
-    if (location === "/guest-stays") return <GuestStaysView reservations={reservations} setReservations={setReservations}/>;
-    if (location === "/housekeeping") return <DemoRoomHousekeeping/>;
-    if (location === "/maintenance") return <DemoMaintenance/>;
-    if (location === "/inventory") return <DemoInventory/>;
-    if (location === "/team") return <DemoSimpleHR/>;
-    if (location === "/revenue") return <DemoFinanceExtension transactions={transactions} categories={expenseCategories} setCategories={setExpenseCategories} expenses={expenses} setExpenses={setExpenses}/>;
-    if (location === "/reports") return <DemoReports/>;
-    if (location === "/administration") return <DemoAdministration/>;
-    return <><Heading eyebrow="Today at a glance" title="Command Center" description="A guided operational view of accommodation, aqua park, guest services, and commercial performance."/><DemoNotice/><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><Metric icon={BedDouble} label="Occupied units" value="3 / 18" note="Live occupancy sample"/><Metric icon={CalendarDays} label="Active reservations" value={String(activeReservations)} note="Rooms & chalets"/><Metric icon={ClipboardCheck} label="Rooms needing attention" value={housekeeping === "dirty" ? "1" : "0"} note="Turnover queue" tone="amber"/><Metric icon={Wrench} label="Open maintenance" value={maintenanceOpen ? "1" : "0"} note="Guest-impacting work" tone="red"/></div><div className="mt-6 grid gap-6 xl:grid-cols-[1.3fr_.7fr]"><Panel><Subheading title="Today’s arrival board" hint="Explore Guest Stays to progress the illustrated stay lifecycle."/>{arrivalRows}</Panel><Panel className="bg-[#1d4849] text-white"><Subheading title="Operations pulse" hint="Presentation snapshot"/><div className="space-y-3"><div className="rounded-xl bg-white/10 p-3"><p className="text-[10px] uppercase tracking-[.14em] text-[#b5c8c3]">Aqua park gate</p><p className="mt-1 font-medium">{admitted} visitors admitted</p></div><div className="rounded-xl bg-white/10 p-3"><p className="text-[10px] uppercase tracking-[.14em] text-[#b5c8c3]">Inventory</p><p className="mt-1 font-medium">{lowStock} replenishment alerts</p></div><div className="rounded-xl bg-white/10 p-3"><p className="text-[10px] uppercase tracking-[.14em] text-[#b5c8c3]">Daily task</p><p className="mt-1 font-medium">{taskDone ? "Opening walk completed" : "Opening walk in progress"}</p></div></div></Panel></div></>;
+    if (location === "/finance") return <DemoFinanceExtension transactions={transactions} categories={expenseCategories} setCategories={setExpenseCategories} expenses={expenses} setExpenses={setExpenses}/>;
+    return <DemoTicketDesk transactions={transactions} setTransactions={setTransactions}/>;
   }, [admitted, created, expenseCategories, expenses, housekeeping, inventory, location, maintenanceOpen, reservations, taskDone, transactions]);
   return <div>{content}</div>;
 }
