@@ -8,6 +8,7 @@ import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { registerWhatsAppRoutes } from "../whatsapp";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -31,13 +32,19 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 export function createApp() {
   const app = express();
   // Configure body parser with larger size limit for file uploads
-  app.use(express.json({ limit: "50mb" }));
+  app.use(express.json({
+    limit: "50mb",
+    verify: (req, _res, buffer) => {
+      (req as typeof req & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
+    },
+  }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   app.get("/healthz", (_req, res) => {
     res.status(200).json({ status: "ok" });
   });
   registerStorageProxy(app);
   registerOAuthRoutes(app);
+  registerWhatsAppRoutes(app);
   // tRPC API
   app.use(
     "/api/trpc",

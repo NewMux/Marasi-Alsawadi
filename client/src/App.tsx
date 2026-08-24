@@ -7,7 +7,15 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import { isPublicDemoMode } from "./lib/demoMode";
 import DemoOperationsPage from "./pages/DemoOperationsPage";
 import ERPOperationsPage from "./pages/ERPOperationsPage";
+import GateScannerPage from "./pages/GateScannerPage";
+import PublicTicketPage from "./pages/PublicTicketPage";
 
 const routes = ["/tickets", "/finance"];
-function Router() { const Page = isPublicDemoMode() ? DemoOperationsPage : ERPOperationsPage; return <Switch>{routes.map((path) => <Route key={path} path={path} component={Page}/>)}<Route component={Page}/></Switch>; }
-export default function App() { return <ErrorBoundary><ThemeProvider defaultTheme="light"><TooltipProvider><Toaster/><DashboardLayout><Router/></DashboardLayout></TooltipProvider></ThemeProvider></ErrorBoundary>; }
+function AuthenticatedRouter() {
+  const Page = isPublicDemoMode() ? DemoOperationsPage : ERPOperationsPage;
+  return <DashboardLayout><Switch>{routes.map((path) => <Route key={path} path={path} component={Page}/>)}<Route path="/gate" component={GateScannerPage}/><Route component={Page}/></Switch></DashboardLayout>;
+}
+function Router() {
+  return <Switch><Route path="/ticket/:token" component={PublicTicketPage}/><Route component={AuthenticatedRouter}/></Switch>;
+}
+export default function App() { return <ErrorBoundary><ThemeProvider defaultTheme="light"><TooltipProvider><Toaster/><Router/></TooltipProvider></ThemeProvider></ErrorBoundary>; }

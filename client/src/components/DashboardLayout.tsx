@@ -1,15 +1,16 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { startLogin } from "@/const";
 import { useLocation } from "wouter";
-import { Gauge, LogOut, Sparkles, Ticket } from "lucide-react";
+import { Gauge, LogOut, ScanLine, Sparkles, Ticket } from "lucide-react";
 import { Button } from "./ui/button";
 
-type Role = "staff" | "manager" | "admin";
+type Role = "staff" | "manager" | "admin" | "guard";
 type NavItem = { label: string; mobileLabel: string; path: string; icon: any; roles: Role[] };
 
 const items: NavItem[] = [
   { label: "Ticket & Customers", mobileLabel: "Tickets", path: "/tickets", icon: Ticket, roles: ["staff", "manager", "admin"] },
   { label: "Expenses & Report", mobileLabel: "Finance", path: "/finance", icon: Gauge, roles: ["manager", "admin"] },
+  { label: "Gate Scanner", mobileLabel: "Gate", path: "/gate", icon: ScanLine, roles: ["guard", "manager", "admin"] },
 ];
 
 export function permittedPath(path: string, role?: string) {

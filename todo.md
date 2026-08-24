@@ -93,3 +93,11 @@
 - [ ] Replace the Manus-specific production login dependency with self-hosted Google and Microsoft staff sign-in while preserving staff, manager, and administrator role assignments.
 - [x] Document the Google/Microsoft OAuth callback URLs, required Coolify secrets, deployment migration steps, and access prerequisites for Hetzner. (See `docs/hetzner_coolify_deployment.md`.)
 - [ ] Complete Google and Microsoft sign-in integration only after the owner supplies provider credentials and the final Coolify domain; do not use or fabricate OAuth credentials.
+
+- [x] Add secure public ticket links with per-ticket opaque tokens, customer-facing QR codes, and a no-login ticket display route.
+- [x] Add customer opt-in-gated WhatsApp Cloud API ticket delivery, delivery-status persistence, and signed webhook handling.
+- [x] Add guard-role provisioning, camera/manual QR gate scanning, server-side same-day single-use validation, and scan audit records.
+- [x] Add migration `0005_add_public_tickets_gate_scans_whatsapp.sql`, environment placeholders, handover notes, 27-test regression coverage, and a passing production build.
+- [ ] Apply migration 0005 in the production MySQL database and configure the final HTTPS public URL.
+- [ ] Supply approved Meta WhatsApp template/provider credentials and verify outbound delivery plus webhook status updates.
+- [ ] Provision real guard accounts and run the live gate pilot: success, repeat-scan denial, expired/future-date denial, and unknown-token denial.

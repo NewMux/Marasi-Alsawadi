@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
@@ -14,15 +15,18 @@ import {
   updateMaintenanceRequest, updateReservationStatus, updateUnitStatus,
   updateUserRole,
 } from "../db";
-import { protectedProcedure, router } from "../_core/trpc";
+import { protectedProcedure, publicProcedure, router } from "../_core/trpc";
 import { canIssueAquaTickets, remainingAquaCapacity } from "../operationRules";
 import {
   createExpenseCategory, createExpenseRecord, createSalesTransaction, createServiceRate, deleteExpenseCategory,
   deleteExpenseRecord, getExpenseCategory, getExpenseRecord, getOperationalFinancialSummary, listExpenseCategories,
   listExpenseRecords, listSalesTransactions, listServiceRates, getServiceRate, searchCustomers, updateExpenseCategory, updateExpenseRecord, updateServiceRate, deleteServiceRate,
+  createWhatsAppMessage, getLatestWhatsAppMessage, getSalesTransactionById, getSalesTransactionByToken, listRecentTicketScans, recordTicketScan, updateWhatsAppMessage,
 } from "../ticketingDb";
-import { calculateTicketTotal, isPositiveMoney } from "../ticketingRules";
+import { calculateTicketTotal, extractTicketToken, isPositiveMoney } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
+import { ENV } from "../_core/env";
+import { publicTicketUrl, requestOrigin, sendWhatsAppTicket } from "../whatsapp";
 
 const managerProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (ctx.user.role !== "manager" && ctx.user.role !== "admin")
@@ -33,6 +37,13 @@ const managerProcedure = protectedProcedure.use(({ ctx, next }) => {
 const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (ctx.user.role !== "admin")
     throw new TRPCError({ code: "FORBIDDEN", message: "Admin required" });
+  return next({ ctx });
+});
+
+const gateProcedure = protectedProcedure.use(({ ctx, next }) => {
+  if (!["guard", "manager", "admin"].includes(ctx.user.role)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Gate access required" });
+  }
   return next({ ctx });
 });
 
@@ -124,6 +135,65 @@ export const platformRouter = router({
     list: protectedProcedure.input(z.object({
       from: z.string().optional(), to: z.string().optional(), customerQuery: z.string().optional(),
     }).optional()).query(({ input }) => listSalesTransactions(input?.from, input?.to, input?.customerQuery)),
+    public: publicProcedure.input(z.object({ token: z.string().min(16).max(96) })).query(async ({ input, ctx }) => {
+      const entry = await getSalesTransactionByToken(input.token);
+      if (!entry) throw new TRPCError({ code: "NOT_FOUND", message: "This ticket could not be found" });
+      const latestMessage = await getLatestWhatsAppMessage(entry.t.id);
+      return {
+        ticket: {
+          ticketNumber: entry.t.ticketNumber,
+          publicToken: entry.t.publicToken,
+          status: entry.t.status,
+          visitDate: entry.t.visitDate,
+          department: entry.t.department,
+          quantity: entry.t.quantity,
+          unitPrice: entry.t.unitPrice,
+          totalAmount: entry.t.totalAmount,
+        },
+        customer: { fullName: entry.c?.fullName || "Guest" },
+        rate: entry.r ? { name: entry.r.name, code: entry.r.code } : null,
+        publicUrl: publicTicketUrl(entry.t.publicToken, requestOrigin(ctx.req)),
+        latestMessage: latestMessage ? { status: latestMessage.status, updatedAt: latestMessage.updatedAt } : null,
+      };
+    }),
+    sendWhatsApp: protectedProcedure.input(z.object({
+      ticketId: z.number().int().positive(),
+      confirmOptIn: z.boolean().refine(Boolean, "Customer WhatsApp consent is required"),
+      templateName: z.string().min(1).max(128).optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const entry = await getSalesTransactionById(input.ticketId);
+      if (!entry || !entry.c) throw new TRPCError({ code: "NOT_FOUND", message: "Ticket or customer was not found" });
+      if (!entry.c.phone) throw new TRPCError({ code: "BAD_REQUEST", message: "This customer has no phone number" });
+      const templateName = input.templateName || ENV.whatsappTemplateName;
+      const message = await createWhatsAppMessage({
+        ticketId: entry.t.id,
+        customerPhone: entry.c.phone,
+        provider: "meta",
+        templateName,
+        status: "queued",
+        attempts: 1,
+        createdBy: ctx.user.id,
+      });
+      try {
+        const sent = await sendWhatsAppTicket({
+          phone: entry.c.phone,
+          customerName: entry.c.fullName,
+          ticketNumber: entry.t.ticketNumber,
+          visitDate: String(entry.t.visitDate),
+          publicToken: entry.t.publicToken,
+          publicUrl: publicTicketUrl(entry.t.publicToken, requestOrigin(ctx.req)),
+          templateName,
+        });
+        const updated = await updateWhatsAppMessage(message.id, { status: "sent", providerMessageId: sent.providerMessageId, templateName: sent.templateName });
+        await logActivity(ctx.user.id, "ticket.whatsapp.sent", "whatsapp_message", message.id, entry.t.ticketNumber);
+        return updated;
+      } catch (error) {
+        const messageText = error instanceof Error ? error.message : "WhatsApp send failed";
+        const updated = await updateWhatsAppMessage(message.id, { status: "failed", errorMessage: messageText });
+        await logActivity(ctx.user.id, "ticket.whatsapp.failed", "whatsapp_message", message.id, messageText);
+        throw new TRPCError({ code: "BAD_REQUEST", message: messageText, cause: error });
+      }
+    }),
     create: protectedProcedure.input(z.object({
       customerId: z.number().optional(), customerName: z.string().min(1).optional(), customerPhone: z.string().min(3).optional(), rateId: z.number().optional(),
       visitDate: z.string(), department: z.enum(["aqua_park", "rooms", "fnb", "general"]).default("aqua_park"),
@@ -154,8 +224,41 @@ export const platformRouter = router({
         referenceId: ticket.id, referenceType: "sales_ticket", createdBy: ctx.user.id,
       } as any);
       await logActivity(ctx.user.id, "ticket.issue", "sales_transaction", ticket.id, ticket.ticketNumber);
-      return { ticket, customer };
+      return { ticket, customer, publicUrl: publicTicketUrl(ticket.publicToken, requestOrigin(ctx.req)) };
     }),
+  }),
+
+  gate: router({
+    scan: gateProcedure.input(z.object({
+      scannedValue: z.string().min(1).max(512),
+      requestKey: z.string().min(8).max(96).optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const publicToken = extractTicketToken(input.scannedValue);
+      if (!publicToken) throw new TRPCError({ code: "BAD_REQUEST", message: "Scan a ticket QR code or enter its ticket link" });
+      const result = await recordTicketScan({
+        scannedValue: input.scannedValue,
+        publicToken,
+        scannedBy: ctx.user.id,
+        requestKey: input.requestKey || randomUUID(),
+        today: new Date().toISOString().slice(0, 10),
+      });
+      if (!("ticket" in result)) {
+        await logActivity(ctx.user.id, "gate.scan", "sales_transaction", undefined, result.reason);
+        return { allowed: false, reason: result.reason, ticket: null, customer: null };
+      }
+      await logActivity(ctx.user.id, "gate.scan", "sales_transaction", result.ticket.id, result.allowed ? "allowed" : result.reason);
+      return {
+        allowed: result.allowed,
+        reason: result.reason || null,
+        ticket: {
+          ticketNumber: result.ticket.ticketNumber,
+          visitDate: result.ticket.visitDate,
+          status: result.ticket.status,
+        },
+        customer: result.customer ? { fullName: result.customer.fullName } : null,
+      };
+    }),
+    recentScans: gateProcedure.query(() => listRecentTicketScans(20)),
   }),
 
   reservations: router({
@@ -517,7 +620,7 @@ export const platformRouter = router({
   admin: router({
     listUsers: adminProcedure.query(() => listUsers()),
     updateUserRole: adminProcedure.input(z.object({
-      id: z.number(), role: z.enum(["staff", "manager", "admin"]),
+      id: z.number(), role: z.enum(["staff", "manager", "admin", "guard"]),
     })).mutation(async ({ input, ctx }) => {
       await updateUserRole(input.id, input.role);
       await logActivity(ctx.user.id, "admin.role.update", "user", input.id, input.role);

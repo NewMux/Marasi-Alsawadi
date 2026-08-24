@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateOperationalNet, calculateTicketTotal, formatTicketNumber, isPositiveMoney } from "./ticketingRules";
+import { calculateOperationalNet, calculateTicketTotal, decideGateEntry, extractTicketToken, formatTicketNumber, isPositiveMoney } from "./ticketingRules";
 
 describe("ticketing business rules", () => {
   it("formats a standard, year-based sequential transaction number", () => {
@@ -17,5 +17,17 @@ describe("ticketing business rules", () => {
 
   it("calculates the simple revenue-versus-expenses net result", () => {
     expect(calculateOperationalNet(1250.75, 499.2)).toBeCloseTo(751.55);
+  });
+
+  it("extracts an opaque token from either a full public URL or scanner text", () => {
+    expect(extractTicketToken("https://erp.example.om/ticket/abc123?source=whatsapp")).toBe("abc123");
+    expect(extractTicketToken("abc123")).toBe("abc123");
+  });
+
+  it("allows a paid ticket only on its visit date and denies reuse", () => {
+    expect(decideGateEntry("paid", "2026-08-24", "2026-08-24")).toEqual({ allowed: true });
+    expect(decideGateEntry("checked_in", "2026-08-24", "2026-08-24")).toEqual({ allowed: false, reason: "already_checked_in" });
+    expect(decideGateEntry("paid", "2026-08-23", "2026-08-24")).toEqual({ allowed: false, reason: "expired" });
+    expect(decideGateEntry("voided", "2026-08-24", "2026-08-24")).toEqual({ allowed: false, reason: "voided" });
   });
 });

@@ -1,9 +1,11 @@
+import { randomBytes } from "node:crypto";
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
   expenseCategories, expenseRecords, guests, salesTicketSequences, salesTransactions, serviceRates,
+  ticketCheckIns, whatsappMessages, whatsappWebhookEvents,
 } from "../drizzle/schema";
 import { getDb } from "./db";
-import { calculateOperationalNet, formatTicketNumber } from "./ticketingRules";
+import { calculateOperationalNet, decideGateEntry, formatTicketNumber } from "./ticketingRules";
 
 export type SalesTransactionDraft = {
   customerId: number;
@@ -80,12 +82,134 @@ export async function createSalesTransaction(data: SalesTransactionDraft) {
     const sequenceNumber = Number(sequenceRow[0]?.lastSequence ?? 0);
     const ticketNumber = formatTicketNumber(ticketYear, sequenceNumber);
     await tx.insert(salesTransactions).values({
-      ...data, visitDate: data.visitDate as any, ticketYear, sequenceNumber, ticketNumber,
+      ...data,
+      visitDate: data.visitDate as any,
+      ticketYear,
+      sequenceNumber,
+      ticketNumber,
+      publicToken: randomBytes(32).toString("base64url"),
+      status: "paid",
     } as any);
     const created = await tx.select().from(salesTransactions)
       .where(eq(salesTransactions.ticketNumber, ticketNumber)).limit(1);
     return created[0]!;
   });
+}
+
+export async function getSalesTransactionById(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select({ t: salesTransactions, c: guests, r: serviceRates })
+    .from(salesTransactions)
+    .leftJoin(guests, eq(salesTransactions.customerId, guests.id))
+    .leftJoin(serviceRates, eq(salesTransactions.rateId, serviceRates.id))
+    .where(eq(salesTransactions.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function getSalesTransactionByToken(publicToken: string) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select({ t: salesTransactions, c: guests, r: serviceRates })
+    .from(salesTransactions)
+    .leftJoin(guests, eq(salesTransactions.customerId, guests.id))
+    .leftJoin(serviceRates, eq(salesTransactions.rateId, serviceRates.id))
+    .where(eq(salesTransactions.publicToken, publicToken)).limit(1);
+  return rows[0];
+}
+
+export async function getLatestWhatsAppMessage(ticketId: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(whatsappMessages)
+    .where(eq(whatsappMessages.ticketId, ticketId))
+    .orderBy(desc(whatsappMessages.id)).limit(1);
+  return rows[0];
+}
+
+export async function createWhatsAppMessage(data: typeof whatsappMessages.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(whatsappMessages).values(data);
+  const rows = await db.select().from(whatsappMessages).orderBy(desc(whatsappMessages.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function updateWhatsAppMessage(id: number, data: Partial<typeof whatsappMessages.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(whatsappMessages).set(data).where(eq(whatsappMessages.id, id));
+  const rows = await db.select().from(whatsappMessages).where(eq(whatsappMessages.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function markWhatsAppWebhookEvent(eventKey: string, payload: string) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const existing = await db.select({ id: whatsappWebhookEvents.id })
+    .from(whatsappWebhookEvents).where(eq(whatsappWebhookEvents.eventKey, eventKey)).limit(1);
+  if (existing.length) return false;
+  await db.insert(whatsappWebhookEvents).values({ eventKey, payload });
+  return true;
+}
+
+export async function updateWhatsAppStatus(providerMessageId: string, status: typeof whatsappMessages.$inferSelect["status"], errorMessage?: string) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(whatsappMessages).set({ status, errorMessage: errorMessage ?? null })
+    .where(eq(whatsappMessages.providerMessageId, providerMessageId));
+}
+
+export async function recordTicketScan(input: {
+  scannedValue: string;
+  publicToken: string;
+  scannedBy?: number;
+  requestKey: string;
+  today: string;
+}) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  return db.transaction(async (tx) => {
+    const rows = await tx.select({ t: salesTransactions, c: guests })
+      .from(salesTransactions)
+      .leftJoin(guests, eq(salesTransactions.customerId, guests.id))
+      .where(eq(salesTransactions.publicToken, input.publicToken)).limit(1);
+    const joined = rows[0];
+    if (!joined) {
+      await tx.insert(ticketCheckIns).values({
+        ticketId: null,
+        scannedBy: input.scannedBy ?? null,
+        result: "denied",
+        denialReason: "not_found",
+        scannedValue: input.scannedValue,
+        requestKey: input.requestKey,
+      } as any);
+      return { allowed: false, reason: "not_found" as const };
+    }
+
+    const decision = decideGateEntry(joined.t.status, String(joined.t.visitDate), input.today);
+
+    if (decision.allowed) {
+      const result: any = await tx.update(salesTransactions)
+        .set({ status: "checked_in" })
+        .where(and(eq(salesTransactions.id, joined.t.id), eq(salesTransactions.status, "paid")));
+      const affectedRows = Number(result?.[0]?.affectedRows ?? result?.affectedRows ?? 0);
+      if (affectedRows !== 1) {
+        await tx.insert(ticketCheckIns).values({
+          ticketId: joined.t.id, scannedBy: input.scannedBy ?? null, result: "denied",
+          denialReason: "already_checked_in", scannedValue: input.scannedValue, requestKey: input.requestKey,
+        });
+        return { allowed: false, reason: "already_checked_in" as const, ticket: joined.t, customer: joined.c };
+      }
+    }
+
+    await tx.insert(ticketCheckIns).values({
+      ticketId: joined.t.id,
+      scannedBy: input.scannedBy ?? null,
+      result: decision.allowed ? "allowed" : "denied",
+      denialReason: decision.allowed ? null : decision.reason,
+      scannedValue: input.scannedValue,
+      requestKey: input.requestKey,
+    });
+    return { ...decision, ticket: { ...joined.t, status: decision.allowed ? "checked_in" : joined.t.status }, customer: joined.c };
+  });
+}
+
+export async function listRecentTicketScans(limit = 20) {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(ticketCheckIns).orderBy(desc(ticketCheckIns.id)).limit(limit);
 }
 
 export async function listSalesTransactions(from?: string, to?: string, customerQuery?: string) {

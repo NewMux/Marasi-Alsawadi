@@ -9,7 +9,7 @@ export const users = mysqlTable("users", {
   name: text("name"),
   email: varchar("email", { length: 320 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
-  role: mysqlEnum("role", ["staff", "manager", "admin"]).default("staff").notNull(),
+  role: mysqlEnum("role", ["staff", "manager", "admin", "guard"]).default("staff").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
@@ -117,6 +117,8 @@ export type ServiceRate = typeof serviceRates.$inferSelect;
 export const salesTransactions = mysqlTable("sales_transactions", {
   id: int("id").autoincrement().primaryKey(),
   ticketNumber: varchar("ticketNumber", { length: 40 }).notNull().unique(),
+  publicToken: varchar("publicToken", { length: 96 }).notNull().unique(),
+  status: mysqlEnum("status", ["paid", "voided", "checked_in", "expired"]).default("paid").notNull(),
   ticketYear: int("ticketYear").notNull(),
   sequenceNumber: int("sequenceNumber").notNull(),
   customerId: int("customerId").notNull(),
@@ -134,6 +136,42 @@ export const salesTransactions = mysqlTable("sales_transactions", {
   ticketYearSequenceUnique: unique("sales_ticket_year_sequence").on(table.ticketYear, table.sequenceNumber),
 }));
 export type SalesTransaction = typeof salesTransactions.$inferSelect;
+
+export const ticketCheckIns = mysqlTable("ticket_check_ins", {
+  id: int("id").autoincrement().primaryKey(),
+  ticketId: int("ticketId"),
+  scannedBy: int("scannedBy"),
+  scannedAt: timestamp("scannedAt").defaultNow().notNull(),
+  result: mysqlEnum("result", ["allowed", "denied"]).notNull(),
+  denialReason: varchar("denialReason", { length: 160 }),
+  scannedValue: varchar("scannedValue", { length: 512 }).notNull(),
+  requestKey: varchar("requestKey", { length: 96 }).notNull().unique(),
+});
+export type TicketCheckIn = typeof ticketCheckIns.$inferSelect;
+
+export const whatsappMessages = mysqlTable("whatsapp_messages", {
+  id: int("id").autoincrement().primaryKey(),
+  ticketId: int("ticketId").notNull(),
+  customerPhone: varchar("customerPhone", { length: 32 }).notNull(),
+  provider: varchar("provider", { length: 48 }).notNull(),
+  providerMessageId: varchar("providerMessageId", { length: 160 }),
+  templateName: varchar("templateName", { length: 128 }).notNull(),
+  status: mysqlEnum("status", ["queued", "sent", "delivered", "read", "failed"]).default("queued").notNull(),
+  attempts: int("attempts").default(0).notNull(),
+  errorMessage: text("errorMessage"),
+  createdBy: int("createdBy"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type WhatsappMessage = typeof whatsappMessages.$inferSelect;
+
+export const whatsappWebhookEvents = mysqlTable("whatsapp_webhook_events", {
+  id: int("id").autoincrement().primaryKey(),
+  eventKey: varchar("eventKey", { length: 160 }).notNull().unique(),
+  payload: text("payload").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type WhatsappWebhookEvent = typeof whatsappWebhookEvents.$inferSelect;
 
 // ─── Housekeeping ─────────────────────────────────────────────────────────────
 export const housekeepingTasks = mysqlTable("housekeeping_tasks", {

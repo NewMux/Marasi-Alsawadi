@@ -419,7 +419,7 @@ export async function listUsers() {
   const db = await getDb(); if (!db) return [];
   return db.select().from(users).orderBy(users.name);
 }
-export async function updateUserRole(id: number, role: "staff" | "manager" | "admin") {
+export async function updateUserRole(id: number, role: "staff" | "manager" | "admin" | "guard") {
   const db = await getDb(); if (!db) throw new Error("no db");
   await db.update(users).set({ role }).where(eq(users.id, id));
 }
