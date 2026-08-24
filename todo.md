@@ -73,4 +73,4 @@
 - [x] Redesign the Ticket & Customers workspace into a polished counter-sales experience without changing its persistent procedures or printer behavior. (A4 browser printing and all ticket/customer behaviors are retained.)
 - [x] Redesign the Expenses & Report workspace into a premium financial-control experience without changing role boundaries or reporting logic. (Persistent financial rules and role gates remain unchanged.)
 - [x] Verify the redesigned desktop and phone interfaces. (Authenticated desktop checks passed for both `/tickets` and `/finance`; shared responsive layouts passed at 375 px in public-demo mode; 22 tests and the production build pass.)
-- [ ] Save a recoverable checkpoint for the premium redesign and record its version in the handover notes.
+- [x] Save a recoverable checkpoint for the premium redesign and record its version in the handover notes. (Checkpoint `0e208104`, confirmed in `docs/handover_notes.md`.)
