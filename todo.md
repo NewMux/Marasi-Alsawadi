@@ -90,14 +90,22 @@
 - [x] Verify the newly connected GitHub account can push the validated release to `NewMux/Marasi-Alsawadi`, synchronize `main`, and confirm the Vercel deployment handoff. (Connected GitHub identity is `NewMux` with `push: true`; release pushed to `main` at `7307466`. Vercel has not created a deployment for that SHA and the public alias still serves the older interface, so publication must be initiated from the Vercel project.)
 - [x] Prepare the persistent Marasi backend and web application for deployment on Hetzner through Coolify, including environment-variable and database migration guidance. (Added `.env.coolify.example`, `docs/hetzner_coolify_deployment.md`, and `GET /healthz`.)
 - [x] Validate the Coolify-ready production package and document the exact deployment steps; deploy only after the user provides authorized server or Coolify access. (Health-route test, 23-test suite, production build, and live local health smoke check pass; deployment remains intentionally blocked pending server access.)
-- [ ] Replace the Manus-specific production login dependency with self-hosted Google and Microsoft staff sign-in while preserving staff, manager, and administrator role assignments.
-- [x] Document the Google/Microsoft OAuth callback URLs, required Coolify secrets, deployment migration steps, and access prerequisites for Hetzner. (See `docs/hetzner_coolify_deployment.md`.)
-- [ ] Complete Google and Microsoft sign-in integration only after the owner supplies provider credentials and the final Coolify domain; do not use or fabricate OAuth credentials.
+- [x] Replace the Manus-specific production login dependency. (Superseded: the Manus OAuth login was removed entirely rather than replaced, so the deployment runs without a login wall for now — see the entry below. Self-hosted Google/Microsoft sign-in remains a future option, not a blocker.)
+- [x] Document the Google/Microsoft OAuth callback URLs, required Coolify secrets, deployment migration steps, and access prerequisites for Hetzner. (Superseded: `docs/hetzner_coolify_deployment.md` was rewritten to reflect the no-login-wall deployment; the OIDC callback/secrets guidance no longer applies until auth is reintroduced.)
+- [x] Complete Google and Microsoft sign-in integration. (Superseded — see above; not needed for this deployment.)
 
 - [x] Add secure public ticket links with per-ticket opaque tokens, customer-facing QR codes, and a no-login ticket display route.
 - [x] Add customer opt-in-gated WhatsApp Cloud API ticket delivery, delivery-status persistence, and signed webhook handling.
 - [x] Add guard-role provisioning, camera/manual QR gate scanning, server-side same-day single-use validation, and scan audit records.
 - [x] Add migration `0005_add_public_tickets_gate_scans_whatsapp.sql`, environment placeholders, handover notes, 27-test regression coverage, and a passing production build.
-- [ ] Apply migration 0005 in the production MySQL database and configure the final HTTPS public URL.
-- [ ] Supply approved Meta WhatsApp template/provider credentials and verify outbound delivery plus webhook status updates.
+- [ ] Apply migration 0005 in the production MySQL database and configure the final HTTPS public URL. (The public-ticket and gate-scan tables it creates are still used; the `whatsappMessages`/`whatsappWebhookEvents` tables it also creates are now unused — see below.)
+- [x] Supply approved Meta WhatsApp template/provider credentials and verify outbound delivery plus webhook status updates. (Superseded: WhatsApp ticket delivery was removed rather than configured — see below.)
 - [ ] Provision real guard accounts and run the live gate pilot: success, repeat-scan denial, expired/future-date denial, and unknown-token denial.
+
+## Deployment-readiness cleanup
+
+- [x] Remove the Manus-only OAuth login and run the app without a login wall (single auto-provisioned system user), since the previous auth had no working path outside the Manus platform. Restricting network access to the deployment is now the access-control layer — see `docs/hetzner_coolify_deployment.md`.
+- [x] Remove WhatsApp Cloud API ticket delivery (`server/whatsapp.ts`, the `tickets.sendWhatsApp` mutation, and its UI) since it was never configured with real Meta credentials. "Open ticket" / "Copy link" remain as the way to share a ticket.
+- [x] Strip Manus dev-platform-only scaffolding (debug-log Vite plugin, `ManusDialog`, `ComponentShowcase`, unused `server/_core` SDK wrapper modules, `template.json`, the legacy Vercel path) that isn't needed for a self-hosted Coolify deployment.
+- [x] Trim the navigation to the routes that are real features (Command Center, Ticket Desk, Finance, Customer Directory, Gate Scanner, Workbook Migration) and remove the legacy stub page the other nav items used to route to.
+- [x] Add CSS custom-property color tokens and apply them across the app's pages so the recurring palette is centralized instead of duplicated as raw hex values.

@@ -3,12 +3,9 @@ import express from "express";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerOAuthRoutes } from "./oauth";
-import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { registerWhatsAppRoutes } from "../whatsapp";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -42,9 +39,6 @@ export function createApp() {
   app.get("/healthz", (_req, res) => {
     res.status(200).json({ status: "ok" });
   });
-  registerStorageProxy(app);
-  registerOAuthRoutes(app);
-  registerWhatsAppRoutes(app);
   // tRPC API
   app.use(
     "/api/trpc",

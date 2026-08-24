@@ -7,7 +7,6 @@ import {
   pettyCashRequests, staffAttendance, staffLeaveRequests, staffShifts, users, workbookImports,
   type InsertUser
 } from "../drizzle/schema";
-import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -23,10 +22,9 @@ export async function getDb() {
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) throw new Error("openId required");
   const db = await getDb(); if (!db) return;
-  const isOwner = user.openId === ENV.ownerOpenId;
-  const role = isOwner ? "admin" : (user.role ?? "staff");
+  const role = user.role ?? "staff";
   await db.insert(users).values({ ...user, role, lastSignedIn: new Date() })
-    .onDuplicateKeyUpdate({ set: { name: user.name, email: user.email, loginMethod: user.loginMethod, lastSignedIn: new Date(), ...(isOwner ? { role: "admin" } : {}) } });
+    .onDuplicateKeyUpdate({ set: { name: user.name, email: user.email, loginMethod: user.loginMethod, lastSignedIn: new Date() } });
 }
 
 export async function getUserByOpenId(openId: string) {

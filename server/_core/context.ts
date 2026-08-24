@@ -1,6 +1,6 @@
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
 import type { User } from "../../drizzle/schema";
-import { sdk } from "./sdk";
+import { getSystemUser } from "./systemUser";
 
 export type TrpcContext = {
   req: CreateExpressContextOptions["req"];
@@ -14,9 +14,9 @@ export async function createContext(
   let user: User | null = null;
 
   try {
-    user = await sdk.authenticateRequest(opts.req);
+    user = await getSystemUser();
   } catch (error) {
-    // Authentication is optional for public procedures.
+    console.error("[Auth] Failed to resolve the system user:", error);
     user = null;
   }
 

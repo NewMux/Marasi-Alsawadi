@@ -1,109 +1,37 @@
-import { startLogin } from "@/const";
 import { clearPublicDemoMode, isPublicDemoMode } from "@/lib/demoMode";
-import { trpc } from "@/lib/trpc";
-import { TRPCClientError } from "@trpc/client";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useMemo } from "react";
 
-type UseAuthOptions = {
-  redirectOnUnauthenticated?: boolean;
-  redirectPath?: string;
-};
+type Role = "staff" | "manager" | "admin" | "guard";
 
-export function useAuth(options?: UseAuthOptions) {
-  // Login is started via startLogin() in the effect below, only when we actually
-  // navigate — never during render. startLogin() mints a one-time nonce + writes
-  // the state cookie, so calling it per render would overwrite the cookie and
-  // desync it from an in-flight login's `state`.
-  const { redirectOnUnauthenticated = false, redirectPath } = options ?? {};
-  const utils = trpc.useUtils();
+// This deployment runs without a login wall: the server treats every request
+// as a single auto-provisioned system user, so the client mirrors that here
+// instead of querying a session. Demo mode (a separate, browser-local
+// presentation mode) is unaffected and still resets independently. Role is
+// typed as the full union (not the literal "admin") so role-based branches
+// elsewhere still type-check if a real per-user role is reintroduced later.
+const SYSTEM_USER: { id: number; name: string; email: string | null; role: Role; isDemo: boolean } =
+  { id: -1, name: "Marasi Operations", email: null, role: "admin", isDemo: false };
+
+export function useAuth() {
   const demoMode = isPublicDemoMode();
 
-  const meQuery = trpc.auth.me.useQuery(undefined, {
-    enabled: !demoMode,
-    retry: false,
-    refetchOnWindowFocus: false,
-  });
-
-  const logoutMutation = trpc.auth.logout.useMutation({
-    onSuccess: () => {
-      utils.auth.me.setData(undefined, null);
-    },
-  });
-
   const logout = useCallback(async () => {
-    if (demoMode) {
-      clearPublicDemoMode();
-      window.location.assign("/");
-      return;
-    }
-    try {
-      await logoutMutation.mutateAsync();
-    } catch (error: unknown) {
-      if (
-        error instanceof TRPCClientError &&
-        error.data?.code === "UNAUTHORIZED"
-      ) {
-        return;
-      }
-      throw error;
-    } finally {
-      // Clear the Preview auto-login token mirrored into sessionStorage, so
-      // header-based sessions (Safari ITP / WebView) are logged out too. The
-      // backend cookie is cleared by the logout mutation.
-      try {
-        sessionStorage.removeItem("manus-cookie");
-      } catch {}
-      utils.auth.me.setData(undefined, null);
-      await utils.auth.me.invalidate();
-    }
-  }, [demoMode, logoutMutation, utils]);
+    if (!demoMode) return;
+    clearPublicDemoMode();
+    window.location.assign("/");
+  }, [demoMode]);
 
-  const state = useMemo(() => {
-    const demoUser = demoMode ? { id: 0, name: "Client presentation", email: "demo@marasi.example", role: "admin", isDemo: true } : null;
-    localStorage.setItem(
-      "manus-runtime-user-info",
-      JSON.stringify(demoUser ?? meQuery.data)
-    );
-    return {
-      user: demoUser ?? meQuery.data ?? null,
-      loading: demoMode ? false : meQuery.isLoading || logoutMutation.isPending,
-      error: meQuery.error ?? logoutMutation.error ?? null,
-      isAuthenticated: Boolean(demoUser ?? meQuery.data),
-    };
-  }, [
-    demoMode,
-    meQuery.data,
-    meQuery.error,
-    meQuery.isLoading,
-    logoutMutation.error,
-    logoutMutation.isPending,
-  ]);
-
-  useEffect(() => {
-    if (!redirectOnUnauthenticated || demoMode) return;
-    if (meQuery.isLoading || logoutMutation.isPending) return;
-    if (state.user) return;
-    if (typeof window === "undefined") return;
-    if (redirectPath && window.location.pathname === redirectPath) return;
-
-    // Navigate at this moment only. startLogin() mints the nonce + cookie itself.
-    if (redirectPath) {
-      window.location.href = redirectPath;
-    } else {
-      startLogin();
-    }
-  }, [
-    demoMode,
-    redirectOnUnauthenticated,
-    redirectPath,
-    logoutMutation.isPending,
-    meQuery.isLoading,
-    state.user,
-  ]);
+  const user = useMemo(() => {
+    if (demoMode) return { id: 0, name: "Client presentation", email: "demo@marasi.example", role: "admin" as Role, isDemo: true };
+    return SYSTEM_USER;
+  }, [demoMode]);
 
   return {
-    ...state,
-    refresh: () => meQuery.refetch(),
+    user,
+    loading: false,
+    error: null,
+    isAuthenticated: true,
+    refresh: () => {},
     logout,
   };
 }

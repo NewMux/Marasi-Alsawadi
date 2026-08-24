@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
   expenseCategories, expenseRecords, guests, salesTicketSequences, salesTransactions, serviceRates,
-  ticketCheckIns, whatsappMessages, whatsappWebhookEvents,
+  ticketCheckIns,
 } from "../drizzle/schema";
 import { getDb } from "./db";
 import { calculateOperationalNet, decideGateEntry, formatTicketNumber } from "./ticketingRules";
@@ -114,43 +114,6 @@ export async function getSalesTransactionByToken(publicToken: string) {
     .leftJoin(serviceRates, eq(salesTransactions.rateId, serviceRates.id))
     .where(eq(salesTransactions.publicToken, publicToken)).limit(1);
   return rows[0];
-}
-
-export async function getLatestWhatsAppMessage(ticketId: number) {
-  const db = await getDb(); if (!db) return undefined;
-  const rows = await db.select().from(whatsappMessages)
-    .where(eq(whatsappMessages.ticketId, ticketId))
-    .orderBy(desc(whatsappMessages.id)).limit(1);
-  return rows[0];
-}
-
-export async function createWhatsAppMessage(data: typeof whatsappMessages.$inferInsert) {
-  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
-  await db.insert(whatsappMessages).values(data);
-  const rows = await db.select().from(whatsappMessages).orderBy(desc(whatsappMessages.id)).limit(1);
-  return rows[0]!;
-}
-
-export async function updateWhatsAppMessage(id: number, data: Partial<typeof whatsappMessages.$inferInsert>) {
-  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
-  await db.update(whatsappMessages).set(data).where(eq(whatsappMessages.id, id));
-  const rows = await db.select().from(whatsappMessages).where(eq(whatsappMessages.id, id)).limit(1);
-  return rows[0];
-}
-
-export async function markWhatsAppWebhookEvent(eventKey: string, payload: string) {
-  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
-  const existing = await db.select({ id: whatsappWebhookEvents.id })
-    .from(whatsappWebhookEvents).where(eq(whatsappWebhookEvents.eventKey, eventKey)).limit(1);
-  if (existing.length) return false;
-  await db.insert(whatsappWebhookEvents).values({ eventKey, payload });
-  return true;
-}
-
-export async function updateWhatsAppStatus(providerMessageId: string, status: typeof whatsappMessages.$inferSelect["status"], errorMessage?: string) {
-  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
-  await db.update(whatsappMessages).set({ status, errorMessage: errorMessage ?? null })
-    .where(eq(whatsappMessages.providerMessageId, providerMessageId));
 }
 
 export async function recordTicketScan(input: {

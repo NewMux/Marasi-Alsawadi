@@ -21,12 +21,11 @@ import {
   createExpenseCategory, createExpenseRecord, createSalesTransaction, createServiceRate, deleteExpenseCategory,
   deleteExpenseRecord, getExpenseCategory, getExpenseRecord, getOperationalFinancialSummary, listExpenseCategories,
   listExpenseRecords, listSalesTransactions, listServiceRates, getServiceRate, searchCustomers, updateExpenseCategory, updateExpenseRecord, updateServiceRate, deleteServiceRate,
-  createWhatsAppMessage, getLatestWhatsAppMessage, getSalesTransactionById, getSalesTransactionByToken, listRecentTicketScans, recordTicketScan, updateWhatsAppMessage,
+  getSalesTransactionByToken, listRecentTicketScans, recordTicketScan,
 } from "../ticketingDb";
 import { calculateTicketTotal, extractTicketToken, isPositiveMoney } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
-import { ENV } from "../_core/env";
-import { publicTicketUrl, requestOrigin, sendWhatsAppTicket } from "../whatsapp";
+import { publicTicketUrl, requestOrigin } from "../ticketUrl";
 
 const managerProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (ctx.user.role !== "manager" && ctx.user.role !== "admin")
@@ -138,7 +137,6 @@ export const platformRouter = router({
     public: publicProcedure.input(z.object({ token: z.string().min(16).max(96) })).query(async ({ input, ctx }) => {
       const entry = await getSalesTransactionByToken(input.token);
       if (!entry) throw new TRPCError({ code: "NOT_FOUND", message: "This ticket could not be found" });
-      const latestMessage = await getLatestWhatsAppMessage(entry.t.id);
       return {
         ticket: {
           ticketNumber: entry.t.ticketNumber,
@@ -153,46 +151,7 @@ export const platformRouter = router({
         customer: { fullName: entry.c?.fullName || "Guest" },
         rate: entry.r ? { name: entry.r.name, code: entry.r.code } : null,
         publicUrl: publicTicketUrl(entry.t.publicToken, requestOrigin(ctx.req)),
-        latestMessage: latestMessage ? { status: latestMessage.status, updatedAt: latestMessage.updatedAt } : null,
       };
-    }),
-    sendWhatsApp: protectedProcedure.input(z.object({
-      ticketId: z.number().int().positive(),
-      confirmOptIn: z.boolean().refine(Boolean, "Customer WhatsApp consent is required"),
-      templateName: z.string().min(1).max(128).optional(),
-    })).mutation(async ({ input, ctx }) => {
-      const entry = await getSalesTransactionById(input.ticketId);
-      if (!entry || !entry.c) throw new TRPCError({ code: "NOT_FOUND", message: "Ticket or customer was not found" });
-      if (!entry.c.phone) throw new TRPCError({ code: "BAD_REQUEST", message: "This customer has no phone number" });
-      const templateName = input.templateName || ENV.whatsappTemplateName;
-      const message = await createWhatsAppMessage({
-        ticketId: entry.t.id,
-        customerPhone: entry.c.phone,
-        provider: "meta",
-        templateName,
-        status: "queued",
-        attempts: 1,
-        createdBy: ctx.user.id,
-      });
-      try {
-        const sent = await sendWhatsAppTicket({
-          phone: entry.c.phone,
-          customerName: entry.c.fullName,
-          ticketNumber: entry.t.ticketNumber,
-          visitDate: String(entry.t.visitDate),
-          publicToken: entry.t.publicToken,
-          publicUrl: publicTicketUrl(entry.t.publicToken, requestOrigin(ctx.req)),
-          templateName,
-        });
-        const updated = await updateWhatsAppMessage(message.id, { status: "sent", providerMessageId: sent.providerMessageId, templateName: sent.templateName });
-        await logActivity(ctx.user.id, "ticket.whatsapp.sent", "whatsapp_message", message.id, entry.t.ticketNumber);
-        return updated;
-      } catch (error) {
-        const messageText = error instanceof Error ? error.message : "WhatsApp send failed";
-        const updated = await updateWhatsAppMessage(message.id, { status: "failed", errorMessage: messageText });
-        await logActivity(ctx.user.id, "ticket.whatsapp.failed", "whatsapp_message", message.id, messageText);
-        throw new TRPCError({ code: "BAD_REQUEST", message: messageText, cause: error });
-      }
     }),
     create: protectedProcedure.input(z.object({
       customerId: z.number().optional(), customerName: z.string().min(1).optional(), customerPhone: z.string().min(3).optional(), rateId: z.number().optional(),
