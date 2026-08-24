@@ -2,7 +2,7 @@
 
 ## Current recoverable baseline
 
-The latest expanded-demo checkpoint is **`8e1c0e6f`**. It preserves the calendar reservation safeguards, simplified Aqua Park day-pass desk, room-first housekeeping, HR & Workforce, finance-control additions, public demo mode, phone-width navigation refinement, and new browser-local modal workflows.
+The current operational-extension delivery adds persistent ticketing, customer visits, categorized expenses, and a simple operating financial summary to the earlier role-aware ERP baseline. The next saved project checkpoint records this release state.
 
 ## Delivery references
 
@@ -20,7 +20,18 @@ The expanded browser-local demo is live at the active alias above on GitHub comm
 
 The client-facing **HR & Workforce** rename was committed and pushed to GitHub `main` as **`b12c6ac`**. The active public alias was subsequently verified to have refreshed: it opens the interactive demo without authentication and displays **HR & Workforce** in both navigation and the workspace heading.
 
+## Operational extension — August 2026
+
+The database now includes additive `sales_ticket_sequences`, `sales_transactions`, `expense_categories`, and `expense_records` tables. The migration was deliberately applied without altering the known nonstandard live reservation fields. Table-existence verification returned all four tables.
+
+Authenticated staff can issue a server-allocated yearly sequential transaction ticket in the format `MAS-YYYY-######`. A ticket is linked to an existing or newly created customer profile, saves the customer visit date and purchase details, and appears in a searchable customer/visit history. The ticket detail has an A4 `@media print` layout and uses the ordinary browser print dialog, which is compatible with regular printers rather than thermal-only hardware.
+
+Only administrators can create, rename, activate/deactivate, or delete expense categories. Managers and administrators can create, correct, and delete dated categorized expenses. New expense records are also reflected in the existing finance ledger; changing or deleting a categorized expense synchronizes its linked finance entry. The revenue-versus-expenses summary intentionally aggregates the new ticket and expense ledgers directly, avoiding duplicate counting from legacy finance entries.
+
+The public no-login demo now has local-only equivalents of the ticket/customer workflow and expense category/expense/report workflow. Desktop and 375 px screenshots verified the new demo screens render and retain the browser-local, no-server-data notice. The current automated verification is **8 test files / 22 tests**, including ticket formatting, positive-money validation, ticket total calculation, and operating-net calculation; the production build completed successfully.
+
 ## Next operational checks
 
 1. For production, replace the browser-local presentation records with secure role-based accounts, persistent data, and a database-backed audit trail. Final authenticated browser evidence is complete: with 144 places remaining and six admitted visitors visible, the 145-person “QA Direct Capacity Evidence” submission displayed the exact toast “Only 144 places remain” and did not alter the gate register. The Housekeeping board visibly showed QA-101 / QA Garden Room, QA Housekeeping Lead, Inspected, the QA-only turnover task, and Done. HR & Workforce surfaced “Select a staff member before continuing” for both empty attendance and leave requests. Reservations visibly showed the confirmed QA-C01 stay and two stays on 19 August, then surfaced the server toast “Selected dates overlap an active booking” for the deliberate QA-101 conflict.
 2. For production, replace the browser-local presentation records with secure role-based accounts, persistent data, and a database-backed audit trail.
+3. The Vercel public alias continues to be suitable for the browser-local demo, but exact alias-to-commit evidence remains unavailable until the correct NewMux Vercel team session can be used. Do not claim an exact production commit for the newly pushed extension without that evidence.

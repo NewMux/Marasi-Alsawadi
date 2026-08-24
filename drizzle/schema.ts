@@ -93,6 +93,33 @@ export const aquaParkTickets = mysqlTable("aqua_park_tickets", {
 });
 export type AquaParkTicket = typeof aquaParkTickets.$inferSelect;
 
+// ─── Sales Tickets / Customer Visits ──────────────────────────────────────────
+export const salesTicketSequences = mysqlTable("sales_ticket_sequences", {
+  ticketYear: int("ticketYear").primaryKey(),
+  lastSequence: int("lastSequence").default(0).notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const salesTransactions = mysqlTable("sales_transactions", {
+  id: int("id").autoincrement().primaryKey(),
+  ticketNumber: varchar("ticketNumber", { length: 40 }).notNull().unique(),
+  ticketYear: int("ticketYear").notNull(),
+  sequenceNumber: int("sequenceNumber").notNull(),
+  customerId: int("customerId").notNull(),
+  visitDate: date("visitDate").notNull(),
+  department: mysqlEnum("department", ["aqua_park", "rooms", "fnb", "general"]).default("aqua_park").notNull(),
+  quantity: int("quantity").default(1).notNull(),
+  unitPrice: decimal("unitPrice", { precision: 12, scale: 2 }).notNull(),
+  totalAmount: decimal("totalAmount", { precision: 12, scale: 2 }).notNull(),
+  paymentMethod: mysqlEnum("paymentMethod", ["cash", "card", "bank", "mixed"]).default("cash").notNull(),
+  notes: text("notes"),
+  issuedBy: int("issuedBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({
+  ticketYearSequenceUnique: unique("sales_ticket_year_sequence").on(table.ticketYear, table.sequenceNumber),
+}));
+export type SalesTransaction = typeof salesTransactions.$inferSelect;
+
 // ─── Housekeeping ─────────────────────────────────────────────────────────────
 export const housekeepingTasks = mysqlTable("housekeeping_tasks", {
   id: int("id").autoincrement().primaryKey(),
@@ -265,6 +292,34 @@ export const pettyCashRequests = mysqlTable("petty_cash_requests", {
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 export type PettyCashRequest = typeof pettyCashRequests.$inferSelect;
+
+// ─── Expense Category and Expense Ledger ───────────────────────────────────────
+export const expenseCategories = mysqlTable("expense_categories", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 96 }).notNull().unique(),
+  code: varchar("code", { length: 32 }).notNull().unique(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type ExpenseCategory = typeof expenseCategories.$inferSelect;
+
+export const expenseRecords = mysqlTable("expense_records", {
+  id: int("id").autoincrement().primaryKey(),
+  businessDate: date("businessDate").notNull(),
+  categoryId: int("categoryId"),
+  categoryName: varchar("categoryName", { length: 96 }).notNull(),
+  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
+  payee: varchar("payee", { length: 128 }),
+  description: varchar("description", { length: 256 }).notNull(),
+  department: mysqlEnum("department", ["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]).default("general").notNull(),
+  financeEntryId: int("financeEntryId"),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type ExpenseRecord = typeof expenseRecords.$inferSelect;
 
 // ─── Activity Log ─────────────────────────────────────────────────────────────
 export const activityLog = mysqlTable("activity_log", {

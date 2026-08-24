@@ -329,6 +329,14 @@ export async function createFinanceEntry(data: typeof financeEntries.$inferInser
   const r = await db.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
   return r[0]!;
 }
+export async function updateFinanceEntry(id: number, data: Partial<typeof financeEntries.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.update(financeEntries).set(data).where(eq(financeEntries.id, id));
+}
+export async function deleteFinanceEntry(id: number) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.delete(financeEntries).where(eq(financeEntries.id, id));
+}
 export function settlementVariance(values: { expectedAmount?: unknown; cashAmount?: unknown; bankAmount?: unknown; cardAmount?: unknown; bankCharges?: unknown }) {
   const expected = Number(values.expectedAmount ?? 0);
   const actualNet = Number(values.cashAmount ?? 0) + Number(values.bankAmount ?? 0) + Number(values.cardAmount ?? 0) - Number(values.bankCharges ?? 0);

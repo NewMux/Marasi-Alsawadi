@@ -13,6 +13,7 @@ type NavItem = { label: string; mobileLabel: string; path: string; icon: any; ro
 const items: NavItem[] = [
   { label: "Command Center", mobileLabel: "Home", path: "/", icon: LayoutDashboard, roles: ["staff", "manager", "admin"] },
   { label: "Reservations", mobileLabel: "Book", path: "/reservations", icon: CalendarDays, roles: ["staff", "manager", "admin"] },
+  { label: "Ticket Desk", mobileLabel: "Tickets", path: "/tickets", icon: Ticket, roles: ["staff", "manager", "admin"] },
   { label: "Aqua Park", mobileLabel: "Aqua", path: "/aqua-park", icon: Droplets, roles: ["staff", "manager", "admin"] },
   { label: "Guest Stays", mobileLabel: "Guests", path: "/guest-stays", icon: Users, roles: ["staff", "manager", "admin"] },
   { label: "Housekeeping", mobileLabel: "Rooms", path: "/housekeeping", icon: ClipboardCheck, roles: ["staff", "manager", "admin"] },

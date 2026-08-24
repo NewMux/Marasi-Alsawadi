@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
-  createAquaTicket, createDailyTask, createFinanceEntry, createGuest, createPettyCashRequest,
+  createAquaTicket, createDailyTask, createFinanceEntry, createGuest, createPettyCashRequest, deleteFinanceEntry,
   createHousekeepingTask, createInventoryItem, createMaintenanceRequest,
   createLeaveRequest, createReservation, createShift, createStaffProfile, createUnit,
   createWorkbookImport, getActivityLog, getAquaAttendance, getAquaCapacity,
@@ -10,12 +10,18 @@ import {
   listHousekeepingTasks, listInventory, listMaintenanceRequests,
   listDailySettlements, listLeaveRequests, listPettyCashRequests, listReservations, listShifts, listStaff, listUnits, listUsers,
   hasReservationOverlap, isQaReservationRecord, listWorkbookImports, logActivity, recordAttendance, recordEntry, reviewDailySettlement, reviewLeaveRequest, reviewPettyCashRequest, saveDailySettlement, setAquaCapacity,
-  updateDailyTask, updateHousekeepingTask, updateInventoryItem,
+  updateDailyTask, updateFinanceEntry, updateHousekeepingTask, updateInventoryItem,
   updateMaintenanceRequest, updateReservationStatus, updateUnitStatus,
   updateUserRole,
 } from "../db";
 import { protectedProcedure, router } from "../_core/trpc";
 import { canIssueAquaTickets, remainingAquaCapacity } from "../operationRules";
+import {
+  createExpenseCategory, createExpenseRecord, createSalesTransaction, deleteExpenseCategory,
+  deleteExpenseRecord, getExpenseCategory, getExpenseRecord, getOperationalFinancialSummary, listExpenseCategories,
+  listExpenseRecords, listSalesTransactions, searchCustomers, updateExpenseCategory, updateExpenseRecord,
+} from "../ticketingDb";
+import { calculateTicketTotal, isPositiveMoney } from "../ticketingRules";
 
 const managerProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (ctx.user.role !== "manager" && ctx.user.role !== "admin")
@@ -66,6 +72,52 @@ export const platformRouter = router({
       const guest = await createGuest(input);
       await logActivity(ctx.user.id, "guest.create", "guest", guest?.id);
       return guest;
+    }),
+  }),
+
+  customers: router({
+    search: protectedProcedure.input(z.object({ query: z.string().optional() }).optional())
+      .query(({ input }) => searchCustomers(input?.query)),
+    create: protectedProcedure.input(z.object({
+      fullName: z.string().min(1), phone: z.string().min(3), email: z.string().optional(),
+      nationality: z.string().optional(), notes: z.string().optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const customer = await createGuest(input);
+      await logActivity(ctx.user.id, "customer.create", "guest", customer?.id, `${input.fullName}:${input.phone}`);
+      return customer;
+    }),
+  }),
+
+  tickets: router({
+    list: protectedProcedure.input(z.object({
+      from: z.string().optional(), to: z.string().optional(), customerQuery: z.string().optional(),
+    }).optional()).query(({ input }) => listSalesTransactions(input?.from, input?.to, input?.customerQuery)),
+    create: protectedProcedure.input(z.object({
+      customerId: z.number().optional(), customerName: z.string().min(1).optional(), customerPhone: z.string().min(3).optional(),
+      visitDate: z.string(), department: z.enum(["aqua_park", "rooms", "fnb", "general"]).default("aqua_park"),
+      quantity: z.number().int().min(1), unitPrice: z.string().refine(isPositiveMoney, "Enter a positive amount with up to two decimals"),
+      paymentMethod: z.enum(["cash", "card", "bank", "mixed"]).default("cash"), notes: z.string().optional(),
+    }).refine((value) => Boolean(value.customerId || (value.customerName && value.customerPhone)), {
+      message: "Select an existing customer or provide a customer name and phone number",
+    })).mutation(async ({ input, ctx }) => {
+      const customer = input.customerId
+        ? (await searchCustomers()).find((entry: any) => entry.id === input.customerId)
+        : await createGuest({ fullName: input.customerName!, phone: input.customerPhone! });
+      if (!customer) throw new TRPCError({ code: "NOT_FOUND", message: "Customer record was not found" });
+      const totalAmount = calculateTicketTotal(input.unitPrice, input.quantity);
+      const ticket = await createSalesTransaction({
+        customerId: customer.id, visitDate: input.visitDate, department: input.department,
+        quantity: input.quantity, unitPrice: input.unitPrice, totalAmount: String(totalAmount),
+        paymentMethod: input.paymentMethod, notes: input.notes, issuedBy: ctx.user.id,
+      });
+      const stream = input.department === "general" ? "extras" : input.department;
+      await createFinanceEntry({
+        date: input.visitDate, stream, type: "revenue", amount: String(totalAmount),
+        description: `Ticket ${ticket.ticketNumber} – ${customer.fullName}`,
+        referenceId: ticket.id, referenceType: "sales_ticket", createdBy: ctx.user.id,
+      } as any);
+      await logActivity(ctx.user.id, "ticket.issue", "sales_transaction", ticket.id, ticket.ticketNumber);
+      return { ticket, customer };
     }),
   }),
 
@@ -333,6 +385,81 @@ export const platformRouter = router({
         await logActivity(ctx.user.id, "settlement.approve", "daily_settlement", input.id);
       }),
     }),
+    expenseCategories: router({
+      list: managerProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
+        .query(({ input }) => listExpenseCategories(Boolean(input?.includeInactive))),
+      create: adminProcedure.input(z.object({ name: z.string().min(1), code: z.string().min(2).max(32) }))
+        .mutation(async ({ input, ctx }) => {
+          const category = await createExpenseCategory({ ...input, createdBy: ctx.user.id });
+          await logActivity(ctx.user.id, "expense_category.create", "expense_category", category.id, input.code);
+          return category;
+        }),
+      update: adminProcedure.input(z.object({
+        id: z.number(), name: z.string().min(1).optional(), code: z.string().min(2).max(32).optional(), isActive: z.boolean().optional(),
+      })).mutation(async ({ input, ctx }) => {
+        const { id, ...data } = input;
+        const category = await updateExpenseCategory(id, data);
+        await logActivity(ctx.user.id, "expense_category.update", "expense_category", id, JSON.stringify(data));
+        return category;
+      }),
+      delete: adminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+        await deleteExpenseCategory(input.id);
+        await logActivity(ctx.user.id, "expense_category.delete", "expense_category", input.id);
+      }),
+    }),
+    expenses: router({
+      list: managerProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
+        .query(({ input }) => listExpenseRecords(input?.from, input?.to)),
+      create: managerProcedure.input(z.object({
+        businessDate: z.string(), categoryId: z.number(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to two decimals"),
+        payee: z.string().optional(), description: z.string().min(1),
+        department: z.enum(["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]).default("general"),
+      })).mutation(async ({ input, ctx }) => {
+        const category = await getExpenseCategory(input.categoryId);
+        if (!category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active expense category" });
+        const stream = input.department === "aqua_park" || input.department === "fnb" ? input.department : "extras";
+        const financeEntry = await createFinanceEntry({
+          date: input.businessDate, stream, type: "expense", amount: input.amount,
+          description: input.description, referenceType: "expense_record", createdBy: ctx.user.id,
+        } as any);
+        const expense = await createExpenseRecord({
+          ...input, businessDate: input.businessDate as any, categoryName: category.name,
+          financeEntryId: financeEntry.id, createdBy: ctx.user.id,
+        } as any);
+        await logActivity(ctx.user.id, "expense.create", "expense_record", expense.id, `${category.code}:${input.amount}`);
+        return expense;
+      }),
+      update: managerProcedure.input(z.object({
+        id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to two decimals").optional(),
+        payee: z.string().optional(), description: z.string().min(1).optional(),
+        department: z.enum(["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]).optional(),
+      })).mutation(async ({ input, ctx }) => {
+        const { id, categoryId, ...data } = input;
+        const existing = await getExpenseRecord(id);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Expense record was not found" });
+        const category = categoryId ? await getExpenseCategory(categoryId) : undefined;
+        if (categoryId && !category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active expense category" });
+        await updateExpenseRecord(id, { ...data, ...(category ? { categoryId, categoryName: category.name } : {}) } as any);
+        if (existing.financeEntryId) {
+          const department = data.department ?? existing.department;
+          const stream = department === "aqua_park" || department === "fnb" ? department : "extras";
+          await updateFinanceEntry(existing.financeEntryId, {
+            date: (data.businessDate ?? existing.businessDate) as any, amount: data.amount ?? existing.amount,
+            description: data.description ?? existing.description, stream,
+          } as any);
+        }
+        await logActivity(ctx.user.id, "expense.update", "expense_record", id, JSON.stringify(data));
+      }),
+      delete: managerProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+        const existing = await getExpenseRecord(input.id);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Expense record was not found" });
+        await deleteExpenseRecord(input.id);
+        if (existing.financeEntryId) await deleteFinanceEntry(existing.financeEntryId);
+        await logActivity(ctx.user.id, "expense.delete", "expense_record", input.id);
+      }),
+    }),
+    operationalSummary: managerProcedure.input(z.object({ from: z.string(), to: z.string() }))
+      .query(({ input }) => getOperationalFinancialSummary(input.from, input.to)),
     pettyCash: router({
       list: managerProcedure.query(() => listPettyCashRequests()),
       request: protectedProcedure.input(z.object({
