@@ -100,12 +100,27 @@ export const salesTicketSequences = mysqlTable("sales_ticket_sequences", {
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
+export const serviceRates = mysqlTable("service_rates", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 128 }).notNull(),
+  code: varchar("code", { length: 48 }).notNull().unique(),
+  department: mysqlEnum("department", ["aqua_park", "rooms", "fnb", "general"]).default("aqua_park").notNull(),
+  unitPrice: decimal("unitPrice", { precision: 12, scale: 2 }).notNull(),
+  currency: varchar("currency", { length: 3 }).default("OMR").notNull(),
+  description: text("description"),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type ServiceRate = typeof serviceRates.$inferSelect;
+
 export const salesTransactions = mysqlTable("sales_transactions", {
   id: int("id").autoincrement().primaryKey(),
   ticketNumber: varchar("ticketNumber", { length: 40 }).notNull().unique(),
   ticketYear: int("ticketYear").notNull(),
   sequenceNumber: int("sequenceNumber").notNull(),
   customerId: int("customerId").notNull(),
+  rateId: int("rateId"),
   visitDate: date("visitDate").notNull(),
   department: mysqlEnum("department", ["aqua_park", "rooms", "fnb", "general"]).default("aqua_park").notNull(),
   quantity: int("quantity").default(1).notNull(),

@@ -17,11 +17,12 @@ import {
 import { protectedProcedure, router } from "../_core/trpc";
 import { canIssueAquaTickets, remainingAquaCapacity } from "../operationRules";
 import {
-  createExpenseCategory, createExpenseRecord, createSalesTransaction, deleteExpenseCategory,
+  createExpenseCategory, createExpenseRecord, createSalesTransaction, createServiceRate, deleteExpenseCategory,
   deleteExpenseRecord, getExpenseCategory, getExpenseRecord, getOperationalFinancialSummary, listExpenseCategories,
-  listExpenseRecords, listSalesTransactions, searchCustomers, updateExpenseCategory, updateExpenseRecord,
+  listExpenseRecords, listSalesTransactions, listServiceRates, getServiceRate, searchCustomers, updateExpenseCategory, updateExpenseRecord, updateServiceRate, deleteServiceRate,
 } from "../ticketingDb";
 import { calculateTicketTotal, isPositiveMoney } from "../ticketingRules";
+import { normalizeRateCode } from "../rateCatalogRules";
 
 const managerProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (ctx.user.role !== "manager" && ctx.user.role !== "admin")
@@ -88,12 +89,43 @@ export const platformRouter = router({
     }),
   }),
 
+  rates: router({
+    list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
+      .query(({ input, ctx }) => listServiceRates(Boolean(input?.includeInactive && ctx.user.role === "admin"))),
+    create: adminProcedure.input(z.object({
+      name: z.string().min(2).max(128), code: z.string().min(2).max(48),
+      department: z.enum(["aqua_park", "rooms", "fnb", "general"]),
+      unitPrice: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to two decimals"),
+      description: z.string().max(1000).optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const rate = await createServiceRate({ ...input, code: normalizeRateCode(input.code), name: input.name.trim(), currency: "OMR", description: input.description?.trim() || null });
+      await logActivity(ctx.user.id, "service_rate.create", "service_rate", rate.id, rate.code);
+      return rate;
+    }),
+    update: adminProcedure.input(z.object({
+      id: z.number(), name: z.string().min(2).max(128).optional(), code: z.string().min(2).max(48).optional(),
+      department: z.enum(["aqua_park", "rooms", "fnb", "general"]).optional(),
+      unitPrice: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to two decimals").optional(),
+      description: z.string().max(1000).nullable().optional(), isActive: z.boolean().optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const { id, code, name, description, ...rest } = input;
+      const rate = await updateServiceRate(id, { ...rest, code: code ? normalizeRateCode(code) : undefined, name: name?.trim(), description: description === null ? null : description?.trim() });
+      await logActivity(ctx.user.id, "service_rate.update", "service_rate", id, rate?.code);
+      return rate;
+    }),
+    delete: adminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+      const result = await deleteServiceRate(input.id);
+      await logActivity(ctx.user.id, "service_rate.delete", "service_rate", input.id);
+      return result;
+    }),
+  }),
+
   tickets: router({
     list: protectedProcedure.input(z.object({
       from: z.string().optional(), to: z.string().optional(), customerQuery: z.string().optional(),
     }).optional()).query(({ input }) => listSalesTransactions(input?.from, input?.to, input?.customerQuery)),
     create: protectedProcedure.input(z.object({
-      customerId: z.number().optional(), customerName: z.string().min(1).optional(), customerPhone: z.string().min(3).optional(),
+      customerId: z.number().optional(), customerName: z.string().min(1).optional(), customerPhone: z.string().min(3).optional(), rateId: z.number().optional(),
       visitDate: z.string(), department: z.enum(["aqua_park", "rooms", "fnb", "general"]).default("aqua_park"),
       quantity: z.number().int().min(1), unitPrice: z.string().refine(isPositiveMoney, "Enter a positive amount with up to two decimals"),
       paymentMethod: z.enum(["cash", "card", "bank", "mixed"]).default("cash"), notes: z.string().optional(),
@@ -104,13 +136,18 @@ export const platformRouter = router({
         ? (await searchCustomers()).find((entry: any) => entry.id === input.customerId)
         : await createGuest({ fullName: input.customerName!, phone: input.customerPhone! });
       if (!customer) throw new TRPCError({ code: "NOT_FOUND", message: "Customer record was not found" });
-      const totalAmount = calculateTicketTotal(input.unitPrice, input.quantity);
+      const selectedRate = input.rateId ? await getServiceRate(input.rateId) : undefined;
+      if (input.rateId && (!selectedRate || !selectedRate.isActive)) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected OMR rate is no longer active" });
+      if (!input.rateId && ctx.user.role === "staff") throw new TRPCError({ code: "FORBIDDEN", message: "Staff must select an active rate. A manager or administrator can approve a manual price." });
+      const unitPrice = selectedRate ? String(selectedRate.unitPrice) : input.unitPrice;
+      const department = selectedRate ? selectedRate.department : input.department;
+      const totalAmount = calculateTicketTotal(unitPrice, input.quantity);
       const ticket = await createSalesTransaction({
-        customerId: customer.id, visitDate: input.visitDate, department: input.department,
-        quantity: input.quantity, unitPrice: input.unitPrice, totalAmount: String(totalAmount),
+        customerId: customer.id, rateId: selectedRate?.id, visitDate: input.visitDate, department,
+        quantity: input.quantity, unitPrice, totalAmount: String(totalAmount),
         paymentMethod: input.paymentMethod, notes: input.notes, issuedBy: ctx.user.id,
       });
-      const stream = input.department === "general" ? "extras" : input.department;
+      const stream = department === "general" ? "extras" : department;
       await createFinanceEntry({
         date: input.visitDate, stream, type: "revenue", amount: String(totalAmount),
         description: `Ticket ${ticket.ticketNumber} – ${customer.fullName}`,

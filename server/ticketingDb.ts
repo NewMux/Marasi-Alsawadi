@@ -1,12 +1,13 @@
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
-  expenseCategories, expenseRecords, guests, salesTicketSequences, salesTransactions,
+  expenseCategories, expenseRecords, guests, salesTicketSequences, salesTransactions, serviceRates,
 } from "../drizzle/schema";
 import { getDb } from "./db";
 import { calculateOperationalNet, formatTicketNumber } from "./ticketingRules";
 
 export type SalesTransactionDraft = {
   customerId: number;
+  rateId?: number;
   visitDate: string;
   department: "aqua_park" | "rooms" | "fnb" | "general";
   quantity: number;
@@ -16,6 +17,43 @@ export type SalesTransactionDraft = {
   notes?: string;
   issuedBy: number;
 };
+
+export async function listServiceRates(includeInactive = false) {
+  const db = await getDb(); if (!db) return [];
+  const base = db.select().from(serviceRates).orderBy(serviceRates.department, serviceRates.name);
+  return includeInactive ? base : base.where(eq(serviceRates.isActive, true));
+}
+
+export async function getServiceRate(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(serviceRates).where(eq(serviceRates.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function createServiceRate(data: typeof serviceRates.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(serviceRates).values(data);
+  const rows = await db.select().from(serviceRates).orderBy(desc(serviceRates.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function updateServiceRate(id: number, data: Partial<typeof serviceRates.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(serviceRates).set(data).where(eq(serviceRates.id, id));
+  return getServiceRate(id);
+}
+
+export async function deleteServiceRate(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const linked = await db.select({ id: salesTransactions.id }).from(salesTransactions)
+    .where(eq(salesTransactions.rateId, id)).limit(1);
+  if (linked.length) {
+    await db.update(serviceRates).set({ isActive: false }).where(eq(serviceRates.id, id));
+    return { deactivated: true };
+  }
+  await db.delete(serviceRates).where(eq(serviceRates.id, id));
+  return { deactivated: false };
+}
 
 export async function searchCustomers(query?: string) {
   const db = await getDb(); if (!db) return [];
@@ -63,8 +101,9 @@ export async function listSalesTransactions(from?: string, to?: string, customer
       sql`${salesTransactions.ticketNumber} LIKE ${pattern}`,
     ));
   }
-  const base = db.select({ t: salesTransactions, c: guests })
+  const base = db.select({ t: salesTransactions, c: guests, r: serviceRates })
     .from(salesTransactions).leftJoin(guests, eq(salesTransactions.customerId, guests.id))
+    .leftJoin(serviceRates, eq(salesTransactions.rateId, serviceRates.id))
     .orderBy(desc(salesTransactions.visitDate), desc(salesTransactions.id));
   return conditions.length ? base.where(and(...conditions)) : base;
 }
