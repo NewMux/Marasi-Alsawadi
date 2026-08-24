@@ -1,6 +1,6 @@
 # Marasi Alsawadi Digital Transformation Release
 
-**Release:** `08ffb6f`
+**Release:** `77d4431`
 **Repository:** [NewMux/Marasi-Alsawadi](https://github.com/NewMux/Marasi-Alsawadi)  
 **Prepared by:** Manus AI  
 **Date:** 24 August 2026
@@ -73,7 +73,7 @@ The callback URL is `https://{production-domain}/api/whatsapp/webhook`. The GET 
 
 Apply the existing migrations in the repository’s established order, then apply `drizzle/migrations/0005_add_public_tickets_gate_scans_whatsapp.sql`. The new migration adds the public token and lifecycle columns to `sales_transactions`, extends the user role enum with `guard`, creates `ticket_check_ins`, `whatsapp_messages`, and `whatsapp_webhook_events`, and backfills deterministic public tokens for legacy sales tickets.
 
-After the migration, deploy the latest UX/UI expansion commit through the selected Coolify/Hetzner production environment. The prior foundation commit is `12de582`; the UX/UI and spreadsheet-replacement expansion is `08ffb6f`. Set `PUBLIC_APP_URL` to the final HTTPS domain, configure staff authentication, and assign the `guard` role to the entrance account. Do not treat the existing Vercel alias as the production ticketing deployment; it still serves the older browser-local demo and has no configured live database or WhatsApp provider.
+After the migration, deploy the latest UX/UI expansion commit through the selected Coolify/Hetzner production environment. The prior foundation commit is `12de582`; the UX/UI and spreadsheet-replacement expansion is `77d4431`. Set `PUBLIC_APP_URL` to the final HTTPS domain, configure staff authentication, and assign the `guard` role to the entrance account. Do not treat the existing Vercel alias as the production ticketing deployment; it still serves the older browser-local demo and has no configured live database or WhatsApp provider.
 
 ## Workbook migration boundary
 
