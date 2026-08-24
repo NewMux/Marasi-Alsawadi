@@ -1,13 +1,13 @@
 # Marasi Alsawadi Digital Transformation Release
 
-**Release:** `12de582`  
+**Release:** `UX/UI expansion pending commit`
 **Repository:** [NewMux/Marasi-Alsawadi](https://github.com/NewMux/Marasi-Alsawadi)  
 **Prepared by:** Manus AI  
 **Date:** 24 August 2026
 
 ## Executive summary
 
-The existing Marasi Alsawadi repository has been extended rather than replaced. The original operational platform already contained the requested ticketing, customer, expense, and revenue-versus-expense capabilities. This release closes the most important customer-entry gap: after a cashier issues a paid ticket, the customer can receive a public ticket link containing a QR code, and the guard can scan that QR code at the entrance. Entry validation is performed by the server and is recorded as an auditable, single-use event.
+The existing Marasi Alsawadi repository has been extended rather than replaced. This iteration turns the application from a thin feature shell into a populated resort operating system: the first screen is now a command center, the navigation exposes the daily workflows, customer history is searchable, finance includes daily cash settlement, and the workbook transition has a visible control room. The original ticketing, customer, expense, reporting, WhatsApp, QR, and gate foundations remain in place. The result is designed to help the client stop opening Excel for every operational decision while keeping the workbook available as a controlled migration reference.
 
 The release is production-ready from a code and build perspective, but it is not a claim that the client’s real WhatsApp account or production database has already been configured. Applying the new database migration, entering Meta credentials, creating the approved message template, provisioning guard accounts, and running the live pilot remain required operational steps.
 
@@ -26,7 +26,11 @@ The release is production-ready from a code and build perspective, but it is not
 | Gate audit | Successful scans transition a paid ticket to `checked_in`; repeat, voided, expired, future-date, and unknown scans are denied and logged. | Restricted gate route and server audit log |
 | Expenses | Existing administrator-managed category CRUD and manager/administrator expense CRUD are retained. | Managers and administrators; category administration is admin-only |
 | Report | Existing operational summary aggregates ticket revenue and categorized expenses into revenue, expenses, and net result. | Managers and administrators |
-| Workbook | A read-only migration profile identifies 38 worksheets, duplicate `(2)` tabs, formula-heavy tabs, and an MVP import boundary. | Migration review; no unapproved rows were imported |
+| Command center | Populated first-login view with revenue, operating result, guest/admission counts, ticket activity, attention queue, readiness states, and role-aware actions. | All authenticated roles; guard sees a reduced gate station view |
+| Customer directory | Searchable customer profiles grouped across visits, phone numbers, ticket numbers, dates, and amounts. | Staff, managers, administrators |
+| Daily cash close | Department settlement capture for expected amount, cash, bank, card, charges, notes, submission, and manager review. | Managers and administrators |
+| Workbook migration | A read-only migration profile and in-product migration control room identify 38 worksheets, duplicate `(2)` tabs, formula-heavy tabs, approval gates, and the MVP import boundary. | Administrators; no unapproved rows were imported |
+| UX/UI system | Grouped navigation, responsive cards and tables, role-specific actions, guard-first scan state, clear empty states, visible system readiness, focus states, and demo-data disclosure. | All workspaces |
 
 ## Operating workflow
 
@@ -69,7 +73,7 @@ The callback URL is `https://{production-domain}/api/whatsapp/webhook`. The GET 
 
 Apply the existing migrations in the repository’s established order, then apply `drizzle/migrations/0005_add_public_tickets_gate_scans_whatsapp.sql`. The new migration adds the public token and lifecycle columns to `sales_transactions`, extends the user role enum with `guard`, creates `ticket_check_ins`, `whatsapp_messages`, and `whatsapp_webhook_events`, and backfills deterministic public tokens for legacy sales tickets.
 
-After the migration, deploy the commit `12de582` through the selected Coolify/Hetzner production environment. Set `PUBLIC_APP_URL` to the final HTTPS domain, configure staff authentication, and assign the `guard` role to the entrance account. Do not treat the existing Vercel alias as the production ticketing deployment; it still serves the older browser-local demo and has no configured live database or WhatsApp provider.
+After the migration, deploy the latest UX/UI expansion commit through the selected Coolify/Hetzner production environment. The prior foundation commit is `12de582`; the new commit will be recorded in GitHub after final validation. Set `PUBLIC_APP_URL` to the final HTTPS domain, configure staff authentication, and assign the `guard` role to the entrance account. Do not treat the existing Vercel alias as the production ticketing deployment; it still serves the older browser-local demo and has no configured live database or WhatsApp provider.
 
 ## Workbook migration boundary
 
@@ -79,7 +83,7 @@ No workbook rows were imported automatically. Before importing anything, the cli
 
 ## Verification evidence
 
-The release was validated locally with the repository’s full automated suite: **10 test files and 27 tests passed**. TypeScript checking passed. The production Vite and server build completed successfully. The local `/healthz` endpoint returned `{"status":"ok"}`. The public ticket route rendered a safe not-found state without authentication, the gate route remained behind the sign-in shell, and the WhatsApp webhook rejected an invalid verification token with HTTP 403 and an unsigned POST with HTTP 401.
+The foundation release was validated locally with **10 test files and 27 tests passed**. The UX/UI expansion has additionally passed TypeScript checking and the production Vite/server build after reconnecting the full operational navigation, adding the command center, customer directory, workbook migration control room, daily cash settlement, and seeded demo walkthrough data. The local `/healthz` endpoint returned `{"status":"ok"}`. The public ticket route rendered a safe not-found state without authentication, the gate route remained behind the sign-in shell, and the WhatsApp webhook rejected an invalid verification token with HTTP 403 and an unsigned POST with HTTP 401.
 
 The build still prints the repository’s pre-existing warnings about unset analytics placeholders and a large client bundle. These warnings do not prevent the build, but the analytics placeholders should be removed or configured before a polished production deployment.
 
