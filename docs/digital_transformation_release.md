@@ -1,6 +1,6 @@
 # Marasi Alsawadi Digital Transformation Release
 
-**Release:** `9e796f3`
+**Release:** `08ffb6f`
 **Repository:** [NewMux/Marasi-Alsawadi](https://github.com/NewMux/Marasi-Alsawadi)  
 **Prepared by:** Manus AI  
 **Date:** 24 August 2026
@@ -28,7 +28,7 @@ The release is production-ready from a code and build perspective, but it is not
 | Report | Existing operational summary aggregates ticket revenue and categorized expenses into revenue, expenses, and net result. | Managers and administrators |
 | Command center | Populated first-login view with revenue, operating result, guest/admission counts, ticket activity, attention queue, readiness states, and role-aware actions. | All authenticated roles; guard sees a reduced gate station view |
 | Customer directory | Searchable customer profiles grouped across visits, phone numbers, ticket numbers, dates, and amounts. | Staff, managers, administrators |
-| Daily cash close | Department settlement capture for expected amount, cash, bank, card, charges, notes, submission, and manager review. | Managers and administrators |
+| Daily cash close | Department settlement capture for expected amount, cash, bank, card, charges, notes, submission, manager review, variance status, and CSV expense export. | Managers and administrators |
 | Workbook migration | A read-only migration profile and in-product migration control room identify 38 worksheets, duplicate `(2)` tabs, formula-heavy tabs, approval gates, and the MVP import boundary. | Administrators; no unapproved rows were imported |
 | UX/UI system | Grouped navigation, responsive cards and tables, role-specific actions, guard-first scan state, clear empty states, visible system readiness, focus states, and demo-data disclosure. | All workspaces |
 
@@ -73,7 +73,7 @@ The callback URL is `https://{production-domain}/api/whatsapp/webhook`. The GET 
 
 Apply the existing migrations in the repository’s established order, then apply `drizzle/migrations/0005_add_public_tickets_gate_scans_whatsapp.sql`. The new migration adds the public token and lifecycle columns to `sales_transactions`, extends the user role enum with `guard`, creates `ticket_check_ins`, `whatsapp_messages`, and `whatsapp_webhook_events`, and backfills deterministic public tokens for legacy sales tickets.
 
-After the migration, deploy the latest UX/UI expansion commit through the selected Coolify/Hetzner production environment. The prior foundation commit is `12de582`; this UX/UI and spreadsheet-replacement expansion is `9e796f3`. Set `PUBLIC_APP_URL` to the final HTTPS domain, configure staff authentication, and assign the `guard` role to the entrance account. Do not treat the existing Vercel alias as the production ticketing deployment; it still serves the older browser-local demo and has no configured live database or WhatsApp provider.
+After the migration, deploy the latest UX/UI expansion commit through the selected Coolify/Hetzner production environment. The prior foundation commit is `12de582`; the UX/UI and spreadsheet-replacement expansion is `08ffb6f`. Set `PUBLIC_APP_URL` to the final HTTPS domain, configure staff authentication, and assign the `guard` role to the entrance account. Do not treat the existing Vercel alias as the production ticketing deployment; it still serves the older browser-local demo and has no configured live database or WhatsApp provider.
 
 ## Workbook migration boundary
 
