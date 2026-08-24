@@ -1,5 +1,5 @@
 import { startLogin } from "@/const";
-import { isPublicDemoMode } from "@/lib/demoMode";
+import { clearPublicDemoMode, isPublicDemoMode } from "@/lib/demoMode";
 import { trpc } from "@/lib/trpc";
 import { TRPCClientError } from "@trpc/client";
 import { useCallback, useEffect, useMemo } from "react";
@@ -32,6 +32,7 @@ export function useAuth(options?: UseAuthOptions) {
 
   const logout = useCallback(async () => {
     if (demoMode) {
+      clearPublicDemoMode();
       window.location.assign("/");
       return;
     }
