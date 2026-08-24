@@ -1,26 +1,26 @@
 @import "tailwindcss";
 @plugin "tailwindcss-animate";
 @theme {
-  --font-serif: "Playfair Display", Georgia, serif;
-  --font-sans: "DM Sans", Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-serif: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
 }
 
 * { box-sizing: border-box; }
-html { background: #eef2f2; }
+html { background: #f5f5f7; }
 body {
   margin: 0;
-  color: #102237;
-  font-family: "DM Sans", Inter, ui-sans-serif, system-ui, sans-serif;
+  color: #1d1d1f;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
   background:
-    radial-gradient(circle at 85% -15%, rgba(53, 205, 186, .18), transparent 31rem),
-    radial-gradient(circle at -10% 98%, rgba(20, 81, 113, .10), transparent 29rem),
-    #eef2f2;
+    radial-gradient(circle at 88% -8%, rgba(0, 113, 227, .12), transparent 29rem),
+    radial-gradient(circle at -8% 100%, rgba(175, 82, 222, .08), transparent 26rem),
+    #f5f5f7;
 }
 button, input, select, textarea { font: inherit; }
 button { transition: transform 160ms var(--ease-out, cubic-bezier(.23, 1, .32, 1)), box-shadow 160ms ease, background-color 160ms ease, border-color 160ms ease; }
 button:active { transform: scale(.98); }
-:focus-visible { outline: 3px solid #32c5b2; outline-offset: 3px; }
-.font-serif { font-family: "Playfair Display", Georgia, serif; }
+:focus-visible { outline: 3px solid rgba(0, 113, 227, .45); outline-offset: 3px; }
+.font-serif { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Arial, sans-serif; font-weight: 650; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
@@ -31,9 +31,9 @@ button:active { transform: scale(.98); }
   #print-ticket, #print-ticket * { visibility: visible !important; }
   #print-ticket { position: fixed; inset: 0; display: block !important; background: white; color: #111; }
   .print-ticket__sheet { width: 190mm; min-height: 270mm; margin: 0 auto; padding: 20mm; font-family: Arial, sans-serif; font-size: 12pt; }
-  .print-ticket__brand { color: #0b2540; font-weight: 700; letter-spacing: .12em; font-size: 11pt; }
-  .print-ticket__sheet h1 { margin: 12mm 0 4mm; font: 700 24pt Georgia, serif; color: #0b2540; }
-  .print-ticket__sheet h2 { margin-top: 10mm; font: 700 18pt Georgia, serif; }
+  .print-ticket__brand { color: #1d1d1f; font-weight: 700; letter-spacing: .12em; font-size: 11pt; }
+  .print-ticket__sheet h1 { margin: 12mm 0 4mm; font: 700 24pt Arial, sans-serif; color: #1d1d1f; }
+  .print-ticket__sheet h2 { margin-top: 10mm; font: 700 18pt Arial, sans-serif; }
   .print-ticket__sheet p { margin: 4mm 0; }
   .print-ticket__sheet hr { border: 0; border-top: 1px solid #777; margin: 8mm 0; }
   .print-ticket__note { margin-top: 24mm !important; color: #555; }

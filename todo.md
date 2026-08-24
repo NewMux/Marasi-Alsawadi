@@ -74,3 +74,6 @@
 - [x] Redesign the Expenses & Report workspace into a premium financial-control experience without changing role boundaries or reporting logic. (Persistent financial rules and role gates remain unchanged.)
 - [x] Verify the redesigned desktop and phone interfaces. (Authenticated desktop checks passed for both `/tickets` and `/finance`; shared responsive layouts passed at 375 px in public-demo mode; 22 tests and the production build pass.)
 - [x] Save a recoverable checkpoint for the premium redesign and record its version in the handover notes. (Checkpoint `0e208104`, confirmed in `docs/handover_notes.md`.)
+- [x] Replace the midnight/sea-glass visual system with an Apple-inspired interface: restrained neutral palette, SF-like typography, translucent navigation, white-space-led layouts, and subtle system depth, without changing the focused workflows or backend behavior.
+- [x] Validate the Apple-inspired ticketing and finance experience at desktop and phone widths. (Desktop and 375 px browser-local verification complete; 22 tests and production build pass.)
+- [ ] Save a recoverable checkpoint for the Apple-inspired redesign and document its version in the handover notes.
