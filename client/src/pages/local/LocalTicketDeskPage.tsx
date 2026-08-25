@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { EmptyState, Field, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, cx } from "@/components/MarasiUI";
 import { TicketReceipt, type TicketReceiptData } from "@/components/TicketReceipt";
 import { Textarea } from "@/components/ui/textarea";
+import { printViaAgent } from "@/lib/printAgent";
 import { dateLabel, money, today } from "@/localApp/format";
 import { useT, type TranslationKey } from "@/localApp/i18n";
 import type { PrdFreeEntryCategory, PrdTicketType } from "@/localApp/pricing";
@@ -88,7 +89,12 @@ export default function LocalTicketDeskPage() {
       toast.error(error instanceof Error ? error.message : "Could not issue this purchase");
     }
   };
-  const printReceipt = (width: "80" | "58") => { setReceiptWidth(width); window.setTimeout(() => window.print(), 0); };
+  const printReceipt = async (width: "80" | "58") => {
+    if (created && (await printViaAgent(toReceiptData(created)))) { toast.success("Sent to the receipt printer"); return; }
+    setReceiptWidth(width);
+    window.setTimeout(() => window.print(), 0);
+    if (created) toast.message("Local print agent not found — opening the browser print dialog instead.");
+  };
 
   return <>
     <PageHeader eyebrow={t("tickets.eyebrow")} title={t("tickets.title")} description={t("tickets.description")} actions={<StatusPill tone="info">{t("tickets.vatBadge")}</StatusPill>}/>

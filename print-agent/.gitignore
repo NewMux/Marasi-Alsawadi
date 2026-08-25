@@ -1,0 +1,5 @@
+node_modules/
+.env
+last-receipt.bin
+last-receipt.png
+*.log

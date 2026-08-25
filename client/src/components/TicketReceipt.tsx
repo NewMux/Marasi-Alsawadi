@@ -68,9 +68,9 @@ function LogoMark() {
   </svg>;
 }
 
-export function TicketReceipt({ data, width }: { data: TicketReceiptData; width: "80" | "58" }) {
-  return <div id="print-ticket" className={cx("print-ticket hidden", width === "58" ? "receipt-58" : "receipt-80")} dir="rtl">
-    <div className="ticket">
+/** Just the `.ticket` markup, with no print-dialog visibility wrapper — reused by both the live window.print() path and the standalone print-agent HTML serializer (client/src/components/ticketReceiptHtml.ts). */
+export function TicketReceiptTicket({ data }: { data: TicketReceiptData }) {
+  return <div className="ticket" dir="rtl">
       <div className="center logo"><LogoMark/></div>
       <div className="center brand-ar">مراسي السوادي</div>
       <div className="center brand-en">MARASI ALSAWADI</div>
@@ -131,6 +131,11 @@ export function TicketReceipt({ data, width }: { data: TicketReceiptData; width:
         ✉️ Sawadi.admin@gmail.com<br/>
         📍 Barka — Sultanate of Oman
       </div>
-    </div>
+    </div>;
+}
+
+export function TicketReceipt({ data, width }: { data: TicketReceiptData; width: "80" | "58" }) {
+  return <div id="print-ticket" className={cx("print-ticket hidden", width === "58" ? "receipt-58" : "receipt-80")}>
+    <TicketReceiptTicket data={data}/>
   </div>;
 }

@@ -5,6 +5,7 @@ import { trpc } from "@/lib/trpc";
 import { EmptyState, Field, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, cx } from "@/components/MarasiUI";
 import { TicketReceipt, type TicketReceiptData } from "@/components/TicketReceipt";
 import { Textarea } from "@/components/ui/textarea";
+import { printViaAgent } from "@/lib/printAgent";
 
 const today = new Date().toISOString().slice(0, 10);
 const money = (value: unknown) => `OMR ${Number(value || 0).toLocaleString("en-OM", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -64,7 +65,12 @@ export default function TicketDeskPage() {
   const addLine = () => setLines((current) => [...current, blankLine(Math.max(...current.map((line) => line.id), 0) + 1)]);
   const removeLine = (id: number) => setLines((current) => current.length === 1 ? current : current.filter((line) => line.id !== id));
   const issuePurchase = () => { if (!form.customerId && (!form.customerName.trim() || !form.customerPhone.trim())) return toast.error("Select a customer or add a name and phone"); if (previewLines.length !== lines.length) return toast.error("Select a ticket type and approved price for every line"); issue.mutate({ customerId: form.customerId ? Number(form.customerId) : undefined, customerName: form.customerId ? undefined : form.customerName.trim(), customerPhone: form.customerId ? undefined : form.customerPhone.trim(), visitDate: form.visitDate, paymentMethod: form.paymentMethod, notes: form.notes.trim() || undefined, lines: previewLines }); };
-  const printReceipt = (width: "80" | "58") => { setReceiptWidth(width); window.setTimeout(() => window.print(), 0); };
+  const printReceipt = async (width: "80" | "58") => {
+    if (created && (await printViaAgent(toReceiptData(created)))) { toast.success("Sent to the receipt printer"); return; }
+    setReceiptWidth(width);
+    window.setTimeout(() => window.print(), 0);
+    if (created) toast.message("Local print agent not found — opening the browser print dialog instead.");
+  };
 
   return <>
     <PageHeader eyebrow="Front office · ticketing" title="Issue tickets" description="Build one purchase with Waterpark or Companion lines, apply the PRD rules, and print a normal receipt." actions={<StatusPill tone="info">5% VAT · server calculated</StatusPill>}/>
