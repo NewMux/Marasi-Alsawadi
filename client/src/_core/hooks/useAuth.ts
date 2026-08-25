@@ -1,37 +1,33 @@
-import { clearPublicDemoMode, isPublicDemoMode } from "@/lib/demoMode";
+import { isLocalMode } from "@/lib/localMode";
 import { trpc } from "@/lib/trpc";
 import { useCallback, useMemo } from "react";
 
 type Role = "staff" | "manager" | "admin" | "guard" | "super_admin";
-type DemoUser = { id: number; name: string; email: string; role: Role; mustChangePassword: boolean; isDemo: true };
+type LocalUser = { id: number; name: string; email: string; role: Role; mustChangePassword: boolean; isLocal: true };
 
 export function useAuth() {
-  const demoMode = isPublicDemoMode();
+  const localMode = isLocalMode();
   const utils = trpc.useUtils();
-  const meQuery = trpc.auth.me.useQuery(undefined, { enabled: !demoMode, retry: false, refetchOnWindowFocus: false });
+  const meQuery = trpc.auth.me.useQuery(undefined, { enabled: !localMode, retry: false, refetchOnWindowFocus: false });
   const logoutMutation = trpc.auth.logout.useMutation();
 
   const user = useMemo(() => {
-    if (demoMode) return { id: 0, name: "Client presentation", email: "demo@marasi.example", role: "super_admin", mustChangePassword: false, isDemo: true } satisfies DemoUser;
+    if (localMode) return { id: 0, name: "Marasi", email: "", role: "super_admin", mustChangePassword: false, isLocal: true } satisfies LocalUser;
     return meQuery.data ?? null;
-  }, [demoMode, meQuery.data]);
+  }, [localMode, meQuery.data]);
 
   const logout = useCallback(async () => {
-    if (demoMode) {
-      clearPublicDemoMode();
-      window.location.assign("/");
-      return;
-    }
+    if (localMode) return;
     try { await logoutMutation.mutateAsync(); } finally {
       utils.auth.me.setData(undefined, null);
       window.location.assign("/login");
     }
-  }, [demoMode, logoutMutation, utils]);
+  }, [localMode, logoutMutation, utils]);
 
   return {
     user,
-    loading: demoMode ? false : meQuery.isLoading || logoutMutation.isPending,
-    error: demoMode ? null : meQuery.error ?? logoutMutation.error ?? null,
+    loading: localMode ? false : meQuery.isLoading || logoutMutation.isPending,
+    error: localMode ? null : meQuery.error ?? logoutMutation.error ?? null,
     isAuthenticated: Boolean(user),
     refresh: () => meQuery.refetch(),
     logout,
