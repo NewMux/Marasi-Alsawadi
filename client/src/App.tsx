@@ -1,4 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import FinanceControlPage from "./pages/FinanceControlPage";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Loader2 } from "lucide-react";
@@ -16,6 +17,7 @@ import LoginPage, { ChangePasswordPage } from "./pages/LoginPage";
 import ManagementReportsPage from "./pages/ManagementReportsPage";
 import PublicTicketPage from "./pages/PublicTicketPage";
 import SuperAdminSettingsPage from "./pages/SuperAdminSettingsPage";
+import TicketDeskPage from "./pages/TicketDeskPage";
 
 function SuperAdminSettingsRoute() {
   const { user } = useAuth();
@@ -29,8 +31,9 @@ function OperationsRoutes() {
   const corePage = demo ? DemoOperationsPage : ERPOperationsPage;
   return <DashboardLayout><Switch>
     <Route path="/" component={demo ? demoPage : CommandCenterPage}/>
-    <Route path="/tickets" component={corePage}/>
-    <Route path="/finance" component={corePage}/>
+    <Route path="/tickets" component={demo ? demoPage : TicketDeskPage}/>
+    <Route path="/customers" component={demo ? demoPage : CustomerDirectoryPage}/>
+    <Route path="/finance" component={demo ? demoPage : FinanceControlPage}/>
     <Route path="/reports" component={demo ? demoPage : ManagementReportsPage}/>
     <Route path="/gate" component={demo ? demoPage : GateScannerPage}/>
     <Route path="/settings" component={demo ? demoPage : SuperAdminSettingsRoute}/>

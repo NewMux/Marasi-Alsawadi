@@ -105,6 +105,12 @@ A disposable local MariaDB rehearsal was completed for the authentication and fe
 | Session logout or expiry | Protected pages and APIs require sign-in again |
 | Coolify health check | New Marasi application returns `{"status":"ok"}` at `/healthz` |
 
+## UX/UI release checkpoint
+
+The latest review build introduces one shared Apple-inspired UI system across the quoted product. Page headers, white surfaces, metric cards, buttons, fields, status pills, tables, loading states, and empty states are now reusable instead of being recreated separately on each screen. The shell uses a quieter sidebar, compact top bar, clear role context, consistent active navigation, and a mobile navigation strip.
+
+The Ticket Desk is organized as a guided Customer → Price → Receipt flow. The Customer Directory uses a searchable, responsive table with expandable purchase history. Finance Control uses a compact expense form beside a searchable ledger with edit and delete actions, period-aware totals, cash-close context, and export. Revenue Report uses the same period controls and summary language. Commercial Settings uses the same primitives for Super Admin pricing, fee, category, and account controls. Search controls have accessible labels, focus states are standardized, and receipt printing remains compact 80 mm/58 mm output.
+
 ## References
 
 [1]: https://coolify.io/docs/applications "Coolify Applications"

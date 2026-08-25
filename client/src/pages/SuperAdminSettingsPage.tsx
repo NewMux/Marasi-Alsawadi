@@ -1,19 +1,20 @@
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
+import { Field as UiField, PageHeader, PrimaryButton, SelectField, Surface, TextField, cx as join } from "@/components/MarasiUI";
 import { CircleDollarSign, ListChecks, ReceiptText, ShieldCheck, Users } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
 const money = (value: unknown) => `OMR ${Number(value || 0).toFixed(2)}`;
-const join = (...values: Array<string | false | undefined>) => values.filter(Boolean).join(" ");
 type Tab = "pricing" | "fees" | "categories" | "users" | "audit";
 type Role = "staff" | "manager" | "admin" | "guard" | "super_admin";
 
-function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) { return <section className={join("rounded-[24px] border border-white bg-white p-5 shadow-[0_6px_20px_rgba(0,0,0,.06)] md:p-6", className)}>{children}</section>; }
-function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) { return <label className="grid gap-2 text-[11px] font-medium text-body"><span>{label}</span>{children}{hint && <small className="font-normal leading-4 text-subtle">{hint}</small>}</label>; }
-function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) { return <select {...props} className="h-11 rounded-xl border border-line bg-well px-3.5 text-sm text-ink outline-none focus:border-accent focus:ring-4 focus:ring-accent/10"/>; }
-function Header() { return <div className="relative mb-7 overflow-hidden rounded-[28px] border border-white bg-gradient-to-br from-white via-white to-[#eef6ff] px-6 py-8 shadow-[0_10px_30px_rgba(0,0,0,.07)] md:px-10"><div className="absolute -right-8 -top-12 h-52 w-52 rounded-full bg-[#cce5ff]/70 blur-3xl"/><div className="relative max-w-3xl"><div className="text-[11px] font-semibold uppercase tracking-[.14em] text-accent">Super Admin only</div><h1 className="mt-3 font-serif text-[36px] leading-none tracking-[-.055em] md:text-[52px]">Commercial settings</h1><p className="mt-4 max-w-2xl text-sm leading-6 text-muted">Control every approved price, fee, expense category, and staff account without changing application code. Historical transactions retain their original snapshot.</p></div></div>; }
+const Card = Surface;
+const Field = UiField;
+const Input = TextField;
+const Select = SelectField;
+const Save = PrimaryButton;
+function Header() { return <PageHeader eyebrow="Super Admin only" title="Commercial settings" description="Control approved ticket prices, fee items, expense categories, and staff accounts without changing application code. Historical transactions retain their original snapshot."/>; }
 
 export default function SuperAdminSettingsPage() {
   const utils = trpc.useUtils();

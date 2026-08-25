@@ -1,8 +1,8 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { permittedPath } from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { EmptyState, Field as UiField, PageHeader, PrimaryButton, SelectField, Surface, TextField, cx as styles } from "@/components/MarasiUI";
 import { trpc } from "@/lib/trpc";
 import { Copy, ExternalLink, Printer, Search, Ticket, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -12,16 +12,16 @@ import { useLocation } from "wouter";
 const today = new Date().toISOString().slice(0, 10);
 const money = (value: unknown) => `OMR ${Number(value || 0).toLocaleString("en-OM", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmt = (date: unknown) => date ? new Date(date as string).toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : "—";
-const styles = (...values: Array<string | false | undefined>) => values.filter(Boolean).join(" ");
 const downloadCsv = (filename: string, rows: string[][]) => { const csv = rows.map((row) => row.map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`).join(",")).join("\n"); const blob = new Blob([csv], { type: "text/csv;charset=utf-8" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = filename; link.click(); URL.revokeObjectURL(url); };
 
-function Header({ eyebrow, title, description }: { eyebrow: string; title: string; description: string }) { return <div className="relative mb-8 overflow-hidden rounded-[28px] border border-white bg-gradient-to-br from-white via-white to-[#eef6ff] px-6 py-8 shadow-[0_10px_30px_rgba(0,0,0,.07)] md:px-10 md:py-10"><div className="absolute -right-10 -top-16 h-56 w-56 rounded-full bg-[#cce5ff]/65 blur-3xl"/><div className="relative max-w-3xl"><div className="text-[12px] font-medium text-accent">{eyebrow}</div><h1 className="mt-3 font-serif text-[34px] leading-[1.05] tracking-[-.055em] text-ink md:text-[54px]">{title}</h1><p className="mt-4 max-w-2xl text-[15px] leading-6 text-muted">{description}</p></div></div>; }
-function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) { return <section className={styles("rounded-[24px] border border-white bg-white p-5 shadow-[0_6px_20px_rgba(0,0,0,.06)] md:p-6", className)}>{children}</section>; }
+const Header = PageHeader;
+const Card = Surface;
+const Field = UiField;
+const Input = TextField;
+const Select = SelectField;
+const Save = PrimaryButton;
 function Title({ title, hint }: { title: string; hint?: string }) { return <div className="mb-5"><h2 className="font-serif text-[21px] leading-tight tracking-[-.025em] text-ink">{title}</h2>{hint && <p className="mt-1.5 max-w-xl text-[13px] leading-5 text-muted">{hint}</p>}</div>; }
-function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="grid gap-2 text-[11px] font-medium text-body"><span>{label}</span>{children}</label>; }
-function Select({ children, ...props }: React.SelectHTMLAttributes<HTMLSelectElement>) { return <select {...props} className={styles("h-11 rounded-xl border border-line bg-well px-3.5 text-sm text-ink focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/10", props.className)}>{children}</select>; }
-function Save({ onClick, pending, children, className = "" }: { onClick: () => void; pending?: boolean; children: React.ReactNode; className?: string }) { return <Button onClick={onClick} disabled={pending} className={styles("h-11 rounded-full bg-accent px-5 font-medium text-white shadow-[0_6px_16px_rgba(0,113,227,.23)] hover:bg-accent-hover", className)}>{pending ? "Saving…" : children}</Button>; }
-function Empty({ text }: { text: string }) { return <div className="rounded-2xl border border-dashed border-line bg-well p-7 text-center text-sm text-muted">{text}</div>; }
+function Empty({ text }: { text: string }) { return <EmptyState title="No records yet" description={text}/>; }
 
 function TransactionTicketDesk() {
   const { user } = useAuth(); const utils = trpc.useUtils();
