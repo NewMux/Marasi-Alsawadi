@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Deploy Marasi as a new, self-contained Coolify application on the existing Hetzner server. The two existing projects on that server are strictly out of scope and must remain untouched. This runbook is for the quotation-aligned release with local authentication, Super Admin-only commercial settings, server-priced receipt tickets, customer records, expenses, reporting, and retained gate-entry workflows.
+Deploy Marasi as a new, self-contained Coolify application on the existing Hetzner server. The two existing projects on that server are strictly out of scope and must remain untouched. This runbook is for the quotation-aligned mini-ERP release with local authentication, Super Admin-only commercial settings, server-priced receipt tickets, customer records, expenses, petty-cash approvals, connected reservations/aqua/housekeeping/maintenance/inventory workspaces, management reporting, workbook profiling, and retained gate-entry workflows.
 
 ## Isolation rule
 
@@ -31,7 +31,7 @@ The application uses port `3000` inside its own container. The Coolify proxy rou
 
 Create a new database such as `marasi_erp` with a unique least-privileged application user and separate persistent storage. Enable backups before importing or creating production records. Apply the repository migrations in order and rehearse `0006_add_super_admin_auth_and_ticket_fee_lines.sql` on a disposable database first.
 
-The migration extends users with local credentials and the `super_admin` role, creates hashed sessions, creates fee definitions and rate assignments, adds ticket subtotal/fee totals, creates immutable ticket lines, and backfills one base line for existing tickets without inventing historical fees. Do not apply it to either existing project’s database.
+The migration extends users with local credentials and the `super_admin` role, creates hashed sessions, creates fee definitions and rate assignments, adds ticket subtotal/fee totals, creates immutable ticket lines, and backfills one base line for existing tickets without inventing historical fees. Apply `0007_fix_reservation_omr_precision.sql` after 0006 to preserve two-decimal OMR reservation rates and totals. Do not apply either migration to an existing project’s database.
 
 ## Runtime environment
 
@@ -63,7 +63,8 @@ Run `pnpm auth:bootstrap` once inside the new Marasi application after the migra
 7. Sign in as Super Admin, change the temporary password, and create cashier, manager, admin, and guard accounts.
 8. Add the resort’s approved base prices, fee items, fee applicability, and expense categories through Commercial Settings.
 9. Run the production acceptance tests for settings permissions, ticket issue, fee calculations, receipt printing, expenses, reporting, gate scanning, logout, and session expiry.
-10. Enable auto-deploy from `main` only after the controlled release is accepted.
+10. Validate the workbook profiler and approve the canonical import boundary; do not load client rows without written approval.
+11. Enable auto-deploy from `main` only after the controlled release is accepted.
 
 ## Receipt printing
 
@@ -86,6 +87,7 @@ Before a production migration or release, back up the new Marasi database and re
 | Create new isolated Coolify project | Deployment operator | Pending |
 | Create dedicated Marasi database and backups | Deployment operator | Pending |
 | Apply migration 0006 after rehearsal | Deployment operator | Pending |
+| Apply migration 0007 after 0006 rehearsal | Deployment operator | Pending |
 | Bootstrap and change the first Super Admin password | Deployment operator / resort owner | Pending |
 | Add approved prices, fee items, and expense categories | Super Admin | Pending |
 | Create cashier, manager, and guard accounts | Super Admin | Pending |
