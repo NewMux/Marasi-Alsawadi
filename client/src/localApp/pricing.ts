@@ -10,6 +10,8 @@ export {
   moneyToMinor,
   minorToMoney,
   PRD_VAT_PERCENT,
+  STARTING_TICKET_NUMBER,
+  formatPrdTicketNumber as formatLocalTicketNumber,
 } from "../../../server/ticketingRules";
 export type {
   PrdFreeEntryCategory,
@@ -19,11 +21,3 @@ export type {
   PrdTicketLineInput,
   TicketFeeInput,
 } from "../../../server/ticketingRules";
-
-// Plain, continuous, non-date-derived numbering (PRD §3.6) — no reset, no
-// "MAS-" prefix, starting from the client's own previous numbering as given
-// in both the PRD ("e.g. 17843") and the ticket mockup's example ticket.
-export const STARTING_TICKET_NUMBER = 17843;
-export function formatLocalTicketNumber(sequenceNumber: number) {
-  return String(sequenceNumber);
-}

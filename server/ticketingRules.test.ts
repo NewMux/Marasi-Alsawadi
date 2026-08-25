@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { calculateOperationalNet, calculatePrdPurchasePricing, calculateTicketPricing, calculateTicketTotal, decideGateEntry, extractTicketToken, formatTicketNumber, isPositiveMoney } from "./ticketingRules";
+import { calculateOperationalNet, calculatePrdPurchasePricing, calculateTicketPricing, calculateTicketTotal, decideGateEntry, extractTicketToken, formatPrdTicketNumber, formatTicketNumber, isPositiveMoney, STARTING_TICKET_NUMBER } from "./ticketingRules";
 
 describe("ticketing business rules", () => {
   it("formats a standard, year-based sequential transaction number", () => {
     expect(formatTicketNumber(2026, 7)).toBe("MAS-2026-000007");
     expect(formatTicketNumber(2027, 1)).toBe("MAS-2027-000001");
+  });
+
+  it("formats PRD purchase ticket numbers as plain continuous numbers, no prefix or padding", () => {
+    expect(formatPrdTicketNumber(STARTING_TICKET_NUMBER)).toBe("17843");
+    expect(formatPrdTicketNumber(STARTING_TICKET_NUMBER + 1)).toBe("17844");
+    expect(STARTING_TICKET_NUMBER).toBe(17843);
   });
 
   it("accepts only positive two-decimal monetary values and rounds sale totals", () => {

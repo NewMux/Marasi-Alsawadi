@@ -6,7 +6,7 @@ import {
   ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries,
 } from "../drizzle/schema";
 import { getDb } from "./db";
-import { calculateOperationalNet, calculatePrdPurchasePricing, decideGateEntry, formatTicketNumber, type PrdDiscountTierInput, type PrdTicketLineInput } from "./ticketingRules";
+import { calculateOperationalNet, calculatePrdPurchasePricing, decideGateEntry, formatPrdTicketNumber, formatTicketNumber, type PrdDiscountTierInput, type PrdTicketLineInput } from "./ticketingRules";
 
 export type SalesTransactionDraft = {
   customerId: number;
@@ -101,7 +101,7 @@ export async function createPrdTicketPurchase(data: {
     const purchaseRows = await tx.select().from(ticketPurchases).orderBy(desc(ticketPurchases.id)).limit(1);
     const purchase = purchaseRows[0]!;
     const lines = pricing.lines.map((line, index) => ({
-      purchaseId: purchase.id, ticketNumber: `MAS-${String(startNumber + index).padStart(8, "0")}`,
+      purchaseId: purchase.id, ticketNumber: formatPrdTicketNumber(startNumber + index),
       ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory, rateId: line.rateId, label: line.label,
       basePrice: line.basePrice, discountPercentage: line.discountPercentage, discountAmount: line.discountAmount,
       vatAmount: line.vatAmount, feeAmount: line.feeAmount, totalAmount: line.totalAmount,

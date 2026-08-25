@@ -157,6 +157,19 @@ export function calculatePrdPurchasePricing(input: {
   };
 }
 
+// Plain, continuous, non-date-derived numbering (PRD §3.6) — no reset, no
+// "MAS-" prefix, starting from the client's own previous numbering as given
+// in both the PRD ("e.g. 17843") and the ticket mockup's example ticket.
+// Shared by the real backend (server/ticketingDb.ts) and the backend-free
+// local app (client/src/localApp/pricing.ts) so both issue identically
+// formatted ticket numbers. The backend's starting point is seeded in
+// drizzle/migrations/0008_add_prd_ticketing_model.sql (lastNumber =
+// STARTING_TICKET_NUMBER - 1) and must be kept in sync with this constant.
+export const STARTING_TICKET_NUMBER = 17843;
+export function formatPrdTicketNumber(sequenceNumber: number) {
+  return String(sequenceNumber);
+}
+
 export function calculateOperationalNet(revenue: number, expenses: number) {
   return Number(revenue) - Number(expenses);
 }

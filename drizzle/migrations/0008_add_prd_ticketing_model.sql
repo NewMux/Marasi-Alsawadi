@@ -74,8 +74,11 @@ CREATE TABLE IF NOT EXISTS ticket_purchase_fees (
   INDEX ticket_purchase_fee_purchase (purchaseId)
 );
 
+-- Seeded so the first issued ticket is 17843, matching the plain continuous
+-- numbering already used by the backend-free local app (see
+-- STARTING_TICKET_NUMBER in server/ticketingRules.ts).
 INSERT INTO ticket_number_sequences (id, lastNumber)
-VALUES (1, 0)
+VALUES (1, 17842)
 ON DUPLICATE KEY UPDATE id = VALUES(id);
 
 -- PRD defaults. Super Admin may edit prices and discount tiers after bootstrap.

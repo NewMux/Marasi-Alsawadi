@@ -74,7 +74,9 @@ Run `pnpm auth:bootstrap` once inside the new Marasi application after the migra
 
 ## Receipt printing
 
-The ticket receipt is a fixed bilingual (Arabic + English, always both) 80mm thermal layout matching the client's own mockup — bearing the resort's real contact details, per-line Base/VAT/total breakdown, and continuous plain ticket numbers (no date-derived or resettable numbering; see `server/ticketingRules.ts`/`server/ticketingDb.ts` — these were **not** updated to the client-supplied numbering format used by the local-only app, since that work was scoped to the client-side app only; mirror that change here if/when this path is revisited).
+The ticket receipt is a fixed bilingual (Arabic + English, always both) 80mm thermal layout matching the client's own mockup — bearing the resort's real contact details, per-line Base/VAT/total breakdown, and continuous plain ticket numbers (no date-derived or resettable numbering, no `MAS-` prefix). `server/ticketingRules.ts`'s `formatPrdTicketNumber`/`STARTING_TICKET_NUMBER` is the single source of truth for this format — both `server/ticketingDb.ts` (the real backend) and `client/src/localApp/pricing.ts` (the local-only app) import from it, so the two paths issue identically formatted ticket numbers. The database sequence is seeded to start at ticket `17843` in `drizzle/migrations/0008_add_prd_ticketing_model.sql`, matching the local app's own starting point — keep both in sync if that starting number ever changes.
+
+This ticket-number format applies only to the PRD Waterpark/Companion purchase flow (`tickets.purchaseCreate`, used by `TicketDeskPage.tsx`). The older, separate `tickets.create`/`salesTransactions` path (year-based `MAS-YYYY-NNNNNN` numbers, QR-code gate scanning, public ticket lookup) is a distinct legacy ticketing system and was intentionally left untouched.
 
 Two ways a receipt actually reaches paper, tried in this order by the app itself — no server-side configuration needed:
 
