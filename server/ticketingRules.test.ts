@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateOperationalNet, calculateTicketTotal, decideGateEntry, extractTicketToken, formatTicketNumber, isPositiveMoney } from "./ticketingRules";
+import { calculateOperationalNet, calculateTicketPricing, calculateTicketTotal, decideGateEntry, extractTicketToken, formatTicketNumber, isPositiveMoney } from "./ticketingRules";
 
 describe("ticketing business rules", () => {
   it("formats a standard, year-based sequential transaction number", () => {
@@ -13,6 +13,31 @@ describe("ticketing business rules", () => {
     expect(isPositiveMoney("-2")).toBe(false);
     expect(calculateTicketTotal("18.50", 3)).toBe(55.5);
     expect(() => calculateTicketTotal("0", 1)).toThrow("positive");
+  });
+
+  it("creates an itemized, decimal-safe total from base price and configurable fees", () => {
+    const pricing = calculateTicketPricing({
+      unitPrice: "10.00", quantity: 3, rateName: "Aqua day pass", rateCode: "AQUA-DAY",
+      fees: [
+        { id: 2, name: "Municipality", code: "MUNI", calculationType: "percentage", value: "5.0000", applicationBasis: "per_transaction", displayOrder: 20 },
+        { id: 1, name: "Wristband", code: "WRIST", calculationType: "fixed", value: "0.5000", applicationBasis: "per_ticket", displayOrder: 10 },
+        { id: 3, name: "Booking fee", code: "BOOK", calculationType: "fixed", value: "1.0000", applicationBasis: "per_transaction", displayOrder: 30 },
+      ],
+    });
+    expect(pricing).toMatchObject({ baseSubtotal: "30.00", feeTotal: "4.00", totalAmount: "34.00" });
+    expect(pricing.lines.map((line) => [line.code, line.quantity, line.lineAmount])).toEqual([
+      ["AQUA-DAY", 3, "30.00"], ["WRIST", 3, "1.50"], ["MUNI", 1, "1.50"], ["BOOK", 1, "1.00"],
+    ]);
+  });
+
+  it("rounds percentage fees to the nearest OMR baisa without floating-point drift", () => {
+    const pricing = calculateTicketPricing({
+      unitPrice: "0.10", quantity: 3, rateName: "Test", rateCode: "TEST",
+      fees: [{ id: 1, name: "Five percent", code: "P5", calculationType: "percentage", value: "5", applicationBasis: "per_transaction", displayOrder: 1 }],
+    });
+    expect(pricing.baseSubtotal).toBe("0.30");
+    expect(pricing.feeTotal).toBe("0.02");
+    expect(pricing.totalAmount).toBe("0.32");
   });
 
   it("calculates the simple revenue-versus-expenses net result", () => {

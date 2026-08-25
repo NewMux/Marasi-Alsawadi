@@ -22,7 +22,7 @@ export default function CommandCenterPage() {
   const [, setLocation] = useLocation();
   const role = user?.role || "staff";
   const isGuard = role === "guard";
-  const canManage = role === "manager" || role === "admin";
+  const canManage = role === "manager" || role === "admin" || role === "super_admin";
   const { data: tickets = [] } = trpc.platform.tickets.list.useQuery({ from: monthStart, to: today }, { enabled: !isGuard });
   const { data: summary } = trpc.platform.finance.operationalSummary.useQuery({ from: monthStart, to: today }, { enabled: canManage });
   const { data: expenses = [] } = trpc.platform.finance.expenses.list.useQuery({ from: monthStart, to: today }, { enabled: canManage });

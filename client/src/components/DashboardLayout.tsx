@@ -1,17 +1,18 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { useLocation } from "wouter";
-import { DollarSign, FileSpreadsheet, Home, LogOut, ScanLine, Search, Sparkles, Ticket } from "lucide-react";
+import { DollarSign, FileSpreadsheet, Home, LogOut, ScanLine, Search, Settings, Sparkles, Ticket } from "lucide-react";
 
-type Role = "staff" | "manager" | "admin" | "guard";
+type Role = "staff" | "manager" | "admin" | "guard" | "super_admin";
 type NavItem = { label: string; mobileLabel: string; path: string; icon: any; roles: Role[]; group: string };
 
 const items: NavItem[] = [
-  { label: "Command Center", mobileLabel: "Home", path: "/", icon: Home, roles: ["staff", "manager", "admin", "guard"], group: "Overview" },
-  { label: "Ticket Desk", mobileLabel: "Tickets", path: "/tickets", icon: Ticket, roles: ["staff", "manager", "admin"], group: "Front office" },
-  { label: "Customer Directory", mobileLabel: "Customers", path: "/customers", icon: Search, roles: ["staff", "manager", "admin"], group: "Front office" },
-  { label: "Gate Scanner", mobileLabel: "Gate", path: "/gate", icon: ScanLine, roles: ["guard", "manager", "admin"], group: "Operations" },
-  { label: "Finance Control", mobileLabel: "Finance", path: "/finance", icon: DollarSign, roles: ["manager", "admin"], group: "Finance" },
-  { label: "Workbook Migration", mobileLabel: "Migration", path: "/migration", icon: FileSpreadsheet, roles: ["admin"], group: "Governance" },
+  { label: "Command Center", mobileLabel: "Home", path: "/", icon: Home, roles: ["staff", "manager", "admin", "guard", "super_admin"], group: "Overview" },
+  { label: "Ticket Desk", mobileLabel: "Tickets", path: "/tickets", icon: Ticket, roles: ["staff", "manager", "admin", "super_admin"], group: "Front office" },
+  { label: "Customer Directory", mobileLabel: "Customers", path: "/customers", icon: Search, roles: ["staff", "manager", "admin", "super_admin"], group: "Front office" },
+  { label: "Gate Scanner", mobileLabel: "Gate", path: "/gate", icon: ScanLine, roles: ["guard", "manager", "admin", "super_admin"], group: "Operations" },
+  { label: "Finance Control", mobileLabel: "Finance", path: "/finance", icon: DollarSign, roles: ["manager", "admin", "super_admin"], group: "Finance" },
+  { label: "Commercial Settings", mobileLabel: "Settings", path: "/settings", icon: Settings, roles: ["super_admin"], group: "Governance" },
+  { label: "Workbook Migration", mobileLabel: "Migration", path: "/migration", icon: FileSpreadsheet, roles: ["super_admin"], group: "Governance" },
 ];
 
 export function permittedPath(path: string, role?: string) {
@@ -24,6 +25,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { user, logout } = useAuth();
   const [location, setLocation] = useLocation();
 
+  if (!user) return null;
   const role = user.role as Role;
   const demoMode = Boolean((user as any).isDemo);
   const visible = items.filter((entry) => entry.roles.includes(role));
@@ -35,7 +37,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <button onClick={() => setLocation("/")} className="mb-8 flex items-center gap-3 px-3 text-left"><div className="grid h-10 w-10 place-items-center rounded-[14px] bg-accent text-white shadow-[0_7px_16px_rgba(0,113,227,.24)]"><Sparkles size={18}/></div><div><div className="font-serif text-[20px] leading-5 tracking-[-.04em]">Marasi</div><div className="mt-1 text-[10px] font-medium tracking-wide text-muted">ALSawadi Resort</div></div></button>
       <div className="mb-3 px-3 text-[11px] font-medium text-subtle">Workspace</div>
       <nav className="min-h-0 flex-1 space-y-5 overflow-y-auto pr-1">{groups.map((group) => <div key={group}><div className="mb-1 px-3 text-[9px] font-semibold uppercase tracking-[.16em] text-faint">{group}</div><div className="space-y-0.5">{visible.filter((entry) => entry.group === group).map((entry) => { const active = activePath === entry.path; const Icon = entry.icon; return <button key={entry.path} onClick={() => setLocation(entry.path)} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[13px] transition ${active ? "bg-white text-ink shadow-[0_4px_15px_rgba(0,0,0,.08)]" : "text-body hover:bg-black/[.04]"}`}><Icon size={16} className={active ? "text-accent" : "text-subtle"}/><span className="font-medium">{entry.label}</span></button>; })}</div></div>)}</nav>
-      <div className="mt-5 rounded-2xl border border-black/[.06] bg-white/80 p-3.5 shadow-[0_4px_14px_rgba(0,0,0,.04)]"><div className="flex items-center gap-3"><div className="grid h-9 w-9 place-items-center rounded-full bg-[#e8f1fe] text-sm font-semibold text-accent">{(user.name || "M").slice(0,1).toUpperCase()}</div><div className="min-w-0"><div className="truncate text-sm font-medium">{user.name || "Marasi user"}</div><div className="mt-0.5 capitalize text-[11px] text-subtle">{demoMode ? "Interactive demo" : `${role} access`}</div></div></div>{demoMode && <button onClick={logout} className="mt-3 flex w-full items-center gap-2 rounded-lg px-1 py-1 text-xs text-muted hover:text-ink"><LogOut size={14}/>Reset demo</button>}</div>
+      <div className="mt-5 rounded-2xl border border-black/[.06] bg-white/80 p-3.5 shadow-[0_4px_14px_rgba(0,0,0,.04)]"><div className="flex items-center gap-3"><div className="grid h-9 w-9 place-items-center rounded-full bg-[#e8f1fe] text-sm font-semibold text-accent">{(user.name || "M").slice(0,1).toUpperCase()}</div><div className="min-w-0"><div className="truncate text-sm font-medium">{user.name || "Marasi user"}</div><div className="mt-0.5 capitalize text-[11px] text-subtle">{demoMode ? "Interactive demo" : `${role} access`}</div></div></div><button onClick={logout} className="mt-3 flex w-full items-center gap-2 rounded-lg px-1 py-1 text-xs text-muted hover:text-ink"><LogOut size={14}/>{demoMode ? "Reset demo" : "Sign out"}</button></div>
     </aside>
     <main className="min-w-0 flex-1"><header className="sticky top-0 z-10 flex h-[64px] items-center justify-between border-b border-black/[.06] bg-white/75 px-5 backdrop-blur-2xl md:px-10"><button onClick={() => setLocation("/")} className="flex items-center gap-2 font-serif text-lg tracking-[-.03em] md:hidden"><span className="grid h-8 w-8 place-items-center rounded-[10px] bg-accent text-white"><Sparkles size={14}/></span>Marasi</button><div className="hidden md:block"><div className="text-[13px] font-medium text-ink">Marasi Operations</div><div className="mt-0.5 text-[11px] text-subtle">One system for the resort day</div></div><div className="flex items-center gap-3"><span className="hidden rounded-full bg-fill px-3 py-1.5 text-[11px] font-medium capitalize text-body sm:inline">{demoMode ? "Interactive demo" : `${role} access`}</span><div className="grid h-8 w-8 place-items-center rounded-full bg-ink text-xs font-semibold text-white">{(user.name || "M").slice(0,1).toUpperCase()}</div></div></header>
       <div className="mx-auto max-w-[1440px] p-4 pb-24 md:p-8 lg:p-10">{demoMode && <div className="mb-5 flex items-center gap-2 rounded-2xl border border-[#cce5ff] bg-[#f0f7ff] px-4 py-3 text-xs font-medium text-[#0066cc]"><Sparkles size={14}/> Browser-local presentation data — changes stay in this browser and never touch Marasi records.</div>}{children}</div>

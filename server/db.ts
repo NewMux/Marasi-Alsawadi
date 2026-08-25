@@ -1,10 +1,10 @@
-import { and, desc, eq, gte, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, isNull, lte, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   activityLog, aquaParkCapacity, aquaParkTickets, dailyTasks,
   dailySettlements, financeEntries, guests, housekeepingTasks, inventoryItems,
   maintenanceRequests, propertyUnits, reservations, staffProfiles,
-  pettyCashRequests, staffAttendance, staffLeaveRequests, staffShifts, users, workbookImports,
+  pettyCashRequests, staffAttendance, staffLeaveRequests, staffShifts, users, userSessions, workbookImports,
   type InsertUser
 } from "../drizzle/schema";
 
@@ -31,6 +31,64 @@ export async function getUserByOpenId(openId: string) {
   const db = await getDb(); if (!db) return undefined;
   const r = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
   return r[0];
+}
+
+export async function getUserByUsername(username: string) {
+  const db = await getDb(); if (!db) return undefined;
+  const r = await db.select().from(users).where(eq(users.username, username.trim().toLowerCase())).limit(1);
+  return r[0];
+}
+
+export async function createLocalUser(data: {
+  username: string; passwordHash: string; name: string; email?: string | null;
+  role: "staff" | "manager" | "admin" | "guard" | "super_admin";
+  mustChangePassword?: boolean; isActive?: boolean;
+}) {
+  const db = await getDb(); if (!db) throw new Error("Database is not configured");
+  const username = data.username.trim().toLowerCase();
+  await db.insert(users).values({
+    openId: `local:${username}`, username, passwordHash: data.passwordHash,
+    name: data.name.trim(), email: data.email ?? null, loginMethod: "local",
+    role: data.role, mustChangePassword: data.mustChangePassword ?? true,
+    isActive: data.isActive ?? true, lastSignedIn: new Date(),
+  });
+  return getUserByUsername(username);
+}
+
+export async function updateLocalUser(id: number, data: Partial<{
+  name: string; email: string | null; role: "staff" | "manager" | "admin" | "guard" | "super_admin";
+  passwordHash: string; mustChangePassword: boolean; isActive: boolean; lastSignedIn: Date;
+}>) {
+  const db = await getDb(); if (!db) throw new Error("Database is not configured");
+  await db.update(users).set(data).where(eq(users.id, id));
+  const r = await db.select().from(users).where(eq(users.id, id)).limit(1);
+  return r[0];
+}
+
+export async function createUserSession(userId: number, tokenHash: string, expiresAt: Date) {
+  const db = await getDb(); if (!db) throw new Error("Database is not configured");
+  await db.insert(userSessions).values({ userId, tokenHash, expiresAt });
+}
+
+export async function getUserBySessionHash(tokenHash: string) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select({ user: users }).from(userSessions)
+    .innerJoin(users, eq(userSessions.userId, users.id))
+    .where(and(eq(userSessions.tokenHash, tokenHash), gt(userSessions.expiresAt, new Date()), isNull(userSessions.revokedAt), eq(users.isActive, true)))
+    .limit(1);
+  if (!rows[0]?.user) return undefined;
+  await db.update(userSessions).set({ lastUsedAt: new Date() }).where(eq(userSessions.tokenHash, tokenHash));
+  return rows[0].user;
+}
+
+export async function revokeUserSession(tokenHash: string) {
+  const db = await getDb(); if (!db) return;
+  await db.update(userSessions).set({ revokedAt: new Date() }).where(eq(userSessions.tokenHash, tokenHash));
+}
+
+export async function revokeAllUserSessions(userId: number) {
+  const db = await getDb(); if (!db) return;
+  await db.update(userSessions).set({ revokedAt: new Date() }).where(and(eq(userSessions.userId, userId), isNull(userSessions.revokedAt)));
 }
 
 // ─── Activity log ─────────────────────────────────────────────────────────────
@@ -417,7 +475,7 @@ export async function listUsers() {
   const db = await getDb(); if (!db) return [];
   return db.select().from(users).orderBy(users.name);
 }
-export async function updateUserRole(id: number, role: "staff" | "manager" | "admin" | "guard") {
+export async function updateUserRole(id: number, role: "staff" | "manager" | "admin" | "guard" | "super_admin") {
   const db = await getDb(); if (!db) throw new Error("no db");
   await db.update(users).set({ role }).where(eq(users.id, id));
 }

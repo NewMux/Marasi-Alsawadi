@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
-  expenseCategories, expenseRecords, guests, salesTicketSequences, salesTransactions, serviceRates,
-  ticketCheckIns,
+  expenseCategories, expenseRecords, guests, salesTicketSequences, salesTransactionLines, salesTransactions,
+  serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns,
 } from "../drizzle/schema";
 import { getDb } from "./db";
 import { calculateOperationalNet, decideGateEntry, formatTicketNumber } from "./ticketingRules";
@@ -14,7 +14,10 @@ export type SalesTransactionDraft = {
   department: "aqua_park" | "rooms" | "fnb" | "general";
   quantity: number;
   unitPrice: string;
+  baseSubtotal: string;
+  feeTotal: string;
   totalAmount: string;
+  lines: Array<typeof salesTransactionLines.$inferInsert>;
   paymentMethod: "cash" | "card" | "bank" | "mixed";
   notes?: string;
   issuedBy: number;
@@ -53,8 +56,71 @@ export async function deleteServiceRate(id: number) {
     await db.update(serviceRates).set({ isActive: false }).where(eq(serviceRates.id, id));
     return { deactivated: true };
   }
+  await db.delete(serviceRateFees).where(eq(serviceRateFees.rateId, id));
   await db.delete(serviceRates).where(eq(serviceRates.id, id));
   return { deactivated: false };
+}
+
+export async function listTicketFees(includeInactive = false) {
+  const db = await getDb(); if (!db) return [];
+  const base = db.select().from(ticketFeeDefinitions).orderBy(ticketFeeDefinitions.displayOrder, ticketFeeDefinitions.name);
+  return includeInactive ? base : base.where(eq(ticketFeeDefinitions.isActive, true));
+}
+
+export async function getTicketFee(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(ticketFeeDefinitions).where(eq(ticketFeeDefinitions.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function createTicketFee(data: typeof ticketFeeDefinitions.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(ticketFeeDefinitions).values(data);
+  const rows = await db.select().from(ticketFeeDefinitions).orderBy(desc(ticketFeeDefinitions.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function updateTicketFee(id: number, data: Partial<typeof ticketFeeDefinitions.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(ticketFeeDefinitions).set(data).where(eq(ticketFeeDefinitions.id, id));
+  return getTicketFee(id);
+}
+
+export async function deleteTicketFee(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const fee = await getTicketFee(id);
+  if (!fee) return { deactivated: false };
+  const linked = await db.select({ id: salesTransactionLines.id }).from(salesTransactionLines)
+    .where(and(eq(salesTransactionLines.lineType, "fee"), eq(salesTransactionLines.code, fee.code))).limit(1);
+  if (linked.length) {
+    await db.update(ticketFeeDefinitions).set({ isActive: false }).where(eq(ticketFeeDefinitions.id, id));
+    return { deactivated: true };
+  }
+  await db.delete(serviceRateFees).where(eq(serviceRateFees.feeId, id));
+  await db.delete(ticketFeeDefinitions).where(eq(ticketFeeDefinitions.id, id));
+  return { deactivated: false };
+}
+
+export async function listFeeAssignments() {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(serviceRateFees).where(eq(serviceRateFees.isActive, true));
+}
+
+export async function replaceFeeAssignments(feeId: number, rateIds: number[]) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.transaction(async (tx) => {
+    await tx.delete(serviceRateFees).where(eq(serviceRateFees.feeId, feeId));
+    if (rateIds.length) await tx.insert(serviceRateFees).values(rateIds.map((rateId) => ({ feeId, rateId, isActive: true })));
+  });
+}
+
+export async function listApplicableTicketFees(rateId: number) {
+  const db = await getDb(); if (!db) return [];
+  return db.selectDistinct({ fee: ticketFeeDefinitions }).from(ticketFeeDefinitions)
+    .leftJoin(serviceRateFees, and(eq(serviceRateFees.feeId, ticketFeeDefinitions.id), eq(serviceRateFees.isActive, true)))
+    .where(and(eq(ticketFeeDefinitions.isActive, true), or(eq(ticketFeeDefinitions.appliesGlobally, true), eq(serviceRateFees.rateId, rateId))))
+    .orderBy(ticketFeeDefinitions.displayOrder, ticketFeeDefinitions.id)
+    .then((rows) => rows.map((entry) => entry.fee));
 }
 
 export async function searchCustomers(query?: string) {
@@ -81,8 +147,9 @@ export async function createSalesTransaction(data: SalesTransactionDraft) {
       .where(eq(salesTicketSequences.ticketYear, ticketYear)).limit(1);
     const sequenceNumber = Number(sequenceRow[0]?.lastSequence ?? 0);
     const ticketNumber = formatTicketNumber(ticketYear, sequenceNumber);
+    const { lines, ...transactionData } = data;
     await tx.insert(salesTransactions).values({
-      ...data,
+      ...transactionData,
       visitDate: data.visitDate as any,
       ticketYear,
       sequenceNumber,
@@ -92,8 +159,15 @@ export async function createSalesTransaction(data: SalesTransactionDraft) {
     } as any);
     const created = await tx.select().from(salesTransactions)
       .where(eq(salesTransactions.ticketNumber, ticketNumber)).limit(1);
-    return created[0]!;
+    const ticket = created[0]!;
+    if (lines.length) await tx.insert(salesTransactionLines).values(lines.map((line) => ({ ...line, transactionId: ticket.id })) as any);
+    return ticket;
   });
+}
+
+export async function listSalesTransactionLines(transactionId: number) {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(salesTransactionLines).where(eq(salesTransactionLines.transactionId, transactionId)).orderBy(salesTransactionLines.sortOrder, salesTransactionLines.id);
 }
 
 export async function getSalesTransactionById(id: number) {
@@ -222,7 +296,13 @@ export async function updateExpenseCategory(id: number, data: Partial<typeof exp
 
 export async function deleteExpenseCategory(id: number) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const linked = await db.select({ id: expenseRecords.id }).from(expenseRecords).where(eq(expenseRecords.categoryId, id)).limit(1);
+  if (linked.length) {
+    await db.update(expenseCategories).set({ isActive: false }).where(eq(expenseCategories.id, id));
+    return { deactivated: true };
+  }
   await db.delete(expenseCategories).where(eq(expenseCategories.id, id));
+  return { deactivated: false };
 }
 
 export async function listExpenseRecords(from?: string, to?: string) {

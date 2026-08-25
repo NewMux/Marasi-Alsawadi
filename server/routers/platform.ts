@@ -2,45 +2,47 @@ import { randomUUID } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
-  createAquaTicket, createDailyTask, createFinanceEntry, createGuest, createPettyCashRequest, deleteFinanceEntry,
+  createAquaTicket, createDailyTask, createFinanceEntry, createGuest, createLocalUser, createPettyCashRequest, deleteFinanceEntry,
   createHousekeepingTask, createInventoryItem, createMaintenanceRequest,
   createLeaveRequest, createReservation, createShift, createStaffProfile, createUnit,
   createWorkbookImport, getActivityLog, getAquaAttendance, getAquaCapacity,
-  getOccupancyStats, getRevenueSummary, linkStaffToUser,
+  getOccupancyStats, getRevenueSummary, getUserByUsername, linkStaffToUser,
   isValidDateRange, listAquaTickets, listAttendance, listDailyTasks, listFinanceEntries, listGuests,
   listHousekeepingTasks, listInventory, listMaintenanceRequests,
   listDailySettlements, listLeaveRequests, listPettyCashRequests, listReservations, listShifts, listStaff, listUnits, listUsers,
   hasReservationOverlap, isQaReservationRecord, listWorkbookImports, logActivity, recordAttendance, recordEntry, reviewDailySettlement, reviewLeaveRequest, reviewPettyCashRequest, saveDailySettlement, setAquaCapacity,
   updateDailyTask, updateFinanceEntry, updateHousekeepingTask, updateInventoryItem,
-  updateMaintenanceRequest, updateReservationStatus, updateUnitStatus,
+  revokeAllUserSessions, updateLocalUser, updateMaintenanceRequest, updateReservationStatus, updateUnitStatus,
   updateUserRole,
 } from "../db";
 import { protectedProcedure, publicProcedure, router } from "../_core/trpc";
+import { hashPassword } from "../auth";
 import { canIssueAquaTickets, remainingAquaCapacity } from "../operationRules";
 import {
-  createExpenseCategory, createExpenseRecord, createSalesTransaction, createServiceRate, deleteExpenseCategory,
-  deleteExpenseRecord, getExpenseCategory, getExpenseRecord, getOperationalFinancialSummary, listExpenseCategories,
-  listExpenseRecords, listSalesTransactions, listServiceRates, getServiceRate, searchCustomers, updateExpenseCategory, updateExpenseRecord, updateServiceRate, deleteServiceRate,
-  getSalesTransactionByToken, listRecentTicketScans, recordTicketScan,
+  createExpenseCategory, createExpenseRecord, createSalesTransaction, createServiceRate, createTicketFee, deleteExpenseCategory,
+  deleteExpenseRecord, deleteTicketFee, getExpenseCategory, getExpenseRecord, getOperationalFinancialSummary, getSalesTransactionByToken,
+  getServiceRate, listApplicableTicketFees, listExpenseCategories, listExpenseRecords, listFeeAssignments, listRecentTicketScans,
+  listSalesTransactionLines, listSalesTransactions, listServiceRates, listTicketFees, recordTicketScan, replaceFeeAssignments,
+  searchCustomers, updateExpenseCategory, updateExpenseRecord, updateServiceRate, updateTicketFee, deleteServiceRate,
 } from "../ticketingDb";
-import { calculateTicketTotal, extractTicketToken, isPositiveMoney } from "../ticketingRules";
+import { calculateTicketPricing, extractTicketToken, isPositiveMoney } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
 import { publicTicketUrl, requestOrigin } from "../ticketUrl";
 
 const managerProcedure = protectedProcedure.use(({ ctx, next }) => {
-  if (ctx.user.role !== "manager" && ctx.user.role !== "admin")
+  if (!['manager', 'admin', 'super_admin'].includes(ctx.user.role))
     throw new TRPCError({ code: "FORBIDDEN", message: "Manager or admin required" });
   return next({ ctx });
 });
 
-const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
-  if (ctx.user.role !== "admin")
-    throw new TRPCError({ code: "FORBIDDEN", message: "Admin required" });
+const superAdminProcedure = protectedProcedure.use(({ ctx, next }) => {
+  if (ctx.user.role !== "super_admin")
+    throw new TRPCError({ code: "FORBIDDEN", message: "Super Admin required" });
   return next({ ctx });
 });
 
 const gateProcedure = protectedProcedure.use(({ ctx, next }) => {
-  if (!["guard", "manager", "admin"].includes(ctx.user.role)) {
+  if (!["guard", "manager", "admin", "super_admin"].includes(ctx.user.role)) {
     throw new TRPCError({ code: "FORBIDDEN", message: "Gate access required" });
   }
   return next({ ctx });
@@ -101,8 +103,8 @@ export const platformRouter = router({
 
   rates: router({
     list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
-      .query(({ input, ctx }) => listServiceRates(Boolean(input?.includeInactive && ctx.user.role === "admin"))),
-    create: adminProcedure.input(z.object({
+      .query(({ input, ctx }) => listServiceRates(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
+    create: superAdminProcedure.input(z.object({
       name: z.string().min(2).max(128), code: z.string().min(2).max(48),
       department: z.enum(["aqua_park", "rooms", "fnb", "general"]),
       unitPrice: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to two decimals"),
@@ -112,7 +114,7 @@ export const platformRouter = router({
       await logActivity(ctx.user.id, "service_rate.create", "service_rate", rate.id, rate.code);
       return rate;
     }),
-    update: adminProcedure.input(z.object({
+    update: superAdminProcedure.input(z.object({
       id: z.number(), name: z.string().min(2).max(128).optional(), code: z.string().min(2).max(48).optional(),
       department: z.enum(["aqua_park", "rooms", "fnb", "general"]).optional(),
       unitPrice: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to two decimals").optional(),
@@ -123,9 +125,54 @@ export const platformRouter = router({
       await logActivity(ctx.user.id, "service_rate.update", "service_rate", id, rate?.code);
       return rate;
     }),
-    delete: adminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+    delete: superAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
       const result = await deleteServiceRate(input.id);
       await logActivity(ctx.user.id, "service_rate.delete", "service_rate", input.id);
+      return result;
+    }),
+  }),
+
+  fees: router({
+    list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
+      .query(({ input, ctx }) => listTicketFees(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
+    assignments: superAdminProcedure.query(() => listFeeAssignments()),
+    preview: protectedProcedure.input(z.object({ rateId: z.number(), quantity: z.number().int().min(1) })).query(async ({ input }) => {
+      const rate = await getServiceRate(input.rateId);
+      if (!rate?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active price" });
+      const fees = await listApplicableTicketFees(rate.id);
+      return calculateTicketPricing({ unitPrice: String(rate.unitPrice), quantity: input.quantity, rateName: rate.name, rateCode: rate.code, fees: fees.map((fee) => ({ ...fee, value: String(fee.value) })) });
+    }),
+    create: superAdminProcedure.input(z.object({
+      name: z.string().min(2).max(128), code: z.string().min(2).max(48), calculationType: z.enum(["fixed", "percentage"]),
+      value: z.string().regex(/^\d+(\.\d{1,4})?$/), applicationBasis: z.enum(["per_ticket", "per_transaction"]),
+      appliesGlobally: z.boolean().default(false), displayOrder: z.number().int().min(0).max(999).default(0), rateIds: z.array(z.number()).default([]),
+    }).refine((input) => input.appliesGlobally || input.rateIds.length > 0, { path: ["rateIds"], message: "Apply the fee globally or select at least one base price" })).mutation(async ({ input, ctx }) => {
+      if (Number(input.value) <= 0 || (input.calculationType === "percentage" && Number(input.value) > 100)) throw new TRPCError({ code: "BAD_REQUEST", message: "Enter a valid positive fee value" });
+      const { rateIds, ...data } = input;
+      const fee = await createTicketFee({ ...data, name: data.name.trim(), code: normalizeRateCode(data.code), createdBy: ctx.user.id });
+      if (!fee.appliesGlobally) await replaceFeeAssignments(fee.id, rateIds);
+      await logActivity(ctx.user.id, "ticket_fee.create", "ticket_fee", fee.id, JSON.stringify(data));
+      return fee;
+    }),
+    update: superAdminProcedure.input(z.object({
+      id: z.number(), name: z.string().min(2).max(128).optional(), code: z.string().min(2).max(48).optional(),
+      calculationType: z.enum(["fixed", "percentage"]).optional(), value: z.string().regex(/^\d+(\.\d{1,4})?$/).optional(),
+      applicationBasis: z.enum(["per_ticket", "per_transaction"]).optional(), appliesGlobally: z.boolean().optional(),
+      displayOrder: z.number().int().min(0).max(999).optional(), isActive: z.boolean().optional(), rateIds: z.array(z.number()).optional(),
+    })).mutation(async ({ input, ctx }) => {
+      if (input.value && Number(input.value) <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: "Fee value must be positive" });
+      if (input.calculationType === "percentage" && input.value && Number(input.value) > 100) throw new TRPCError({ code: "BAD_REQUEST", message: "Percentage cannot exceed 100" });
+      if (input.appliesGlobally === false && input.rateIds && input.rateIds.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "Apply the fee globally or select at least one base price" });
+      const { id, rateIds, code, name, ...rest } = input;
+      const fee = await updateTicketFee(id, { ...rest, code: code ? normalizeRateCode(code) : undefined, name: name?.trim() });
+      if (!fee) throw new TRPCError({ code: "NOT_FOUND", message: "Fee item was not found" });
+      if (rateIds) await replaceFeeAssignments(id, fee.appliesGlobally ? [] : rateIds);
+      await logActivity(ctx.user.id, "ticket_fee.update", "ticket_fee", id, JSON.stringify(input));
+      return fee;
+    }),
+    delete: superAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+      const result = await deleteTicketFee(input.id);
+      await logActivity(ctx.user.id, "ticket_fee.delete", "ticket_fee", input.id);
       return result;
     }),
   }),
@@ -137,26 +184,22 @@ export const platformRouter = router({
     public: publicProcedure.input(z.object({ token: z.string().min(16).max(96) })).query(async ({ input, ctx }) => {
       const entry = await getSalesTransactionByToken(input.token);
       if (!entry) throw new TRPCError({ code: "NOT_FOUND", message: "This ticket could not be found" });
+      const lines = await listSalesTransactionLines(entry.t.id);
       return {
         ticket: {
-          ticketNumber: entry.t.ticketNumber,
-          publicToken: entry.t.publicToken,
-          status: entry.t.status,
-          visitDate: entry.t.visitDate,
-          department: entry.t.department,
-          quantity: entry.t.quantity,
-          unitPrice: entry.t.unitPrice,
-          totalAmount: entry.t.totalAmount,
+          ticketNumber: entry.t.ticketNumber, publicToken: entry.t.publicToken, status: entry.t.status,
+          visitDate: entry.t.visitDate, department: entry.t.department, quantity: entry.t.quantity,
+          unitPrice: entry.t.unitPrice, baseSubtotal: entry.t.baseSubtotal, feeTotal: entry.t.feeTotal, totalAmount: entry.t.totalAmount,
         },
+        lines,
         customer: { fullName: entry.c?.fullName || "Guest" },
         rate: entry.r ? { name: entry.r.name, code: entry.r.code } : null,
         publicUrl: publicTicketUrl(entry.t.publicToken, requestOrigin(ctx.req)),
       };
     }),
     create: protectedProcedure.input(z.object({
-      customerId: z.number().optional(), customerName: z.string().min(1).optional(), customerPhone: z.string().min(3).optional(), rateId: z.number().optional(),
-      visitDate: z.string(), department: z.enum(["aqua_park", "rooms", "fnb", "general"]).default("aqua_park"),
-      quantity: z.number().int().min(1), unitPrice: z.string().refine(isPositiveMoney, "Enter a positive amount with up to two decimals"),
+      customerId: z.number().optional(), customerName: z.string().min(1).optional(), customerPhone: z.string().min(3).optional(),
+      rateId: z.number(), visitDate: z.string(), quantity: z.number().int().min(1),
       paymentMethod: z.enum(["cash", "card", "bank", "mixed"]).default("cash"), notes: z.string().optional(),
     }).refine((value) => Boolean(value.customerId || (value.customerName && value.customerPhone)), {
       message: "Select an existing customer or provide a customer name and phone number",
@@ -165,25 +208,27 @@ export const platformRouter = router({
         ? (await searchCustomers()).find((entry: any) => entry.id === input.customerId)
         : await createGuest({ fullName: input.customerName!, phone: input.customerPhone! });
       if (!customer) throw new TRPCError({ code: "NOT_FOUND", message: "Customer record was not found" });
-      const selectedRate = input.rateId ? await getServiceRate(input.rateId) : undefined;
-      if (input.rateId && (!selectedRate || !selectedRate.isActive)) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected OMR rate is no longer active" });
-      if (!input.rateId && ctx.user.role === "staff") throw new TRPCError({ code: "FORBIDDEN", message: "Staff must select an active rate. A manager or administrator can approve a manual price." });
-      const unitPrice = selectedRate ? String(selectedRate.unitPrice) : input.unitPrice;
-      const department = selectedRate ? selectedRate.department : input.department;
-      const totalAmount = calculateTicketTotal(unitPrice, input.quantity);
+      const selectedRate = await getServiceRate(input.rateId);
+      if (!selectedRate?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected OMR price is no longer active" });
+      const fees = await listApplicableTicketFees(selectedRate.id);
+      const pricing = calculateTicketPricing({
+        unitPrice: String(selectedRate.unitPrice), quantity: input.quantity, rateName: selectedRate.name, rateCode: selectedRate.code,
+        fees: fees.map((fee) => ({ ...fee, value: String(fee.value) })),
+      });
       const ticket = await createSalesTransaction({
-        customerId: customer.id, rateId: selectedRate?.id, visitDate: input.visitDate, department,
-        quantity: input.quantity, unitPrice, totalAmount: String(totalAmount),
+        customerId: customer.id, rateId: selectedRate.id, visitDate: input.visitDate, department: selectedRate.department,
+        quantity: input.quantity, unitPrice: String(selectedRate.unitPrice), baseSubtotal: pricing.baseSubtotal,
+        feeTotal: pricing.feeTotal, totalAmount: pricing.totalAmount, lines: pricing.lines as any,
         paymentMethod: input.paymentMethod, notes: input.notes, issuedBy: ctx.user.id,
       });
-      const stream = department === "general" ? "extras" : department;
+      const stream = selectedRate.department === "general" ? "extras" : selectedRate.department;
       await createFinanceEntry({
-        date: input.visitDate, stream, type: "revenue", amount: String(totalAmount),
+        date: input.visitDate, stream, type: "revenue", amount: pricing.totalAmount,
         description: `Ticket ${ticket.ticketNumber} – ${customer.fullName}`,
         referenceId: ticket.id, referenceType: "sales_ticket", createdBy: ctx.user.id,
       } as any);
-      await logActivity(ctx.user.id, "ticket.issue", "sales_transaction", ticket.id, ticket.ticketNumber);
-      return { ticket, customer, publicUrl: publicTicketUrl(ticket.publicToken, requestOrigin(ctx.req)) };
+      await logActivity(ctx.user.id, "ticket.issue", "sales_transaction", ticket.id, `${ticket.ticketNumber}:${pricing.totalAmount}`);
+      return { ticket, lines: pricing.lines, pricing, customer, publicUrl: publicTicketUrl(ticket.publicToken, requestOrigin(ctx.req)) };
     }),
   }),
 
@@ -487,13 +532,13 @@ export const platformRouter = router({
     expenseCategories: router({
       list: managerProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
         .query(({ input }) => listExpenseCategories(Boolean(input?.includeInactive))),
-      create: adminProcedure.input(z.object({ name: z.string().min(1), code: z.string().min(2).max(32) }))
+      create: superAdminProcedure.input(z.object({ name: z.string().min(1), code: z.string().min(2).max(32) }))
         .mutation(async ({ input, ctx }) => {
           const category = await createExpenseCategory({ ...input, createdBy: ctx.user.id });
           await logActivity(ctx.user.id, "expense_category.create", "expense_category", category.id, input.code);
           return category;
         }),
-      update: adminProcedure.input(z.object({
+      update: superAdminProcedure.input(z.object({
         id: z.number(), name: z.string().min(1).optional(), code: z.string().min(2).max(32).optional(), isActive: z.boolean().optional(),
       })).mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
@@ -501,9 +546,10 @@ export const platformRouter = router({
         await logActivity(ctx.user.id, "expense_category.update", "expense_category", id, JSON.stringify(data));
         return category;
       }),
-      delete: adminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
-        await deleteExpenseCategory(input.id);
-        await logActivity(ctx.user.id, "expense_category.delete", "expense_category", input.id);
+      delete: superAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+        const result = await deleteExpenseCategory(input.id);
+        await logActivity(ctx.user.id, "expense_category.delete", "expense_category", input.id, result.deactivated ? "retired" : "deleted");
+        return result;
       }),
     }),
     expenses: router({
@@ -577,21 +623,56 @@ export const platformRouter = router({
   }),
 
   admin: router({
-    listUsers: adminProcedure.query(() => listUsers()),
-    updateUserRole: adminProcedure.input(z.object({
-      id: z.number(), role: z.enum(["staff", "manager", "admin", "guard"]),
+    listUsers: superAdminProcedure.query(async () => (await listUsers()).map(({ passwordHash: _passwordHash, ...user }) => user)),
+    createUser: superAdminProcedure.input(z.object({
+      username: z.string().trim().min(3).max(64), name: z.string().trim().min(2).max(128), email: z.string().email().nullable().optional(),
+      role: z.enum(["staff", "manager", "admin", "guard", "super_admin"]), temporaryPassword: z.string().min(12).max(256),
     })).mutation(async ({ input, ctx }) => {
+      const username = input.username.toLowerCase();
+      if (await getUserByUsername(username)) throw new TRPCError({ code: "CONFLICT", message: "Username already exists" });
+      const user = await createLocalUser({ username, name: input.name, email: input.email, role: input.role, passwordHash: await hashPassword(input.temporaryPassword), mustChangePassword: true });
+      await logActivity(ctx.user.id, "admin.user.create", "user", user?.id, `${username}:${input.role}`);
+      if (!user) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Account could not be created" });
+      const { passwordHash: _passwordHash, ...safeUser } = user;
+      return safeUser;
+    }),
+    updateUser: superAdminProcedure.input(z.object({
+      id: z.number(), name: z.string().trim().min(2).max(128).optional(), email: z.string().email().nullable().optional(),
+      role: z.enum(["staff", "manager", "admin", "guard", "super_admin"]).optional(), isActive: z.boolean().optional(),
+    })).mutation(async ({ input, ctx }) => {
+      if (input.id === ctx.user.id && (input.isActive === false || (input.role && input.role !== "super_admin"))) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot deactivate or demote your own Super Admin account" });
+      }
+      const { id, ...data } = input;
+      const user = await updateLocalUser(id, data);
+      if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "User account was not found" });
+      if (data.isActive === false) await revokeAllUserSessions(id);
+      await logActivity(ctx.user.id, "admin.user.update", "user", id, JSON.stringify(data));
+      const { passwordHash: _passwordHash, ...safeUser } = user;
+      return safeUser;
+    }),
+    resetUserPassword: superAdminProcedure.input(z.object({ id: z.number(), temporaryPassword: z.string().min(12).max(256) }))
+      .mutation(async ({ input, ctx }) => {
+        await updateLocalUser(input.id, { passwordHash: await hashPassword(input.temporaryPassword), mustChangePassword: true });
+        await revokeAllUserSessions(input.id);
+        await logActivity(ctx.user.id, "admin.user.password_reset", "user", input.id);
+        return { success: true } as const;
+      }),
+    updateUserRole: superAdminProcedure.input(z.object({
+      id: z.number(), role: z.enum(["staff", "manager", "admin", "guard", "super_admin"]),
+    })).mutation(async ({ input, ctx }) => {
+      if (input.id === ctx.user.id && input.role !== "super_admin") throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot demote your own Super Admin account" });
       await updateUserRole(input.id, input.role);
       await logActivity(ctx.user.id, "admin.role.update", "user", input.id, input.role);
     }),
-    linkStaff: adminProcedure.input(z.object({ staffId: z.number(), userId: z.number() }))
+    linkStaff: superAdminProcedure.input(z.object({ staffId: z.number(), userId: z.number() }))
       .mutation(async ({ input, ctx }) => {
         await linkStaffToUser(input.staffId, input.userId);
         await logActivity(ctx.user.id, "admin.staff.link", "staff_profile", input.staffId);
       }),
-    activityLog: adminProcedure.input(z.object({ limit: z.number().int().min(1).max(200).default(50) }))
+    activityLog: superAdminProcedure.input(z.object({ limit: z.number().int().min(1).max(200).default(50) }))
       .query(({ input }) => getActivityLog(input.limit)),
-    populateQa: adminProcedure.mutation(async ({ ctx }) => {
+    populateQa: superAdminProcedure.mutation(async ({ ctx }) => {
       const today = new Date().toISOString().slice(0, 10);
       const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
 

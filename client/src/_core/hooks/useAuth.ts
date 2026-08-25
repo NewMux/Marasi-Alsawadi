@@ -1,37 +1,39 @@
 import { clearPublicDemoMode, isPublicDemoMode } from "@/lib/demoMode";
+import { trpc } from "@/lib/trpc";
 import { useCallback, useMemo } from "react";
 
-type Role = "staff" | "manager" | "admin" | "guard";
-
-// This deployment runs without a login wall: the server treats every request
-// as a single auto-provisioned system user, so the client mirrors that here
-// instead of querying a session. Demo mode (a separate, browser-local
-// presentation mode) is unaffected and still resets independently. Role is
-// typed as the full union (not the literal "admin") so role-based branches
-// elsewhere still type-check if a real per-user role is reintroduced later.
-const SYSTEM_USER: { id: number; name: string; email: string | null; role: Role; isDemo: boolean } =
-  { id: -1, name: "Marasi Operations", email: null, role: "admin", isDemo: false };
+type Role = "staff" | "manager" | "admin" | "guard" | "super_admin";
+type DemoUser = { id: number; name: string; email: string; role: Role; mustChangePassword: boolean; isDemo: true };
 
 export function useAuth() {
   const demoMode = isPublicDemoMode();
-
-  const logout = useCallback(async () => {
-    if (!demoMode) return;
-    clearPublicDemoMode();
-    window.location.assign("/");
-  }, [demoMode]);
+  const utils = trpc.useUtils();
+  const meQuery = trpc.auth.me.useQuery(undefined, { enabled: !demoMode, retry: false, refetchOnWindowFocus: false });
+  const logoutMutation = trpc.auth.logout.useMutation();
 
   const user = useMemo(() => {
-    if (demoMode) return { id: 0, name: "Client presentation", email: "demo@marasi.example", role: "admin" as Role, isDemo: true };
-    return SYSTEM_USER;
-  }, [demoMode]);
+    if (demoMode) return { id: 0, name: "Client presentation", email: "demo@marasi.example", role: "super_admin", mustChangePassword: false, isDemo: true } satisfies DemoUser;
+    return meQuery.data ?? null;
+  }, [demoMode, meQuery.data]);
+
+  const logout = useCallback(async () => {
+    if (demoMode) {
+      clearPublicDemoMode();
+      window.location.assign("/");
+      return;
+    }
+    try { await logoutMutation.mutateAsync(); } finally {
+      utils.auth.me.setData(undefined, null);
+      window.location.assign("/login");
+    }
+  }, [demoMode, logoutMutation, utils]);
 
   return {
     user,
-    loading: false,
-    error: null,
-    isAuthenticated: true,
-    refresh: () => {},
+    loading: demoMode ? false : meQuery.isLoading || logoutMutation.isPending,
+    error: demoMode ? null : meQuery.error ?? logoutMutation.error ?? null,
+    isAuthenticated: Boolean(user),
+    refresh: () => meQuery.refetch(),
     logout,
   };
 }
