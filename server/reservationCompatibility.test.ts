@@ -13,7 +13,7 @@ describe("reservation compatibility values", () => {
 
     expect(values).toMatchObject({
       kind: "chalet", guestId: 9, unitId: 4, adults: 2, children: 1,
-      unitRate: 800, totalAmount: 1600, status: "confirmed", source: "walk_in",
+      unitRate: "800.00", totalAmount: "1600.00", status: "confirmed", source: "walk_in",
       notes: "QA-only reservation",
     });
     expect(values.reference).toMatch(/^MAS-[A-Z0-9]+-[A-Z0-9]+$/);

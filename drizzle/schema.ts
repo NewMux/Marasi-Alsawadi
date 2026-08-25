@@ -9,13 +9,28 @@ export const users = mysqlTable("users", {
   name: text("name"),
   email: varchar("email", { length: 320 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
-  role: mysqlEnum("role", ["staff", "manager", "admin", "guard"]).default("staff").notNull(),
+  role: mysqlEnum("role", ["staff", "manager", "admin", "guard", "super_admin"]).default("staff").notNull(),
+  username: varchar("username", { length: 64 }).unique(),
+  passwordHash: text("passwordHash"),
+  mustChangePassword: boolean("mustChangePassword").default(true).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
 });
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
+
+export const userSessions = mysqlTable("user_sessions", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  tokenHash: varchar("tokenHash", { length: 64 }).notNull().unique(),
+  expiresAt: timestamp("expiresAt").notNull(),
+  lastUsedAt: timestamp("lastUsedAt").defaultNow().notNull(),
+  revokedAt: timestamp("revokedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type UserSession = typeof userSessions.$inferSelect;
 
 // ─── Property Units ───────────────────────────────────────────────────────────
 export const propertyUnits = mysqlTable("property_units", {
@@ -58,8 +73,8 @@ export const reservations = mysqlTable("reservations", {
   adults: int("adults").default(1).notNull(),
   children: int("children").default(0).notNull(),
   quantity: int("quantity").default(1).notNull(),
-  unitRate: int("unitRate").default(0).notNull(),
-  totalAmount: int("totalAmount").default(0).notNull(),
+  unitRate: decimal("unitRate", { precision: 12, scale: 2 }).default("0").notNull(),
+  totalAmount: decimal("totalAmount", { precision: 12, scale: 2 }).default("0").notNull(),
   status: mysqlEnum("status", ["pending", "confirmed", "checked_in", "checked_out", "cancelled"]).default("pending").notNull(),
   source: mysqlEnum("source", ["walk_in", "phone", "online", "agent"]).default("walk_in").notNull(),
   notes: text("notes"),
@@ -105,6 +120,7 @@ export const serviceRates = mysqlTable("service_rates", {
   name: varchar("name", { length: 128 }).notNull(),
   code: varchar("code", { length: 48 }).notNull().unique(),
   department: mysqlEnum("department", ["aqua_park", "rooms", "fnb", "general"]).default("aqua_park").notNull(),
+  ticketType: mysqlEnum("ticketType", ["waterpark", "companion"]),
   unitPrice: decimal("unitPrice", { precision: 12, scale: 2 }).notNull(),
   currency: varchar("currency", { length: 3 }).default("OMR").notNull(),
   description: text("description"),
@@ -113,6 +129,103 @@ export const serviceRates = mysqlTable("service_rates", {
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 export type ServiceRate = typeof serviceRates.$inferSelect;
+
+// ─── PRD Phase 1 Ticketing ─────────────────────────────────────────────────────
+// These tables are intentionally separate from the future WhatsApp/QR ticket
+// entities above. Ticket numbers are continuous and never include a date.
+export const ticketNumberSequences = mysqlTable("ticket_number_sequences", {
+  id: int("id").primaryKey().default(1),
+  lastNumber: int("lastNumber").default(0).notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const ticketDiscountTiers = mysqlTable("ticket_discount_tiers", {
+  id: int("id").autoincrement().primaryKey(),
+  minTickets: int("minTickets").notNull(),
+  maxTickets: int("maxTickets"),
+  percentage: decimal("percentage", { precision: 5, scale: 2 }).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type TicketDiscountTier = typeof ticketDiscountTiers.$inferSelect;
+
+export const ticketPurchases = mysqlTable("ticket_purchases", {
+  id: int("id").autoincrement().primaryKey(),
+  customerId: int("customerId").notNull(),
+  visitDate: date("visitDate").notNull(),
+  chargeableTicketCount: int("chargeableTicketCount").default(0).notNull(),
+  discountPercentage: decimal("discountPercentage", { precision: 5, scale: 2 }).default("0").notNull(),
+  baseSubtotal: decimal("baseSubtotal", { precision: 12, scale: 2 }).default("0").notNull(),
+  discountAmount: decimal("discountAmount", { precision: 12, scale: 2 }).default("0").notNull(),
+  vatAmount: decimal("vatAmount", { precision: 12, scale: 2 }).default("0").notNull(),
+  feeTotal: decimal("feeTotal", { precision: 12, scale: 2 }).default("0").notNull(),
+  totalAmount: decimal("totalAmount", { precision: 12, scale: 2 }).notNull(),
+  paymentMethod: mysqlEnum("paymentMethod", ["cash", "card", "bank", "mixed"]).default("cash").notNull(),
+  notes: text("notes"),
+  issuedBy: int("issuedBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type TicketPurchase = typeof ticketPurchases.$inferSelect;
+
+export const ticketPurchaseLines = mysqlTable("ticket_purchase_lines", {
+  id: int("id").autoincrement().primaryKey(),
+  purchaseId: int("purchaseId").notNull(),
+  ticketNumber: varchar("ticketNumber", { length: 40 }).notNull().unique(),
+  ticketType: mysqlEnum("ticketType", ["waterpark", "companion"]).notNull(),
+  freeEntryCategory: mysqlEnum("freeEntryCategory", ["under_two", "person_of_determination", "senior"]),
+  rateId: int("rateId"),
+  label: varchar("label", { length: 128 }).notNull(),
+  basePrice: decimal("basePrice", { precision: 12, scale: 2 }).notNull(),
+  discountPercentage: decimal("discountPercentage", { precision: 5, scale: 2 }).default("0").notNull(),
+  discountAmount: decimal("discountAmount", { precision: 12, scale: 2 }).default("0").notNull(),
+  vatAmount: decimal("vatAmount", { precision: 12, scale: 2 }).default("0").notNull(),
+  feeAmount: decimal("feeAmount", { precision: 12, scale: 2 }).default("0").notNull(),
+  totalAmount: decimal("totalAmount", { precision: 12, scale: 2 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type TicketPurchaseLine = typeof ticketPurchaseLines.$inferSelect;
+
+export const ticketPurchaseFees = mysqlTable("ticket_purchase_fees", {
+  id: int("id").autoincrement().primaryKey(),
+  purchaseId: int("purchaseId").notNull(),
+  feeId: int("feeId"),
+  label: varchar("label", { length: 128 }).notNull(),
+  code: varchar("code", { length: 48 }),
+  calculationType: mysqlEnum("calculationType", ["fixed", "percentage"]).notNull(),
+  applicationBasis: mysqlEnum("applicationBasis", ["per_ticket", "per_transaction"]).notNull(),
+  value: decimal("value", { precision: 12, scale: 4 }).notNull(),
+  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type TicketPurchaseFee = typeof ticketPurchaseFees.$inferSelect;
+
+export const ticketFeeDefinitions = mysqlTable("ticket_fee_definitions", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 128 }).notNull(),
+  code: varchar("code", { length: 48 }).notNull().unique(),
+  calculationType: mysqlEnum("calculationType", ["fixed", "percentage"]).default("fixed").notNull(),
+  value: decimal("value", { precision: 12, scale: 4 }).notNull(),
+  applicationBasis: mysqlEnum("applicationBasis", ["per_ticket", "per_transaction"]).default("per_transaction").notNull(),
+  appliesGlobally: boolean("appliesGlobally").default(false).notNull(),
+  displayOrder: int("displayOrder").default(0).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type TicketFeeDefinition = typeof ticketFeeDefinitions.$inferSelect;
+
+export const serviceRateFees = mysqlTable("service_rate_fees", {
+  id: int("id").autoincrement().primaryKey(),
+  rateId: int("rateId").notNull(),
+  feeId: int("feeId").notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({
+  rateFeeUnique: unique("service_rate_fee_unique").on(table.rateId, table.feeId),
+}));
 
 export const salesTransactions = mysqlTable("sales_transactions", {
   id: int("id").autoincrement().primaryKey(),
@@ -127,6 +240,8 @@ export const salesTransactions = mysqlTable("sales_transactions", {
   department: mysqlEnum("department", ["aqua_park", "rooms", "fnb", "general"]).default("aqua_park").notNull(),
   quantity: int("quantity").default(1).notNull(),
   unitPrice: decimal("unitPrice", { precision: 12, scale: 2 }).notNull(),
+  baseSubtotal: decimal("baseSubtotal", { precision: 12, scale: 2 }).default("0").notNull(),
+  feeTotal: decimal("feeTotal", { precision: 12, scale: 2 }).default("0").notNull(),
   totalAmount: decimal("totalAmount", { precision: 12, scale: 2 }).notNull(),
   paymentMethod: mysqlEnum("paymentMethod", ["cash", "card", "bank", "mixed"]).default("cash").notNull(),
   notes: text("notes"),
@@ -136,6 +251,20 @@ export const salesTransactions = mysqlTable("sales_transactions", {
   ticketYearSequenceUnique: unique("sales_ticket_year_sequence").on(table.ticketYear, table.sequenceNumber),
 }));
 export type SalesTransaction = typeof salesTransactions.$inferSelect;
+
+export const salesTransactionLines = mysqlTable("sales_transaction_lines", {
+  id: int("id").autoincrement().primaryKey(),
+  transactionId: int("transactionId").notNull(),
+  lineType: mysqlEnum("lineType", ["base", "fee"]).notNull(),
+  label: varchar("label", { length: 128 }).notNull(),
+  code: varchar("code", { length: 48 }),
+  quantity: int("quantity").default(1).notNull(),
+  unitAmount: decimal("unitAmount", { precision: 12, scale: 4 }).notNull(),
+  lineAmount: decimal("lineAmount", { precision: 12, scale: 2 }).notNull(),
+  sortOrder: int("sortOrder").default(0).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type SalesTransactionLine = typeof salesTransactionLines.$inferSelect;
 
 export const ticketCheckIns = mysqlTable("ticket_check_ins", {
   id: int("id").autoincrement().primaryKey(),

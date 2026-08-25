@@ -48,15 +48,22 @@ button:active { transform: scale(.98); }
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
 }
 
+@page { size: 80mm auto; margin: 0; }
+
 @media print {
+  html, body { margin: 0 !important; padding: 0 !important; background: white !important; }
   body * { visibility: hidden !important; }
   #print-ticket, #print-ticket * { visibility: visible !important; }
-  #print-ticket { position: fixed; inset: 0; display: block !important; background: white; color: #111; }
-  .print-ticket__sheet { width: 190mm; min-height: 270mm; margin: 0 auto; padding: 20mm; font-family: Arial, sans-serif; font-size: 12pt; }
-  .print-ticket__brand { color: #1d1d1f; font-weight: 700; letter-spacing: .12em; font-size: 11pt; }
-  .print-ticket__sheet h1 { margin: 12mm 0 4mm; font: 700 24pt Arial, sans-serif; color: #1d1d1f; }
-  .print-ticket__sheet h2 { margin-top: 10mm; font: 700 18pt Arial, sans-serif; }
-  .print-ticket__sheet p { margin: 4mm 0; }
-  .print-ticket__sheet hr { border: 0; border-top: 1px solid #777; margin: 8mm 0; }
-  .print-ticket__note { margin-top: 24mm !important; color: #555; }
+  #print-ticket { position: absolute; left: 0; top: 0; display: block !important; width: 80mm; background: white; color: #111; }
+  #print-ticket.receipt-58 { width: 58mm; }
+  .print-ticket__sheet { box-sizing: border-box; width: 80mm; margin: 0; padding: 4mm; font-family: Arial, sans-serif; font-size: 9.5pt; line-height: 1.35; }
+  .receipt-58 .print-ticket__sheet { width: 58mm; padding: 3mm; font-size: 8.5pt; }
+  .print-ticket__brand { text-align: center; color: #111; font-weight: 700; letter-spacing: .08em; font-size: 9pt; }
+  .print-ticket__sheet h1 { margin: 3mm 0 1mm; text-align: center; font: 700 14pt Arial, sans-serif; color: #111; }
+  .print-ticket__sheet h2 { margin: 3mm 0 1mm; border-top: 1px dashed #555; padding-top: 3mm; font: 700 13pt Arial, sans-serif; }
+  .print-ticket__sheet p { margin: 1.5mm 0; }
+  .print-ticket__sheet hr { border: 0; border-top: 1px dashed #777; margin: 3mm 0; }
+  .print-ticket__row { display: flex; justify-content: space-between; gap: 3mm; margin: 1.5mm 0; }
+  .print-ticket__row span:last-child { text-align: right; font-weight: 600; }
+  .print-ticket__note { margin-top: 5mm !important; border-top: 1px dashed #777; padding-top: 3mm; text-align: center; color: #444; }
 }

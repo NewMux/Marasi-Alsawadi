@@ -1,11 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
-  expenseCategories, expenseRecords, guests, salesTicketSequences, salesTransactions, serviceRates,
-  ticketCheckIns,
+  expenseCategories, expenseRecords, guests, salesTicketSequences, salesTransactionLines, salesTransactions,
+  serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers,
+  ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries,
 } from "../drizzle/schema";
 import { getDb } from "./db";
-import { calculateOperationalNet, decideGateEntry, formatTicketNumber } from "./ticketingRules";
+import { calculateOperationalNet, calculatePrdPurchasePricing, decideGateEntry, formatTicketNumber, type PrdDiscountTierInput, type PrdTicketLineInput } from "./ticketingRules";
 
 export type SalesTransactionDraft = {
   customerId: number;
@@ -14,7 +15,10 @@ export type SalesTransactionDraft = {
   department: "aqua_park" | "rooms" | "fnb" | "general";
   quantity: number;
   unitPrice: string;
+  baseSubtotal: string;
+  feeTotal: string;
   totalAmount: string;
+  lines: Array<typeof salesTransactionLines.$inferInsert>;
   paymentMethod: "cash" | "card" | "bank" | "mixed";
   notes?: string;
   issuedBy: number;
@@ -30,6 +34,102 @@ export async function getServiceRate(id: number) {
   const db = await getDb(); if (!db) return undefined;
   const rows = await db.select().from(serviceRates).where(eq(serviceRates.id, id)).limit(1);
   return rows[0];
+}
+
+export async function listPrdRates(includeInactive = false) {
+  const db = await getDb(); if (!db) return [];
+  const predicate = and(eq(serviceRates.department, "aqua_park"), or(eq(serviceRates.ticketType, "waterpark"), eq(serviceRates.ticketType, "companion")));
+  const query = db.select().from(serviceRates).where(predicate).orderBy(serviceRates.ticketType, serviceRates.name);
+  return includeInactive ? db.select().from(serviceRates).where(predicate).orderBy(serviceRates.ticketType, serviceRates.name) : query;
+}
+
+export async function listTicketDiscountTiers(includeInactive = false) {
+  const db = await getDb(); if (!db) return [];
+  const query = db.select().from(ticketDiscountTiers).orderBy(desc(ticketDiscountTiers.minTickets), ticketDiscountTiers.id);
+  return includeInactive ? query : query.where(eq(ticketDiscountTiers.isActive, true));
+}
+
+export async function getTicketDiscountTier(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(ticketDiscountTiers).where(eq(ticketDiscountTiers.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function createTicketDiscountTier(data: typeof ticketDiscountTiers.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(ticketDiscountTiers).values(data);
+  const rows = await db.select().from(ticketDiscountTiers).orderBy(desc(ticketDiscountTiers.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function updateTicketDiscountTier(id: number, data: Partial<typeof ticketDiscountTiers.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(ticketDiscountTiers).set(data).where(eq(ticketDiscountTiers.id, id));
+  return getTicketDiscountTier(id);
+}
+
+export async function deleteTicketDiscountTier(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(ticketDiscountTiers).set({ isActive: false }).where(eq(ticketDiscountTiers.id, id));
+  return { deactivated: true };
+}
+
+export async function createPrdTicketPurchase(data: {
+  customerId: number;
+  visitDate: string;
+  lines: PrdTicketLineInput[];
+  discountTiers: PrdDiscountTierInput[];
+  fees: Array<{ id: number; name: string; code: string; calculationType: "fixed" | "percentage"; value: string; applicationBasis: "per_ticket" | "per_transaction"; displayOrder: number }>;
+  paymentMethod: "cash" | "card" | "bank" | "mixed";
+  notes?: string;
+  issuedBy: number;
+}) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const pricing = calculatePrdPurchasePricing({ lines: data.lines, discountTiers: data.discountTiers, fees: data.fees });
+  return db.transaction(async (tx) => {
+    await tx.insert(ticketNumberSequences).values({ id: 1, lastNumber: 0 }).onDuplicateKeyUpdate({ set: { id: 1 } });
+    await tx.update(ticketNumberSequences).set({ lastNumber: sql`${ticketNumberSequences.lastNumber} + ${data.lines.length}` }).where(eq(ticketNumberSequences.id, 1));
+    const sequenceRows = await tx.select().from(ticketNumberSequences).where(eq(ticketNumberSequences.id, 1)).limit(1);
+    const endNumber = Number(sequenceRows[0]?.lastNumber ?? 0);
+    const startNumber = endNumber - data.lines.length + 1;
+    await tx.insert(ticketPurchases).values({
+      customerId: data.customerId, visitDate: data.visitDate as any, chargeableTicketCount: pricing.chargeableTicketCount,
+      discountPercentage: pricing.discountPercentage, baseSubtotal: pricing.baseSubtotal, discountAmount: pricing.discountAmount,
+      vatAmount: pricing.vatAmount, feeTotal: pricing.feeTotal, totalAmount: pricing.totalAmount,
+      paymentMethod: data.paymentMethod, notes: data.notes || null, issuedBy: data.issuedBy,
+    } as any);
+    const purchaseRows = await tx.select().from(ticketPurchases).orderBy(desc(ticketPurchases.id)).limit(1);
+    const purchase = purchaseRows[0]!;
+    const lines = pricing.lines.map((line, index) => ({
+      purchaseId: purchase.id, ticketNumber: `MAS-${String(startNumber + index).padStart(8, "0")}`,
+      ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory, rateId: line.rateId, label: line.label,
+      basePrice: line.basePrice, discountPercentage: line.discountPercentage, discountAmount: line.discountAmount,
+      vatAmount: line.vatAmount, feeAmount: line.feeAmount, totalAmount: line.totalAmount,
+    }));
+    await tx.insert(ticketPurchaseLines).values(lines as any);
+    if (pricing.fees.length) await tx.insert(ticketPurchaseFees).values(pricing.fees.map((fee) => ({ purchaseId: purchase.id, ...fee, amount: fee.amount })) as any);
+    return { purchase, lines, fees: pricing.fees, pricing };
+  });
+}
+
+export async function listPrdTicketPurchases(query?: string, from?: string, to?: string) {
+  const db = await getDb(); if (!db) return [];
+  const conditions: any[] = [];
+  if (from) conditions.push(sql`${ticketPurchases.visitDate} >= ${from}`);
+  if (to) conditions.push(sql`${ticketPurchases.visitDate} <= ${to}`);
+  if (query?.trim()) {
+    const pattern = `%${query.trim()}%`;
+    conditions.push(or(sql`LOWER(${guests.fullName}) LIKE LOWER(${pattern})`, sql`${guests.phone} LIKE ${pattern}`, sql`${ticketPurchaseLines.ticketNumber} LIKE ${pattern}`));
+  }
+  const base = db.select({ purchase: ticketPurchases, customer: guests, line: ticketPurchaseLines }).from(ticketPurchases)
+    .leftJoin(guests, eq(ticketPurchases.customerId, guests.id)).leftJoin(ticketPurchaseLines, eq(ticketPurchaseLines.purchaseId, ticketPurchases.id))
+    .orderBy(desc(ticketPurchases.visitDate), desc(ticketPurchases.id));
+  return conditions.length ? base.where(and(...conditions)) : base;
+}
+
+export async function listPrdTicketLines(purchaseId: number) {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(ticketPurchaseLines).where(eq(ticketPurchaseLines.purchaseId, purchaseId)).orderBy(ticketPurchaseLines.id);
 }
 
 export async function createServiceRate(data: typeof serviceRates.$inferInsert) {
@@ -53,8 +153,71 @@ export async function deleteServiceRate(id: number) {
     await db.update(serviceRates).set({ isActive: false }).where(eq(serviceRates.id, id));
     return { deactivated: true };
   }
+  await db.delete(serviceRateFees).where(eq(serviceRateFees.rateId, id));
   await db.delete(serviceRates).where(eq(serviceRates.id, id));
   return { deactivated: false };
+}
+
+export async function listTicketFees(includeInactive = false) {
+  const db = await getDb(); if (!db) return [];
+  const base = db.select().from(ticketFeeDefinitions).orderBy(ticketFeeDefinitions.displayOrder, ticketFeeDefinitions.name);
+  return includeInactive ? base : base.where(eq(ticketFeeDefinitions.isActive, true));
+}
+
+export async function getTicketFee(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(ticketFeeDefinitions).where(eq(ticketFeeDefinitions.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function createTicketFee(data: typeof ticketFeeDefinitions.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(ticketFeeDefinitions).values(data);
+  const rows = await db.select().from(ticketFeeDefinitions).orderBy(desc(ticketFeeDefinitions.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function updateTicketFee(id: number, data: Partial<typeof ticketFeeDefinitions.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(ticketFeeDefinitions).set(data).where(eq(ticketFeeDefinitions.id, id));
+  return getTicketFee(id);
+}
+
+export async function deleteTicketFee(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const fee = await getTicketFee(id);
+  if (!fee) return { deactivated: false };
+  const linked = await db.select({ id: salesTransactionLines.id }).from(salesTransactionLines)
+    .where(and(eq(salesTransactionLines.lineType, "fee"), eq(salesTransactionLines.code, fee.code))).limit(1);
+  if (linked.length) {
+    await db.update(ticketFeeDefinitions).set({ isActive: false }).where(eq(ticketFeeDefinitions.id, id));
+    return { deactivated: true };
+  }
+  await db.delete(serviceRateFees).where(eq(serviceRateFees.feeId, id));
+  await db.delete(ticketFeeDefinitions).where(eq(ticketFeeDefinitions.id, id));
+  return { deactivated: false };
+}
+
+export async function listFeeAssignments() {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(serviceRateFees).where(eq(serviceRateFees.isActive, true));
+}
+
+export async function replaceFeeAssignments(feeId: number, rateIds: number[]) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.transaction(async (tx) => {
+    await tx.delete(serviceRateFees).where(eq(serviceRateFees.feeId, feeId));
+    if (rateIds.length) await tx.insert(serviceRateFees).values(rateIds.map((rateId) => ({ feeId, rateId, isActive: true })));
+  });
+}
+
+export async function listApplicableTicketFees(rateId: number) {
+  const db = await getDb(); if (!db) return [];
+  return db.selectDistinct({ fee: ticketFeeDefinitions }).from(ticketFeeDefinitions)
+    .leftJoin(serviceRateFees, and(eq(serviceRateFees.feeId, ticketFeeDefinitions.id), eq(serviceRateFees.isActive, true)))
+    .where(and(eq(ticketFeeDefinitions.isActive, true), or(eq(ticketFeeDefinitions.appliesGlobally, true), eq(serviceRateFees.rateId, rateId))))
+    .orderBy(ticketFeeDefinitions.displayOrder, ticketFeeDefinitions.id)
+    .then((rows) => rows.map((entry) => entry.fee));
 }
 
 export async function searchCustomers(query?: string) {
@@ -65,6 +228,12 @@ export async function searchCustomers(query?: string) {
   return db.select().from(guests)
     .where(or(sql`LOWER(${guests.fullName}) LIKE LOWER(${pattern})`, sql`${guests.phone} LIKE ${pattern}`))
     .orderBy(desc(guests.createdAt)).limit(100);
+}
+
+export async function getCustomerById(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(guests).where(eq(guests.id, id)).limit(1);
+  return rows[0];
 }
 
 export async function createSalesTransaction(data: SalesTransactionDraft) {
@@ -81,8 +250,9 @@ export async function createSalesTransaction(data: SalesTransactionDraft) {
       .where(eq(salesTicketSequences.ticketYear, ticketYear)).limit(1);
     const sequenceNumber = Number(sequenceRow[0]?.lastSequence ?? 0);
     const ticketNumber = formatTicketNumber(ticketYear, sequenceNumber);
+    const { lines, ...transactionData } = data;
     await tx.insert(salesTransactions).values({
-      ...data,
+      ...transactionData,
       visitDate: data.visitDate as any,
       ticketYear,
       sequenceNumber,
@@ -92,8 +262,15 @@ export async function createSalesTransaction(data: SalesTransactionDraft) {
     } as any);
     const created = await tx.select().from(salesTransactions)
       .where(eq(salesTransactions.ticketNumber, ticketNumber)).limit(1);
-    return created[0]!;
+    const ticket = created[0]!;
+    if (lines.length) await tx.insert(salesTransactionLines).values(lines.map((line) => ({ ...line, transactionId: ticket.id })) as any);
+    return ticket;
   });
+}
+
+export async function listSalesTransactionLines(transactionId: number) {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(salesTransactionLines).where(eq(salesTransactionLines.transactionId, transactionId)).orderBy(salesTransactionLines.sortOrder, salesTransactionLines.id);
 }
 
 export async function getSalesTransactionById(id: number) {
@@ -222,7 +399,13 @@ export async function updateExpenseCategory(id: number, data: Partial<typeof exp
 
 export async function deleteExpenseCategory(id: number) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const linked = await db.select({ id: expenseRecords.id }).from(expenseRecords).where(eq(expenseRecords.categoryId, id)).limit(1);
+  if (linked.length) {
+    await db.update(expenseCategories).set({ isActive: false }).where(eq(expenseCategories.id, id));
+    return { deactivated: true };
+  }
   await db.delete(expenseCategories).where(eq(expenseCategories.id, id));
+  return { deactivated: false };
 }
 
 export async function listExpenseRecords(from?: string, to?: string) {
@@ -259,11 +442,13 @@ export async function deleteExpenseRecord(id: number) {
 
 export async function getOperationalFinancialSummary(from: string, to: string) {
   const db = await getDb(); if (!db) return { revenue: 0, expenses: 0, net: 0 };
-  const [sales] = await db.select({ total: sql<number>`COALESCE(SUM(${salesTransactions.totalAmount}), 0)` })
-    .from(salesTransactions).where(sql`${salesTransactions.visitDate} >= ${from} AND ${salesTransactions.visitDate} <= ${to}`);
-  const [expenses] = await db.select({ total: sql<number>`COALESCE(SUM(${expenseRecords.amount}), 0)` })
-    .from(expenseRecords).where(sql`${expenseRecords.businessDate} >= ${from} AND ${expenseRecords.businessDate} <= ${to}`);
-  const revenue = Number(sales?.total ?? 0);
-  const expenseTotal = Number(expenses?.total ?? 0);
+  const [revenueRows, expenseRows] = await Promise.all([
+    db.select({ total: sql<number>`COALESCE(SUM(${financeEntries.amount}), 0)` }).from(financeEntries)
+      .where(and(eq(financeEntries.type, "revenue"), sql`${financeEntries.date} >= ${from} AND ${financeEntries.date} <= ${to}`)),
+    db.select({ total: sql<number>`COALESCE(SUM(${financeEntries.amount}), 0)` }).from(financeEntries)
+      .where(and(eq(financeEntries.type, "expense"), sql`${financeEntries.date} >= ${from} AND ${financeEntries.date} <= ${to}`)),
+  ]);
+  const revenue = Number(revenueRows[0]?.total ?? 0);
+  const expenseTotal = Number(expenseRows[0]?.total ?? 0);
   return { revenue, expenses: expenseTotal, net: calculateOperationalNet(revenue, expenseTotal) };
 }
