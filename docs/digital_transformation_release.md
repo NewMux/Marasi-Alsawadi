@@ -11,6 +11,8 @@ This release aligns the application with the quoted operating scope and the part
 
 Ticket prices and fee items are now intended to be maintained through the application by the **Super Admin only**. Cashiers select approved prices and cannot submit arbitrary unit prices. Tickets are calculated on the server, store immutable base/fee line snapshots, and print through a compact receipt layout rather than an A4 document. Expense categories follow the same Super Admin-only governance rule.
 
+The branch now extends this foundation into a mini ERP. It adds a connected Operations Workspace for reservations, aqua admissions, housekeeping, maintenance, inventory, and guest flow; a Master Data Hub for units, stock, and staff records; a first-class Management Reports workspace; petty-cash requests and approvals; an onboarding checklist; and a workbook control room that can profile an uploaded workbook’s sheets, headers, row counts, and duplicate tabs before approval.
+
 ## Delivered capability map
 
 | Area | Current release behavior | Access boundary |
@@ -26,7 +28,10 @@ Ticket prices and fee items are now intended to be maintained through the applic
 | Report | Revenue—including final ticket totals and fees—versus categorized expenses and net result | Managers and Super Admin |
 | Public ticket | Opaque no-login ticket link with customer-safe details, itemized price/fee breakdown, status, and QR code | Anyone with the link |
 | Gate entry | Camera/manual scanner with server-side date, payment, lifecycle, and single-use validation | Guard, managers, Super Admin |
-| Existing resort workspaces | Reservations, aqua, housekeeping, maintenance, inventory, HR, daily settlements, migration control room, and command center remain available where supported by the branch | Role-based operational access |
+| Resort operations | Reservations, aqua admissions, housekeeping, maintenance, inventory, guest flow, master data, and management reports are connected through first-class workspaces | Role-based operational access |
+| Finance controls | Daily settlements, petty-cash/reimbursement requests, approvals, categorized expenses, and controlled CSV export | Staff can request; managers review; Super Admin governs categories |
+| Workbook migration | Upload and profile real workbooks in-browser, inspect headers/row counts/duplicate tabs, select candidate sheets, and mark a mapping approval checkpoint without silently importing rows | Super Admin/manager migration workflow |
+| Existing resort workspaces | HR, daily settlements, migration control room, and command center remain available alongside the new operations and finance workspaces | Role-based operational access |
 
 ## Roles and controls
 
@@ -61,6 +66,8 @@ The same workspace creates cashier, manager, admin, guard, and additional Super 
 
 Migration `0006_add_super_admin_auth_and_ticket_fee_lines.sql` is included for the new dedicated Marasi database. It extends the role enum, adds username/password/session fields, creates `user_sessions`, creates fee definitions and price assignments, adds ticket subtotal/fee columns, creates immutable sales transaction lines, and backfills one base line for each legacy ticket without inventing historical fees.
 
+Migration `0007_fix_reservation_omr_precision.sql` converts reservation nightly-rate and total fields to two-decimal OMR values so accommodation revenue is not rounded to whole rials. The migration is intentionally separate and must be rehearsed after 0006 against the dedicated Marasi database.
+
 The migration is intended for the new isolated production database after a backup and rehearsal. It must not be run destructively against either of the two existing Hetzner projects or their databases.
 
 ## Isolated Coolify deployment
@@ -85,9 +92,9 @@ No deployment has been made to Hetzner from this release because Coolify URL/acc
 
 ## Verification evidence
 
-The latest baseline passed TypeScript checking, 26 existing tests, and the production build before changes. The quotation-aligned implementation adds authentication, RBAC, and fee-calculation coverage. At the current checkpoint, the focused authentication and pricing tests pass, the direct-caller RBAC tests pass for staff, manager, admin, guard, and unauthenticated contexts, and the full suite passes with **11 test files and 34 tests**. TypeScript checking and the production build pass after receipt, fee, settings, and role changes.
+The latest mini-ERP checkpoint passes TypeScript checking, the complete suite with **11 test files and 34 tests**, and the production build. Coverage includes authentication, session/password behavior, Super Admin RBAC, fee arithmetic, ticket rules, reservation decimal compatibility, operation rules, HR validation, demo workflows, and health checks. The browser preview was also checked for the populated Command Center, Operations Workspace, Finance Control, Management Reports, Master Data Hub, Ticket Desk, Customer Directory, Gate Scanner, and migration transition screens. The local workbook profiler uses the real uploaded file only when a Super Admin explicitly selects it; no client workbook rows have been imported into the repository or database.
 
-A disposable MySQL server was not available in the sandbox, so migration execution must be rehearsed against the new isolated Coolify database or another disposable MySQL/MariaDB instance before production. This is an explicit deployment gate, not an indication that the migration should be applied to an existing project.
+A disposable local MariaDB rehearsal was completed for the authentication and fee schema: the baseline schema was created, migration 0006 was applied, and a disposable Super Admin was bootstrapped. Migration 0007 still requires a dedicated-database rehearsal before production. No migration has been applied to either of the user’s existing Hetzner projects. This remains an explicit deployment gate, not an indication that the migration should be applied to an existing project.
 
 ## Required production acceptance tests
 

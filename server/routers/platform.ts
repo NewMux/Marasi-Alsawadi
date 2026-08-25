@@ -56,7 +56,7 @@ export function recordFromJoin<T>(entry: T | { r?: T; t?: T; s?: T }) {
 export const platformRouter = router({
   units: router({
     list: protectedProcedure.query(() => listUnits()),
-    create: managerProcedure.input(z.object({
+    create: superAdminProcedure.input(z.object({
       code: z.string().min(1), name: z.string().min(1),
       type: z.enum(["room", "chalet"]).default("room"),
       capacity: z.number().int().min(1).default(2),

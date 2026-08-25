@@ -170,8 +170,8 @@ export function buildReservationValues(data: ReservationDraft, kind: "room" | "c
     adults: data.adults,
     children: data.children,
     quantity: 1,
-    unitRate: Math.round(Number(data.ratePerNight)),
-    totalAmount: Math.round(Number(data.totalAmount)),
+    unitRate: Number(data.ratePerNight).toFixed(2),
+    totalAmount: Number(data.totalAmount).toFixed(2),
     status: data.status ?? "pending",
     source,
     notes: data.notes,
@@ -442,13 +442,22 @@ export async function getRevenueSummary(from: string, to: string) {
 export async function getOccupancyStats(from: string, to: string) {
   const db = await getDb(); if (!db) return { totalUnits: 0, occupiedNights: 0 };
   const [unitCount] = await db.select({ c: sql<number>`COUNT(*)` }).from(propertyUnits);
-  const [stayCount] = await db.select({ c: sql<number>`COUNT(*)` }).from(reservations)
+  const stays = await db.select({ checkIn: reservations.checkInAt, checkOut: reservations.checkOutAt })
+    .from(reservations)
     .where(and(
       or(eq(reservations.status, "checked_in"), eq(reservations.status, "checked_out"), eq(reservations.status, "confirmed")),
-      sql`DATE(${reservations.checkInAt}) >= ${from}`,
-      sql`DATE(${reservations.checkOutAt}) <= ${to}`
+      sql`DATE(${reservations.checkInAt}) < DATE_ADD(${to}, INTERVAL 1 DAY)`,
+      sql`DATE(${reservations.checkOutAt}) > ${from}`
     ));
-  return { totalUnits: Number(unitCount?.c ?? 0), occupiedNights: Number(stayCount?.c ?? 0) };
+  const windowStart = new Date(`${from}T00:00:00Z`).getTime();
+  const windowEnd = new Date(`${to}T00:00:00Z`).getTime() + 86400000;
+  const occupiedNights = stays.reduce((total, stay) => {
+    if (!stay.checkIn || !stay.checkOut) return total;
+    const start = Math.max(new Date(stay.checkIn).getTime(), windowStart);
+    const end = Math.min(new Date(stay.checkOut).getTime(), windowEnd);
+    return total + Math.max(0, Math.ceil((end - start) / 86400000));
+  }, 0);
+  return { totalUnits: Number(unitCount?.c ?? 0), occupiedNights };
 }
 export async function getAquaAttendance(from: string, to: string) {
   const db = await getDb(); if (!db) return 0;
