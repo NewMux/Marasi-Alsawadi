@@ -93,6 +93,70 @@ export function calculateTicketPricing(input: {
   };
 }
 
+export const PRD_VAT_PERCENT = 5;
+export type PrdFreeEntryCategory = "under_two" | "person_of_determination" | "senior";
+export type PrdTicketType = "waterpark" | "companion";
+export type PrdRateInput = { id: number; name: string; code: string; ticketType: PrdTicketType; unitPrice: string };
+export type PrdDiscountTierInput = { id: number; minTickets: number; maxTickets: number | null; percentage: string };
+export type PrdTicketLineInput = { rate: PrdRateInput; ticketType: PrdTicketType; freeEntryCategory?: PrdFreeEntryCategory | null };
+
+function percentageToBasisPoints(value: string) {
+  if (!/^\d+(\.\d{1,2})?$/.test(value) || Number(value) < 0 || Number(value) > 100) throw new Error("Discount percentages must be between 0 and 100");
+  return Math.round(Number(value) * 100);
+}
+
+export function calculatePrdPurchasePricing(input: {
+  lines: PrdTicketLineInput[];
+  discountTiers: PrdDiscountTierInput[];
+  fees: TicketFeeInput[];
+}) {
+  if (!input.lines.length) throw new Error("Add at least one ticket line");
+  const chargeableTicketCount = input.lines.filter((line) => !line.freeEntryCategory).length;
+  const tier = [...input.discountTiers]
+    .filter((candidate) => candidate.minTickets <= chargeableTicketCount && (candidate.maxTickets === null || candidate.maxTickets >= chargeableTicketCount))
+    .sort((a, b) => b.minTickets - a.minTickets || b.id - a.id)[0];
+  const discountBasisPoints = tier ? percentageToBasisPoints(String(tier.percentage)) : 0;
+  const discountPercentage = (discountBasisPoints / 100).toFixed(2);
+  const baseSubtotalMinor = input.lines.reduce((sum, line) => sum + (line.freeEntryCategory ? 0 : moneyToMinor(String(line.rate.unitPrice))), 0);
+  const discountMinorByLine = input.lines.map((line) => line.freeEntryCategory ? 0 : Math.round((moneyToMinor(String(line.rate.unitPrice)) * discountBasisPoints) / 10_000));
+  const discountAmountMinor = discountMinorByLine.reduce((sum, value) => sum + value, 0);
+  const discountedBaseMinorByLine = input.lines.map((line, index) => line.freeEntryCategory ? 0 : moneyToMinor(String(line.rate.unitPrice)) - discountMinorByLine[index]);
+  const discountedBaseMinor = discountedBaseMinorByLine.reduce((sum, value) => sum + value, 0);
+  const vatAmountMinor = Math.round((discountedBaseMinor * (PRD_VAT_PERCENT * 100)) / 10_000);
+  const vatFloors = discountedBaseMinorByLine.map((value) => Math.floor((value * (PRD_VAT_PERCENT * 100)) / 10_000));
+  const vatRemainders = discountedBaseMinorByLine.map((value, index) => ({ index, remainder: (value * (PRD_VAT_PERCENT * 100)) % 10_000 }));
+  const vatMinorByLine = [...vatFloors];
+  let vatCentsRemaining = vatAmountMinor - vatFloors.reduce((sum, value) => sum + value, 0);
+  vatRemainders.sort((a, b) => b.remainder - a.remainder || a.index - b.index);
+  for (let index = 0; index < vatRemainders.length && vatCentsRemaining > 0; index += 1, vatCentsRemaining -= 1) vatMinorByLine[vatRemainders[index].index] += 1;
+  const applicableFees = [...input.fees].sort((a, b) => a.displayOrder - b.displayOrder || a.id - b.id);
+  const feeAmounts = applicableFees.map((fee) => {
+    const value = fee.calculationType === "percentage" ? Math.round((discountedBaseMinor * percentageToBasisPoints(String(fee.value))) / 10_000) : moneyToMinor(Number(fee.value).toFixed(2));
+    const quantity = fee.applicationBasis === "per_ticket" ? chargeableTicketCount : 1;
+    return { fee, amountMinor: value * quantity, quantity };
+  });
+  const feeTotalMinor = feeAmounts.reduce((sum, entry) => sum + entry.amountMinor, 0);
+  const perTicketFeeMinor = feeAmounts.filter((entry) => entry.fee.applicationBasis === "per_ticket").reduce((sum, entry) => sum + Math.round(entry.amountMinor / Math.max(1, chargeableTicketCount)), 0);
+  const lines = input.lines.map((line, index) => {
+    const unitMinor = moneyToMinor(String(line.rate.unitPrice));
+    const lineTotalMinor = line.freeEntryCategory ? 0 : unitMinor - discountMinorByLine[index] + vatMinorByLine[index] + perTicketFeeMinor;
+    return {
+      ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory || null, rateId: line.rate.id,
+      label: line.rate.name, code: line.rate.code, basePrice: minorToMoney(line.freeEntryCategory ? 0 : unitMinor),
+      discountPercentage, discountAmount: minorToMoney(discountMinorByLine[index]), vatAmount: minorToMoney(vatMinorByLine[index]),
+      feeAmount: minorToMoney(line.freeEntryCategory ? 0 : perTicketFeeMinor), totalAmount: minorToMoney(lineTotalMinor),
+    };
+  });
+  return {
+    chargeableTicketCount, discountPercentage, baseSubtotal: minorToMoney(baseSubtotalMinor), discountAmount: minorToMoney(discountAmountMinor),
+    vatAmount: minorToMoney(vatAmountMinor), feeTotal: minorToMoney(feeTotalMinor),
+    totalAmount: minorToMoney(discountedBaseMinor + vatAmountMinor + feeTotalMinor),
+    appliedTier: tier || null,
+    lines,
+    fees: feeAmounts.map(({ fee, amountMinor, quantity }) => ({ feeId: fee.id, label: fee.name, code: fee.code, calculationType: fee.calculationType, applicationBasis: fee.applicationBasis, value: String(fee.value), amount: minorToMoney(amountMinor), quantity })),
+  };
+}
+
 export function calculateOperationalNet(revenue: number, expenses: number) {
   return Number(revenue) - Number(expenses);
 }

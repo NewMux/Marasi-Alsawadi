@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateOperationalNet, calculateTicketPricing, calculateTicketTotal, decideGateEntry, extractTicketToken, formatTicketNumber, isPositiveMoney } from "./ticketingRules";
+import { calculateOperationalNet, calculatePrdPurchasePricing, calculateTicketPricing, calculateTicketTotal, decideGateEntry, extractTicketToken, formatTicketNumber, isPositiveMoney } from "./ticketingRules";
 
 describe("ticketing business rules", () => {
   it("formats a standard, year-based sequential transaction number", () => {
@@ -38,6 +38,36 @@ describe("ticketing business rules", () => {
     expect(pricing.baseSubtotal).toBe("0.30");
     expect(pricing.feeTotal).toBe("0.02");
     expect(pricing.totalAmount).toBe("0.32");
+  });
+
+  it("applies group discount to chargeable lines, excludes free entry, then calculates 5% VAT", () => {
+    const pricing = calculatePrdPurchasePricing({
+      lines: [
+        { rate: { id: 1, name: "Waterpark", code: "WATERPARK", ticketType: "waterpark", unitPrice: "10.00" }, ticketType: "waterpark" },
+        { rate: { id: 1, name: "Waterpark", code: "WATERPARK", ticketType: "waterpark", unitPrice: "10.00" }, ticketType: "waterpark" },
+        { rate: { id: 2, name: "Companion", code: "COMPANION", ticketType: "companion", unitPrice: "4.00" }, ticketType: "companion" },
+        { rate: { id: 1, name: "Waterpark", code: "WATERPARK", ticketType: "waterpark", unitPrice: "10.00" }, ticketType: "waterpark", freeEntryCategory: "under_two" },
+      ],
+      discountTiers: [{ id: 1, minTickets: 3, maxTickets: null, percentage: "10.00" }], fees: [],
+    });
+    expect(pricing.chargeableTicketCount).toBe(3);
+    expect(pricing.discountPercentage).toBe("10.00");
+    expect(pricing.baseSubtotal).toBe("24.00");
+    expect(pricing.discountAmount).toBe("2.40");
+    expect(pricing.vatAmount).toBe("1.08");
+    expect(pricing.feeTotal).toBe("0.00");
+    expect(pricing.totalAmount).toBe("22.68");
+    expect(pricing.lines[3].totalAmount).toBe("0.00");
+  });
+
+  it("does not apply the discount tier when only free-entry lines exist", () => {
+    const pricing = calculatePrdPurchasePricing({
+      lines: [{ rate: { id: 1, name: "Waterpark", code: "WATERPARK", ticketType: "waterpark", unitPrice: "10.00" }, ticketType: "waterpark", freeEntryCategory: "senior" }],
+      discountTiers: [{ id: 1, minTickets: 1, maxTickets: null, percentage: "50.00" }], fees: [],
+    });
+    expect(pricing.chargeableTicketCount).toBe(0);
+    expect(pricing.discountPercentage).toBe("0.00");
+    expect(pricing.totalAmount).toBe("0.00");
   });
 
   it("calculates the simple revenue-versus-expenses net result", () => {

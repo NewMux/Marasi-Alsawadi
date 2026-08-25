@@ -1,118 +1,126 @@
-# Marasi Alsawadi Quotation-Aligned Release
+# Marasi Alsawadi PRD Phase 1 Release
 
 **Branch:** `feat/quoted-scope-rbac-pricing`
-**Base:** [`35ea360`](https://github.com/NewMux/Marasi-Alsawadi/commit/35ea360)
-**Prepared by:** Manus AI  
+**Scope authority:** `MarasiAlsawadiPRD.pdf`, confirmed option 3
 **Date:** 25 August 2026
 
 ## Executive summary
 
-This release aligns the application with the quoted operating scope and the partner’s clarification. The Apple-HIG redesign from the current `main` branch is retained, while the former open-access system user is replaced with local username/password authentication and real server-side role enforcement.
+This release implements Phase 1 of the client PRD for Marasi Alsawadi Resort & Aqua Park. The product is intentionally focused on three modules: **Ticketing, Customer Database, and Expense Management**. It replaces the quoted daily spreadsheet workflow with a database-backed web application, while retaining a clean Apple-inspired interface across desktop, tablet, and mobile.
 
-Ticket prices and fee items are now intended to be maintained through the application by the **Super Admin only**. Cashiers select approved prices and cannot submit arbitrary unit prices. Tickets are calculated on the server, store immutable base/fee line snapshots, and print through a compact receipt layout rather than an A4 document. Expense categories follow the same Super Admin-only governance rule.
-
-The branch is intentionally limited to the quoted product scope: ticketing, customer records, expense management, and a revenue-versus-expense summary. The only additional screens retained are directly necessary for the requested operating flow: Super Admin configuration, WhatsApp ticket delivery, and gate-ticket validation.
+WhatsApp delivery, QR/NFC entry validation, public ticket links, and the gate scanner are preserved as isolated future-phase source work but are **not exposed in the Phase 1 client application**. Reservations, availability, maintenance, workbook migration, inventory, housekeeping, HR, and unrelated resort modules are excluded.
 
 ## Delivered capability map
 
-| Area | Current release behavior | Access boundary |
+| Area | Phase 1 behavior | Access boundary |
 |---|---|---|
-| Authentication | Local username/password sign-in, hashed passwords, expiring hashed sessions, logout, login throttling, and mandatory first-password change | All operating users |
-| Super Admin settings | Manage base prices, fixed/percentage fee items, fee applicability, expense categories, staff accounts, roles, activation, password resets, and audit activity | `super_admin` only; enforced server-side |
-| Ticket number and pricing | Server-side yearly sequential number in `MAS-YYYY-######` format; active database price and applicable fee definitions are reloaded at issue time; no manual cashier override | Ticket operations for authenticated staff; price mutations: Super Admin only |
-| Ticket history | Immutable base and fee line snapshots preserve the exact total charged at issue time | Authenticated operational roles |
-| Customer database | Customer name and phone are stored with every purchase and visit date; searchable by name, phone, or ticket | Authenticated ticket staff, managers, Super Admin |
-| Receipt printing | Browser/system print dialog with compact receipt styles for 80 mm and 58 mm receipt widths | Cashier/ticket desk and public ticket page |
-| Expense management | Dated expenses with amount, category, description, and payee; expense categories are editable by Super Admin | Managers and Super Admin; category mutations: Super Admin only |
-| Revenue-versus-expense report | Revenue—including final ticket totals and fees—versus categorized expenses and net result | Managers and Super Admin |
-| WhatsApp delivery | Ticket-link delivery through the configured provider after customer consent, with delivery-status tracking | Ticket staff; provider credentials required |
-| Gate entry | Customer ticket QR/manual validation with date, payment, lifecycle, and single-use checks | Guard, managers, Super Admin |
-| Public ticket | Opaque no-login ticket link with customer-safe details, itemized price/fee breakdown, status, and QR code | Anyone with the link |
+| Authentication | Local username/password sign-in, hashed passwords, revocable sessions, logout, throttling, and mandatory first-password change | Authenticated operating users |
+| Waterpark ticket | Configurable base price; visitor is charged when using the pool or water attractions | Staff/Cashier can issue; Super Admin configures |
+| Companion ticket | Configurable base price; visitor enters but does not personally use the pool, regardless of relationship | Staff/Cashier can issue; Super Admin configures |
+| Free entry | Under 2, person of determination, and senior/retiree can be selected per visitor line; ticket remains issued for tracking and is priced at OMR 0.00 | Staff/Cashier can select |
+| Group discount | 25–29: 15%; 50–99: 25%; 100+: 50%; free lines are excluded from the count | Super Admin configures tiers |
+| VAT | Fixed 5% is calculated after discount on the chargeable discounted amount | Server-owned rule |
+| Ticket numbering | Continuous backend sequence with no daily/yearly reset and no date embedded in the number; visit date is stored separately | Server-owned rule |
+| Ticket pricing | Server reloads active prices, fees, and discount tiers at issue time; receipt lines are snapshotted immutably | Configuration mutations: Super Admin only |
+| Receipt printing | Normal browser/system receipt printing with compact receipt output; exact printer width can be finalized with the client | Ticket Desk |
+| Customer database | Name, phone, automatic visit date/time, ticket number(s), and purchase history; searchable by name, phone, and ticket number | Staff/Cashier and management |
+| Expense management | Record category, date, amount, description, and optional payee; categories are editable without code changes | Staff can record; management can review/correct |
+| Financial summary | Revenue from issued PRD purchases versus recorded expenses with net result and date-range controls | Manager/Admin/Super Admin |
+| Super Admin settings | Waterpark/Companion prices, configurable fee items, discount tiers, expense categories, users, roles, activation, password reset, and audit trail | `super_admin` only; enforced server-side |
 
 ## Roles and controls
 
-> **Security rule:** frontend visibility is only a convenience. The backend rejects every price, fee, expense-category, and account mutation unless the authenticated user has the `super_admin` role.
+> **Security rule:** frontend visibility is only a convenience. The backend rejects every price, fee, discount-tier, expense-category, and account mutation unless the authenticated user has the `super_admin` role.
 
-| Capability | Super Admin | Manager/Admin | Cashier/Staff | Guard |
-|---|---:|---:|---:|---:|
-| Manage prices and fee items | Yes | No | No | No |
-| Manage expense categories | Yes | No | No | No |
-| Create and manage users | Yes | No | No | No |
-| Issue and print tickets | Yes | Yes | Yes | No |
-| Search customers and ticket history | Yes | Yes | Yes | No |
-| Record/edit/delete expenses | Yes | Yes | No | No |
-| View operating reports | Yes | Yes | No | No |
-| Validate gate tickets | Yes | Yes | No | Yes |
+| Capability | Super Admin | Manager/Admin | Staff/Cashier |
+|---|---:|---:|---:|
+| Issue Waterpark/Companion tickets | Yes | Yes | Yes |
+| Select free-entry category per line | Yes | Yes | Yes |
+| Print normal receipt | Yes | Yes | Yes |
+| Capture customer name and phone | Yes | Yes | Yes |
+| Search customer and purchase history | Yes | Yes | Yes |
+| Record expense | Yes | Yes | Yes |
+| Edit/delete expense records | Yes | Yes | No |
+| View revenue-versus-expenses report | Yes | Yes | No |
+| Manage base prices and fee items | Yes | No | No |
+| Manage discount tiers | Yes | No | No |
+| Manage expense categories | Yes | No | No |
+| Manage users and roles | Yes | No | No |
 
 ## Ticket and receipt workflow
 
-The cashier signs in, searches for an existing customer or creates a new name-and-phone profile, selects an active approved price, enters quantity and payment method, and reviews a read-only breakdown of the base subtotal and every applicable fee. The server reloads the active configuration, recalculates the total using decimal-safe OMR arithmetic, allocates the next sequential ticket number, and saves the immutable line snapshot.
+The cashier signs in, searches for an existing customer or enters a new customer name and phone, and adds one visitor line per person. Each line requires a ticket type: **Waterpark** when the visitor will use the pool or water attractions, or **Companion** when the visitor will not use the pool. The rule is based on pool use, not age or family relationship.
 
-The resulting receipt can be printed through the normal browser/system print dialog. The print target is a compact POS receipt, defaulting to **80 mm** with a **58 mm** option, and includes the resort name, ticket number, visit date, customer, payment method, base line, fee lines, and final total. It is not an A4 layout and does not require a proprietary printer SDK.
+The cashier can mark a line as **Under 2**, **Person of determination**, or **Retiree/Senior**. The ticket is still issued for tracking and headcount, but its price is OMR 0.00 and it is excluded from the group-discount count.
 
-The customer-facing ticket page presents the same breakdown and a QR code for gate entry. Later price or fee changes affect future tickets only; historical receipts remain unchanged.
+The server resolves the active base price and fees, chooses the applicable discount tier based on chargeable ticket count, applies the discount before VAT, adds 5% VAT after discount, allocates the continuous ticket number, and stores immutable purchase, fee, VAT, discount, and line snapshots. The ticket number does not reset daily or yearly and does not contain the date.
+
+The receipt is printed through the normal browser/system print dialog. The compact receipt includes resort identity, ticket number(s), customer name, phone, visit date, visitor type, free-entry status where applicable, base lines, discount, VAT, additional fees, final total, and the fixed terms disclaimer:
+
+> By entering, you acknowledge and agree to the park's terms and conditions displayed at the entrance.
 
 ## Configuration workflow
 
-A Super Admin opens **Commercial Settings** to add or edit a base price, create a fixed or percentage fee, decide whether it applies globally or to selected prices, set whether a fixed fee applies per ticket or once per transaction, and control display order. Used prices, fees, and expense categories are retired rather than hard-deleted so past records remain readable.
+A Super Admin opens **Commercial Settings** to add or edit the Waterpark and Companion base prices, configure fixed or percentage fee line items, define the ticket-count discount ranges and percentages, and add/edit/delete expense categories. Changes take effect for future tickets without a code deployment. Past receipts retain their original immutable snapshots.
 
-The same workspace creates cashier, manager, admin, guard, and additional Super Admin accounts. Newly created or reset accounts receive a temporary password and must change it at first sign-in. The activity log records account, price, fee, category, and role changes.
+The same protected workspace manages local operating accounts and records configuration activity. Staff/Cashier users can operate the Ticket Desk and record expenses but cannot mutate commercial settings or expense categories.
 
 ## Database migration
 
-Migration `0006_add_super_admin_auth_and_ticket_fee_lines.sql` is included for the new dedicated Marasi database. It extends the role enum, adds username/password/session fields, creates fee definitions and rate assignments, adds ticket subtotal/fee totals, creates immutable sales transaction lines, and backfills one base line for existing tickets without inventing historical fees.
+Migration `0008_add_prd_ticketing_model.sql` adds the PRD ticket type, continuous sequence, discount tiers, multi-line purchases, purchase fees, immutable ticket lines, and purchase-level totals. It is intended for the dedicated Marasi database after backup and rehearsal. It must not be run against the two existing Hetzner projects or their databases.
 
-The quote-only release does not include workbook migration, reservations/availability, maintenance requests, inventory, housekeeping, HR, or other unrelated modules. No client workbook rows are imported by this release. The migration is intended for the new isolated production database after backup and rehearsal, and must not be run destructively against either of the two existing Hetzner projects or their databases.
+No rows from the client workbook are imported by this release. The previous workbook-migration control room and parser are excluded from the Phase 1 product surface. The client can provide an approved starting ticket number before production bootstrap; the migration currently initializes the sequence at zero for a fresh deployment.
 
-## Isolated Coolify deployment
+## Future phase boundary
 
-The deployment target is a **new Coolify Project/Application and a new MySQL/MariaDB resource** on the existing Hetzner server. The other two projects remain strictly read-only and must not be restarted, redeployed, renamed, deleted, pruned, or have their domains, networks, volumes, environment variables, or databases modified.
+The following items are explicitly deferred and are not reachable from the Phase 1 client router: WhatsApp ticket delivery, public ticket links, QR-code generation, QR/NFC gate validation, and guard scanning. They may be reactivated in a separately approved future phase without changing the Phase 1 pricing and receipt model.
+
+## Isolated deployment contract
+
+The production target remains a new Coolify Project/Application and a new dedicated MySQL/MariaDB resource on the existing Hetzner server. The other two projects must remain untouched: no restart, redeploy, rename, deletion, pruning, domain change, network change, volume change, environment-variable change, or database operation.
 
 | Deployment item | Marasi decision |
 |---|---|
-| Source | `NewMux/Marasi-Alsawadi`, validated feature branch merged to `main` |
-| Build pack | Coolify Nixpacks |
-| Install | `corepack enable && pnpm install --frozen-lockfile` |
-| Build | `pnpm build` |
+| Source | `NewMux/Marasi-Alsawadi`, reviewed feature branch merged only after approval |
+| Build | `pnpm install --frozen-lockfile` then `pnpm build` |
 | Start | `pnpm start` |
-| Internal port | `3000` inside the Marasi container |
+| Internal port | `3000` |
 | Health | `GET /healthz` |
-| Database | New dedicated database such as `marasi_erp` with separate persistent storage and backups |
-| Domain | New Marasi-specific HTTPS hostname with Force HTTPS |
-| Secrets | Marasi-only runtime values in Coolify; never committed to GitHub |
-| Bootstrap | `pnpm auth:bootstrap` once, then remove bootstrap variables |
+| Database | New dedicated Marasi database and persistent volume |
+| Domain | New Marasi HTTPS hostname with Force HTTPS |
+| Secrets | Marasi-only Coolify environment variables; never committed |
+| Bootstrap | Run the one-time Super Admin bootstrap inside the new application only |
 
-No deployment has been made to Hetzner from this release because Coolify URL/access, final domain, database resource, and first Super Admin inputs have not been supplied in this session. The code and deployment contract are ready for that isolated operation.
+No Coolify or Hetzner deployment has been performed from this release. Coolify access, final hostname, dedicated database resource, approved starting ticket number, and initial Super Admin inputs are still required for production deployment.
 
 ## Verification evidence
 
-The current quote-only checkpoint passes TypeScript checking, the complete suite with **11 test files and 34 tests**, and the production build. Coverage includes authentication, session/password behavior, Super Admin RBAC, fee arithmetic, ticket rules, reservation compatibility, gate rules, demo workflows, and health checks. The browser preview was checked for the quoted Command Center, Ticket Desk, Customer Directory, Finance Control, Revenue Report, Commercial Settings, and Gate Scanner flows. No client workbook rows have been imported into the repository or database.
+The current branch passes **11 test files and 36 tests**, TypeScript checking, the production build, and `git diff --check`. Coverage includes authentication, session behavior, Super Admin RBAC, decimal fee arithmetic, PRD Waterpark/Companion pricing, free-entry exclusion, group discount thresholds, 5% VAT ordering, customer purchase history, legacy compatibility, demo workflows, and health checks.
 
-A disposable local MariaDB rehearsal was completed for the authentication and fee schema: the baseline schema was created, migration 0006 was applied, and a disposable Super Admin was bootstrapped. No migration has been applied to either of the user’s existing Hetzner projects. The dedicated production database still requires backup, ordered migration rehearsal, receipt-printer testing, and Super Admin bootstrap before launch.
+The browser preview was checked for the PRD-only Command Center, Ticket Desk, Customer Directory, Finance Control, Revenue Report, and Super Admin settings. It confirmed the reduced navigation, Waterpark/Companion selector, free-entry categories, OMR 3.00/2.00 demo prices, 5% VAT preview, continuous non-date ticket examples, group-discount tier display, expense category controls, bilingual shell toggle, and the absence of deferred gate/WhatsApp/workbook/reservation/maintenance routes.
 
 ## Required production acceptance tests
 
 | Test | Expected result |
 |---|---|
-| Super Admin changes a base price | Future tickets use it; existing tickets remain unchanged |
-| Super Admin adds a fixed and percentage fee | Cashier sees separate fee lines and the server total matches the receipt |
-| Manager/staff/guard calls a settings mutation directly | API returns `FORBIDDEN`; no record changes |
-| Cashier submits a forged price | Server ignores/rejects it and uses the active database price |
-| Cashier prints a ticket | 80 mm and 58 mm receipt previews are legible and unclipped |
-| Manager records an expense | Active category is required and the operating report updates |
-| Guard scans a valid ticket once | Entry allowed and ticket changes to `checked_in` |
-| Guard scans the same ticket again | Entry denied as already used |
+| Super Admin changes Waterpark price | Future tickets use it; historical receipts remain unchanged |
+| Super Admin changes Companion price | Future Companion lines use it; historical receipts remain unchanged |
+| Super Admin adds fee item | Cashier preview and printed receipt show a separate fee line |
+| Super Admin edits discount tiers | Applicable future purchases use the updated threshold and percentage |
+| Cashier selects Waterpark | Price is based on pool-use ticket configuration |
+| Cashier selects Companion | Price is based on non-pool-use configuration |
+| Cashier selects a free category | Ticket remains tracked but line total, discount base, and VAT contribution are zero |
+| 25/50/100 chargeable tickets | Discount is 15%/25%/50% respectively, before VAT |
+| Ticket numbering across midnight/year boundary | Sequence remains continuous and contains no date |
+| Staff directly calls a settings mutation | API returns `FORBIDDEN`; no configuration changes |
+| Staff records an expense | Active category, date, and amount save successfully |
+| Manager opens report | Revenue, expenses, and net result reconcile for the selected range |
+| Cashier prints a ticket | Normal browser receipt output is legible and contains the disclaimer |
 | Session logout or expiry | Protected pages and APIs require sign-in again |
 | Coolify health check | New Marasi application returns `{"status":"ok"}` at `/healthz` |
 
 ## UX/UI release checkpoint
 
-The latest review build introduces one shared Apple-inspired UI system across the quoted product. Page headers, white surfaces, metric cards, buttons, fields, status pills, tables, loading states, and empty states are now reusable instead of being recreated separately on each screen. The shell uses a quieter sidebar, compact top bar, clear role context, consistent active navigation, and a mobile navigation strip.
+The release uses one shared Apple-inspired system across the quoted product. Page headers, surfaces, metric cards, buttons, inputs, select controls, status pills, tables, loading states, empty states, focus states, and mobile navigation use shared primitives. The navigation has only the PRD modules and direct Super Admin settings.
 
-The Ticket Desk is organized as a guided Customer → Price → Receipt flow. The Customer Directory uses a searchable, responsive table with expandable purchase history. Finance Control uses a compact expense form beside a searchable ledger with edit and delete actions, period-aware totals, cash-close context, and export. Revenue Report uses the same period controls and summary language. Commercial Settings uses the same primitives for Super Admin pricing, fee, category, and account controls. Search controls have accessible labels, focus states are standardized, and receipt printing remains compact 80 mm/58 mm output.
-
-## References
-
-[1]: https://coolify.io/docs/applications "Coolify Applications"
-
-[2]: https://coolify.io/docs/knowledge-base/environment-variables "Coolify Environment Variables"
+The Ticket Desk is organized as **Customer → Visitor Lines → Price Preview → Receipt**. The Customer Directory uses a searchable table with grouped purchase history. Finance Control separates staff expense entry from management-only reporting and correction actions. Revenue Report uses the same date-range language and export pattern. Commercial Settings groups base prices, fees, discount tiers, expense categories, users, and audit activity. The shell includes a persistent English/Arabic toggle with RTL direction support.

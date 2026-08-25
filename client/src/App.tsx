@@ -7,15 +7,13 @@ import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import DashboardLayout from "./components/DashboardLayout";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import { LanguageProvider } from "./contexts/LanguageContext";
 import { isPublicDemoMode } from "./lib/demoMode";
 import CommandCenterPage from "./pages/CommandCenterPage";
 import CustomerDirectoryPage from "./pages/CustomerDirectoryPage";
 import DemoOperationsPage from "./pages/DemoOperationsPage";
-import ERPOperationsPage from "./pages/ERPOperationsPage";
-import GateScannerPage from "./pages/GateScannerPage";
 import LoginPage, { ChangePasswordPage } from "./pages/LoginPage";
 import ManagementReportsPage from "./pages/ManagementReportsPage";
-import PublicTicketPage from "./pages/PublicTicketPage";
 import SuperAdminSettingsPage from "./pages/SuperAdminSettingsPage";
 import TicketDeskPage from "./pages/TicketDeskPage";
 
@@ -28,14 +26,12 @@ function SuperAdminSettingsRoute() {
 function OperationsRoutes() {
   const demo = isPublicDemoMode();
   const demoPage = DemoOperationsPage;
-  const corePage = demo ? DemoOperationsPage : ERPOperationsPage;
   return <DashboardLayout><Switch>
     <Route path="/" component={demo ? demoPage : CommandCenterPage}/>
     <Route path="/tickets" component={demo ? demoPage : TicketDeskPage}/>
     <Route path="/customers" component={demo ? demoPage : CustomerDirectoryPage}/>
     <Route path="/finance" component={demo ? demoPage : FinanceControlPage}/>
     <Route path="/reports" component={demo ? demoPage : ManagementReportsPage}/>
-    <Route path="/gate" component={demo ? demoPage : GateScannerPage}/>
     <Route path="/settings" component={demo ? demoPage : SuperAdminSettingsRoute}/>
     <Route component={demo ? demoPage : CommandCenterPage}/>
   </Switch></DashboardLayout>;
@@ -52,7 +48,6 @@ function ProtectedApplication() {
 
 function Router() {
   return <Switch>
-    <Route path="/ticket/:token" component={PublicTicketPage}/>
     <Route path="/login" component={LoginPage}/>
     <Route path="/change-password" component={ProtectedApplication}/>
     <Route component={ProtectedApplication}/>
@@ -60,5 +55,5 @@ function Router() {
 }
 
 export default function App() {
-  return <ErrorBoundary><ThemeProvider defaultTheme="light"><TooltipProvider><Toaster/><Router/></TooltipProvider></ThemeProvider></ErrorBoundary>;
+  return <ErrorBoundary><ThemeProvider defaultTheme="light"><LanguageProvider><TooltipProvider><Toaster/><Router/></TooltipProvider></LanguageProvider></ThemeProvider></ErrorBoundary>;
 }
