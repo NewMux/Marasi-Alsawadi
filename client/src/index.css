@@ -56,14 +56,25 @@ button:active { transform: scale(.98); }
   #print-ticket, #print-ticket * { visibility: visible !important; }
   #print-ticket { position: absolute; left: 0; top: 0; display: block !important; width: 80mm; background: white; color: #111; }
   #print-ticket.receipt-58 { width: 58mm; }
-  .print-ticket__sheet { box-sizing: border-box; width: 80mm; margin: 0; padding: 4mm; font-family: Arial, sans-serif; font-size: 9.5pt; line-height: 1.35; }
-  .receipt-58 .print-ticket__sheet { width: 58mm; padding: 3mm; font-size: 8.5pt; }
-  .print-ticket__brand { text-align: center; color: #111; font-weight: 700; letter-spacing: .08em; font-size: 9pt; }
-  .print-ticket__sheet h1 { margin: 3mm 0 1mm; text-align: center; font: 700 14pt Arial, sans-serif; color: #111; }
-  .print-ticket__sheet h2 { margin: 3mm 0 1mm; border-top: 1px dashed #555; padding-top: 3mm; font: 700 13pt Arial, sans-serif; }
-  .print-ticket__sheet p { margin: 1.5mm 0; }
-  .print-ticket__sheet hr { border: 0; border-top: 1px dashed #777; margin: 3mm 0; }
-  .print-ticket__row { display: flex; justify-content: space-between; gap: 3mm; margin: 1.5mm 0; }
-  .print-ticket__row span:last-child { text-align: right; font-weight: 600; }
-  .print-ticket__note { margin-top: 5mm !important; border-top: 1px dashed #777; padding-top: 3mm; text-align: center; color: #444; }
+
+  /* Bilingual (Arabic + English, always both) thermal-receipt layout,
+     matching the client-supplied ticket mockup. */
+  #print-ticket .ticket { box-sizing: border-box; width: 80mm; margin: 0; padding: 4mm 5mm; font-family: "Courier New", Courier, monospace; line-height: 1.35; }
+  #print-ticket.receipt-58 .ticket { width: 58mm; padding: 3mm 4mm; }
+  #print-ticket .center { text-align: center; }
+  #print-ticket .logo { margin-bottom: 1mm; }
+  #print-ticket .brand-ar { font-weight: 700; font-size: 12pt; line-height: 1.5; }
+  #print-ticket .brand-en { font-weight: 700; font-size: 9.5pt; letter-spacing: .05em; }
+  #print-ticket .sub { font-size: 7.5pt; color: #333; margin-top: .5mm; letter-spacing: .1em; }
+  #print-ticket .divider { border-top: 1px dashed #999; margin: 2.5mm 0; }
+  #print-ticket .title-ar { font-weight: 700; font-size: 9.5pt; }
+  #print-ticket .title-en { font-weight: 700; font-size: 8pt; letter-spacing: .04em; margin-top: .5mm; }
+  #print-ticket table { width: 100%; font-size: 8.5pt; border-collapse: collapse; }
+  #print-ticket td { padding: .8mm 0; vertical-align: top; }
+  #print-ticket td.label { color: #333; text-align: right; }
+  #print-ticket td.value { text-align: left; font-weight: 700; direction: ltr; white-space: nowrap; }
+  #print-ticket .price { font-size: 13pt; font-weight: 700; }
+  #print-ticket .price-note { font-size: 6.5pt; color: #333; margin-top: .5mm; }
+  #print-ticket .terms { font-size: 6.3pt; color: #444; line-height: 1.6; }
+  #print-ticket .contact { font-size: 7pt; color: #333; line-height: 1.7; }
 }

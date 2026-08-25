@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { PrdDiscountTierInput, PrdFreeEntryCategory, PrdRateInput, PrdTicketType, TicketFeeInput } from "./pricing";
-import { calculatePrdPurchasePricing, formatLocalTicketNumber } from "./pricing";
+import { calculatePrdPurchasePricing, formatLocalTicketNumber, STARTING_TICKET_NUMBER } from "./pricing";
 
 const STORAGE_KEY = "marasi-local-v1";
 
@@ -57,7 +57,7 @@ function defaultData(): StoreData {
     customers: [],
     purchases: [],
     expenses: [],
-    nextTicketNumber: 1,
+    nextTicketNumber: STARTING_TICKET_NUMBER,
     // Starts above every seeded id above (rates/discountTiers/expenseCategories
     // each use small fixed ids) so a newly added record can never collide with
     // a seed record in the same array.

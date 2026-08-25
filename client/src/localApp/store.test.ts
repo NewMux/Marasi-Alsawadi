@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { STARTING_TICKET_NUMBER } from "./pricing";
 import {
   addDiscountTier, addExpense, addExpenseCategory, addFee, addRate, getSnapshot,
   issuePurchase, previewPurchase, removeExpense, resetStore, updateRate,
@@ -15,6 +16,7 @@ describe("local app store", () => {
     ]);
     expect(state.customers).toEqual([]);
     expect(state.purchases).toEqual([]);
+    expect(state.nextTicketNumber).toBe(STARTING_TICKET_NUMBER);
   });
 
   it("issues a purchase using the real PRD pricing engine (free entry, discount, VAT)", () => {
@@ -45,8 +47,8 @@ describe("local app store", () => {
     const waterpark = getSnapshot().rates.find((rate) => rate.code === "WATERPARK")!;
     const first = issuePurchase({ customerName: "A", customerPhone: "1", visitDate: "2026-08-25", lines: [{ rateId: waterpark.id, ticketType: "waterpark", freeEntryCategory: null }], paymentMethod: "cash" });
     const second = issuePurchase({ customerName: "B", customerPhone: "2", visitDate: "2026-08-25", lines: [{ rateId: waterpark.id, ticketType: "waterpark", freeEntryCategory: null }, { rateId: waterpark.id, ticketType: "waterpark", freeEntryCategory: null }], paymentMethod: "cash" });
-    expect(first.purchase.lines[0].ticketNumber).toBe("MAS-00000001");
-    expect(second.purchase.lines.map((line) => line.ticketNumber)).toEqual(["MAS-00000002", "MAS-00000003"]);
+    expect(first.purchase.lines[0].ticketNumber).toBe(String(STARTING_TICKET_NUMBER));
+    expect(second.purchase.lines.map((line) => line.ticketNumber)).toEqual([String(STARTING_TICKET_NUMBER + 1), String(STARTING_TICKET_NUMBER + 2)]);
     expect(first.purchase.lines[0].ticketNumber).not.toMatch(/2026/); // must not embed the visit date/year
   });
 

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Plus, Printer, Ticket, Trash2, UserRound } from "lucide-react";
 import { toast } from "sonner";
 import { EmptyState, Field, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, cx } from "@/components/MarasiUI";
+import { TicketReceipt, type TicketReceiptData } from "@/components/TicketReceipt";
 import { Textarea } from "@/components/ui/textarea";
 import { dateLabel, money, today } from "@/localApp/format";
 import { useT, type TranslationKey } from "@/localApp/i18n";
@@ -18,23 +19,20 @@ function Step({ number, title, detail, active }: { number: string; title: string
   return <div className={cx("flex items-start gap-3 rounded-2xl border p-4", active ? "border-[#cce5ff] bg-[#f0f7ff]" : "border-divider bg-white")}><span className={cx("grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs font-semibold", active ? "bg-accent text-white" : "bg-fill text-body")}>{number}</span><div><b className="block text-xs text-ink">{title}</b><span className="mt-1 block text-[11px] leading-4 text-muted">{detail}</span></div></div>;
 }
 
-function Receipt({ created, width, t }: { created: any; width: "80" | "58"; t: (key: TranslationKey) => string }) {
-  return <div id="print-ticket" className={cx("print-ticket hidden", width === "58" ? "receipt-58" : "receipt-80")}><div className="print-ticket__sheet">
-    <div className="print-ticket__brand">{t("receipt.brand")}</div>
-    <h1>{t("receipt.heading")}</h1>
-    <p style={{ textAlign: "center" }}><b>{created.purchase.lines.map((line: any) => line.ticketNumber).join(" · ")}</b><br/>{dateLabel(created.purchase.visitDate)}</p>
-    <hr/>
-    <div className="print-ticket__row"><span>{t("receipt.customer")}</span><span>{created.customer.fullName}</span></div>
-    <div className="print-ticket__row"><span>{t("receipt.phone")}</span><span>{created.customer.phone || "—"}</span></div>
-    <div className="print-ticket__row"><span>{t("receipt.payment")}</span><span>{created.purchase.paymentMethod}</span></div>
-    <hr/>
-    {created.purchase.lines.map((line: any, index: number) => <div key={`${line.ticketNumber}-${index}`} className="print-ticket__row"><span>{line.label}{line.freeEntryCategory ? ` · ${t(freeKeys[line.freeEntryCategory as PrdFreeEntryCategory])}` : ""}</span><span>{money(line.totalAmount)}</span></div>)}
-    <div className="print-ticket__row"><span>{t("receipt.discount")}</span><span>−{money(created.purchase.discountAmount)}</span></div>
-    <div className="print-ticket__row"><span>{t("receipt.vat")}</span><span>{money(created.purchase.vatAmount)}</span></div>
-    {created.purchase.fees?.map((fee: any) => <div key={fee.feeId} className="print-ticket__row"><span>{fee.label}</span><span>{money(fee.amount)}</span></div>)}
-    <h2>{t("receipt.total")} <span style={{ float: "right" }}>{money(created.purchase.totalAmount)}</span></h2>
-    <p className="print-ticket__note">{t("receipt.disclaimer")}</p>
-  </div></div>;
+function toReceiptData(created: any): TicketReceiptData {
+  return {
+    customerName: created.customer.fullName,
+    customerPhone: created.customer.phone || "",
+    visitDate: created.purchase.visitDate,
+    baseSubtotal: created.purchase.baseSubtotal,
+    discountAmount: created.purchase.discountAmount,
+    vatAmount: created.purchase.vatAmount,
+    totalAmount: created.purchase.totalAmount,
+    lines: created.purchase.lines.map((line: any) => ({
+      ticketNumber: line.ticketNumber, ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory,
+      basePrice: line.basePrice, discountAmount: line.discountAmount, vatAmount: line.vatAmount, totalAmount: line.totalAmount,
+    })),
+  };
 }
 
 export default function LocalTicketDeskPage() {
@@ -152,6 +150,6 @@ export default function LocalTicketDeskPage() {
         {created && <div className="mt-5 rounded-2xl border border-[#cbead5] bg-[#effaf2] p-4"><StatusPill tone="success">{t("tickets.purchaseReady")}</StatusPill><div className="mt-2 font-mono text-lg font-semibold text-ink">{created.purchase.lines.map((line: any) => line.ticketNumber).join(" · ")}</div><p className="mt-1 text-xs leading-5 text-muted">{t("tickets.purchaseReadyHint")}</p></div>}
       </Surface>
     </div>
-    {created && <Receipt created={created} width={receiptWidth} t={t}/>}
+    {created && <TicketReceipt data={toReceiptData(created)} width={receiptWidth}/>}
   </>;
 }

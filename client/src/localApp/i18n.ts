@@ -105,15 +105,7 @@ const dict = {
   "tickets.purchaseReady": { en: "Purchase ready", ar: "العملية جاهزة" },
   "tickets.purchaseReadyHint": { en: "Print the receipt for the customer. Ticket numbers continue across all visits.", ar: "اطبع الإيصال للعميل. تستمر أرقام التذاكر عبر جميع الزيارات." },
 
-  "receipt.brand": { en: "MARASI ALSAWADI RESORT & AQUA PARK", ar: "منتجع مراسي السوادي وأكوا بارك" },
-  "receipt.heading": { en: "RECEIPT", ar: "إيصال" },
   "receipt.customer": { en: "Customer", ar: "العميل" },
-  "receipt.phone": { en: "Phone", ar: "الهاتف" },
-  "receipt.payment": { en: "Payment", ar: "الدفع" },
-  "receipt.discount": { en: "Discount", ar: "الخصم" },
-  "receipt.vat": { en: "VAT 5%", ar: "ضريبة القيمة المضافة ٥٪" },
-  "receipt.total": { en: "Total", ar: "الإجمالي" },
-  "receipt.disclaimer": { en: "By entering, you acknowledge and agree to the park's terms and conditions displayed at the entrance.", ar: "بدخولك، فإنك تقر وتوافق على شروط وأحكام المنتجع المعلّقة عند المدخل." },
 
   "customers.eyebrow": { en: "Front office", ar: "المكتب الأمامي" },
   "customers.title": { en: "Customer directory", ar: "دليل العملاء" },
