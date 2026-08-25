@@ -1,6 +1,6 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { useLocation } from "wouter";
-import { BarChart3, Boxes, ClipboardList, DollarSign, FileSpreadsheet, Home, LogOut, ScanLine, Search, Settings, Sparkles, Ticket } from "lucide-react";
+import { BarChart3, DollarSign, Home, LogOut, ScanLine, Search, Settings, Sparkles, Ticket } from "lucide-react";
 
 type Role = "staff" | "manager" | "admin" | "guard" | "super_admin";
 type NavItem = { label: string; mobileLabel: string; path: string; icon: any; roles: Role[]; group: string };
@@ -9,13 +9,10 @@ const items: NavItem[] = [
   { label: "Command Center", mobileLabel: "Home", path: "/", icon: Home, roles: ["staff", "manager", "admin", "guard", "super_admin"], group: "Overview" },
   { label: "Ticket Desk", mobileLabel: "Tickets", path: "/tickets", icon: Ticket, roles: ["staff", "manager", "admin", "super_admin"], group: "Front office" },
   { label: "Customer Directory", mobileLabel: "Customers", path: "/customers", icon: Search, roles: ["staff", "manager", "admin", "super_admin"], group: "Front office" },
-  { label: "Gate Scanner", mobileLabel: "Gate", path: "/gate", icon: ScanLine, roles: ["guard", "manager", "admin", "super_admin"], group: "Operations" },
-  { label: "Operations Workspace", mobileLabel: "Operations", path: "/operations", icon: ClipboardList, roles: ["manager", "admin", "super_admin"], group: "Operations" },
+  { label: "Gate Scanner", mobileLabel: "Gate", path: "/gate", icon: ScanLine, roles: ["guard", "manager", "admin", "super_admin"], group: "Gate" },
   { label: "Finance Control", mobileLabel: "Finance", path: "/finance", icon: DollarSign, roles: ["manager", "admin", "super_admin"], group: "Finance" },
-  { label: "Management Reports", mobileLabel: "Reports", path: "/reports", icon: BarChart3, roles: ["manager", "admin", "super_admin"], group: "Finance" },
-  { label: "Master Data Hub", mobileLabel: "Master data", path: "/master-data", icon: Boxes, roles: ["manager", "admin", "super_admin"], group: "Governance" },
-  { label: "Commercial Settings", mobileLabel: "Settings", path: "/settings", icon: Settings, roles: ["super_admin"], group: "Governance" },
-  { label: "Workbook Migration", mobileLabel: "Migration", path: "/migration", icon: FileSpreadsheet, roles: ["super_admin"], group: "Governance" },
+  { label: "Revenue Report", mobileLabel: "Report", path: "/reports", icon: BarChart3, roles: ["manager", "admin", "super_admin"], group: "Finance" },
+  { label: "Commercial Settings", mobileLabel: "Settings", path: "/settings", icon: Settings, roles: ["super_admin"], group: "Admin" },
 ];
 
 export function permittedPath(path: string, role?: string) {

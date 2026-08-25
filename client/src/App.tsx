@@ -14,11 +14,8 @@ import ERPOperationsPage from "./pages/ERPOperationsPage";
 import GateScannerPage from "./pages/GateScannerPage";
 import LoginPage, { ChangePasswordPage } from "./pages/LoginPage";
 import ManagementReportsPage from "./pages/ManagementReportsPage";
-import MasterDataPage from "./pages/MasterDataPage";
 import PublicTicketPage from "./pages/PublicTicketPage";
-import ResortOperationsPage from "./pages/ResortOperationsPage";
 import SuperAdminSettingsPage from "./pages/SuperAdminSettingsPage";
-import WorkbookMigrationPage from "./pages/WorkbookMigrationPage";
 
 function SuperAdminSettingsRoute() {
   const { user } = useAuth();
@@ -36,10 +33,7 @@ function OperationsRoutes() {
     <Route path="/finance" component={corePage}/>
     <Route path="/reports" component={demo ? demoPage : ManagementReportsPage}/>
     <Route path="/gate" component={demo ? demoPage : GateScannerPage}/>
-    <Route path="/operations" component={demo ? demoPage : ResortOperationsPage}/>
-    <Route path="/master-data" component={demo ? demoPage : MasterDataPage}/>
     <Route path="/settings" component={demo ? demoPage : SuperAdminSettingsRoute}/>
-    <Route path="/migration" component={demo ? demoPage : WorkbookMigrationPage}/>
     <Route component={demo ? demoPage : CommandCenterPage}/>
   </Switch></DashboardLayout>;
 }

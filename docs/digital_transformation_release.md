@@ -11,7 +11,7 @@ This release aligns the application with the quoted operating scope and the part
 
 Ticket prices and fee items are now intended to be maintained through the application by the **Super Admin only**. Cashiers select approved prices and cannot submit arbitrary unit prices. Tickets are calculated on the server, store immutable base/fee line snapshots, and print through a compact receipt layout rather than an A4 document. Expense categories follow the same Super Admin-only governance rule.
 
-The branch now extends this foundation into a mini ERP. It adds a connected Operations Workspace for reservations, aqua admissions, housekeeping, maintenance, inventory, and guest flow; a Master Data Hub for units, stock, and staff records; a first-class Management Reports workspace; petty-cash requests and approvals; an onboarding checklist; and a workbook control room that can profile an uploaded workbook’s sheets, headers, row counts, and duplicate tabs before approval.
+The branch is intentionally limited to the quoted product scope: ticketing, customer records, expense management, and a revenue-versus-expense summary. The only additional screens retained are directly necessary for the requested operating flow: Super Admin configuration, WhatsApp ticket delivery, and gate-ticket validation.
 
 ## Delivered capability map
 
@@ -19,19 +19,15 @@ The branch now extends this foundation into a mini ERP. It adds a connected Oper
 |---|---|---|
 | Authentication | Local username/password sign-in, hashed passwords, expiring hashed sessions, logout, login throttling, and mandatory first-password change | All operating users |
 | Super Admin settings | Manage base prices, fixed/percentage fee items, fee applicability, expense categories, staff accounts, roles, activation, password resets, and audit activity | `super_admin` only; enforced server-side |
-| Ticket number | Server-side yearly sequential number in `MAS-YYYY-######` format | Authenticated ticket staff, managers, Super Admin |
-| Ticket pricing | Active database price and applicable fee definitions are reloaded on the server at issue time; no manual cashier price override | Price mutations: Super Admin only |
+| Ticket number and pricing | Server-side yearly sequential number in `MAS-YYYY-######` format; active database price and applicable fee definitions are reloaded at issue time; no manual cashier override | Ticket operations for authenticated staff; price mutations: Super Admin only |
 | Ticket history | Immutable base and fee line snapshots preserve the exact total charged at issue time | Authenticated operational roles |
 | Customer database | Customer name and phone are stored with every purchase and visit date; searchable by name, phone, or ticket | Authenticated ticket staff, managers, Super Admin |
 | Receipt printing | Browser/system print dialog with compact receipt styles for 80 mm and 58 mm receipt widths | Cashier/ticket desk and public ticket page |
-| Expenses | Dated expenses with amount, department, description, payee, and active category | Managers and Super Admin; category changes: Super Admin only |
-| Report | Revenue—including final ticket totals and fees—versus categorized expenses and net result | Managers and Super Admin |
+| Expense management | Dated expenses with amount, category, description, and payee; expense categories are editable by Super Admin | Managers and Super Admin; category mutations: Super Admin only |
+| Revenue-versus-expense report | Revenue—including final ticket totals and fees—versus categorized expenses and net result | Managers and Super Admin |
+| WhatsApp delivery | Ticket-link delivery through the configured provider after customer consent, with delivery-status tracking | Ticket staff; provider credentials required |
+| Gate entry | Customer ticket QR/manual validation with date, payment, lifecycle, and single-use checks | Guard, managers, Super Admin |
 | Public ticket | Opaque no-login ticket link with customer-safe details, itemized price/fee breakdown, status, and QR code | Anyone with the link |
-| Gate entry | Camera/manual scanner with server-side date, payment, lifecycle, and single-use validation | Guard, managers, Super Admin |
-| Resort operations | Reservations, aqua admissions, housekeeping, maintenance, inventory, guest flow, master data, and management reports are connected through first-class workspaces | Role-based operational access |
-| Finance controls | Daily settlements, petty-cash/reimbursement requests, approvals, categorized expenses, and controlled CSV export | Staff can request; managers review; Super Admin governs categories |
-| Workbook migration | Upload and profile real workbooks in-browser, inspect headers/row counts/duplicate tabs, select candidate sheets, and mark a mapping approval checkpoint without silently importing rows | Super Admin/manager migration workflow |
-| Existing resort workspaces | HR, daily settlements, migration control room, and command center remain available alongside the new operations and finance workspaces | Role-based operational access |
 
 ## Roles and controls
 
@@ -64,11 +60,9 @@ The same workspace creates cashier, manager, admin, guard, and additional Super 
 
 ## Database migration
 
-Migration `0006_add_super_admin_auth_and_ticket_fee_lines.sql` is included for the new dedicated Marasi database. It extends the role enum, adds username/password/session fields, creates `user_sessions`, creates fee definitions and price assignments, adds ticket subtotal/fee columns, creates immutable sales transaction lines, and backfills one base line for each legacy ticket without inventing historical fees.
+Migration `0006_add_super_admin_auth_and_ticket_fee_lines.sql` is included for the new dedicated Marasi database. It extends the role enum, adds username/password/session fields, creates fee definitions and rate assignments, adds ticket subtotal/fee totals, creates immutable sales transaction lines, and backfills one base line for existing tickets without inventing historical fees.
 
-Migration `0007_fix_reservation_omr_precision.sql` converts reservation nightly-rate and total fields to two-decimal OMR values so accommodation revenue is not rounded to whole rials. The migration is intentionally separate and must be rehearsed after 0006 against the dedicated Marasi database.
-
-The migration is intended for the new isolated production database after a backup and rehearsal. It must not be run destructively against either of the two existing Hetzner projects or their databases.
+The quote-only release does not include workbook migration, reservations/availability, maintenance requests, inventory, housekeeping, HR, or other unrelated modules. No client workbook rows are imported by this release. The migration is intended for the new isolated production database after backup and rehearsal, and must not be run destructively against either of the two existing Hetzner projects or their databases.
 
 ## Isolated Coolify deployment
 
@@ -92,9 +86,9 @@ No deployment has been made to Hetzner from this release because Coolify URL/acc
 
 ## Verification evidence
 
-The latest mini-ERP checkpoint passes TypeScript checking, the complete suite with **11 test files and 34 tests**, and the production build. Coverage includes authentication, session/password behavior, Super Admin RBAC, fee arithmetic, ticket rules, reservation decimal compatibility, operation rules, HR validation, demo workflows, and health checks. The browser preview was also checked for the populated Command Center, Operations Workspace, Finance Control, Management Reports, Master Data Hub, Ticket Desk, Customer Directory, Gate Scanner, and migration transition screens. The local workbook profiler uses the real uploaded file only when a Super Admin explicitly selects it; no client workbook rows have been imported into the repository or database.
+The current quote-only checkpoint passes TypeScript checking, the complete suite with **11 test files and 34 tests**, and the production build. Coverage includes authentication, session/password behavior, Super Admin RBAC, fee arithmetic, ticket rules, reservation compatibility, gate rules, demo workflows, and health checks. The browser preview was checked for the quoted Command Center, Ticket Desk, Customer Directory, Finance Control, Revenue Report, Commercial Settings, and Gate Scanner flows. No client workbook rows have been imported into the repository or database.
 
-A disposable local MariaDB rehearsal was completed for the authentication and fee schema: the baseline schema was created, migration 0006 was applied, and a disposable Super Admin was bootstrapped. Migration 0007 still requires a dedicated-database rehearsal before production. No migration has been applied to either of the user’s existing Hetzner projects. This remains an explicit deployment gate, not an indication that the migration should be applied to an existing project.
+A disposable local MariaDB rehearsal was completed for the authentication and fee schema: the baseline schema was created, migration 0006 was applied, and a disposable Super Admin was bootstrapped. No migration has been applied to either of the user’s existing Hetzner projects. The dedicated production database still requires backup, ordered migration rehearsal, receipt-printer testing, and Super Admin bootstrap before launch.
 
 ## Required production acceptance tests
 
