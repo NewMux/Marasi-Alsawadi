@@ -5,9 +5,10 @@ import { EmptyState, Field, PageHeader, PrimaryButton, SearchField, SecondaryBut
 import { TicketReceipt, type TicketReceiptData } from "@/components/TicketReceipt";
 import { Textarea } from "@/components/ui/textarea";
 import { printViaAgent } from "@/lib/printAgent";
+import { COUNTRIES, DEFAULT_COUNTRY } from "@/lib/countries";
 import { dateLabel, money, today } from "@/localApp/format";
 import { useT, type TranslationKey } from "@/localApp/i18n";
-import type { PrdFreeEntryCategory, PrdTicketType } from "@/localApp/pricing";
+import { MAX_TICKETS_PER_PURCHASE, type PrdFreeEntryCategory, type PrdTicketType } from "@/localApp/pricing";
 import { issuePurchase, previewPurchase, useLocalStore, type PurchaseLineDraft } from "@/localApp/store";
 
 type FreeEntryCategory = "" | PrdFreeEntryCategory;
@@ -15,7 +16,7 @@ type TicketLine = { id: number; rateId: string; ticketType: PrdTicketType; freeE
 type GroupLine = { id: number; ticketType: PrdTicketType; freeEntryCategory: FreeEntryCategory; quantity: number };
 type PurchaseMode = "individual" | "group";
 type FormState = { customerId: string; customerName: string; customerPhone: string; customerEmail: string; customerCountry: string; groupName: string; visitDate: string; paymentMethod: "cash" | "card" | "bank" | "mixed"; notes: string };
-const blankForm = (): FormState => ({ customerId: "", customerName: "", customerPhone: "", customerEmail: "", customerCountry: "", groupName: "", visitDate: today(), paymentMethod: "cash", notes: "" });
+const blankForm = (): FormState => ({ customerId: "", customerName: "", customerPhone: "", customerEmail: "", customerCountry: DEFAULT_COUNTRY, groupName: "", visitDate: today(), paymentMethod: "cash", notes: "" });
 const blankLine = (id: number): TicketLine => ({ id, rateId: "", ticketType: "waterpark", freeEntryCategory: "" });
 const blankGroupLine = (id: number): GroupLine => ({ id, ticketType: "waterpark", freeEntryCategory: "", quantity: 1 });
 const freeKeys: Record<PrdFreeEntryCategory, TranslationKey> = { under_two: "tickets.underTwo", person_of_determination: "tickets.pod", senior: "tickets.senior" };
@@ -88,7 +89,8 @@ export default function LocalTicketDeskPage() {
   });
   const previewLines = mode === "individual" ? individualPreviewLines : groupPreviewLines;
   const expectedLineCount = mode === "individual" ? lines.length : groupLines.reduce((sum, line) => sum + Math.max(0, Math.floor(line.quantity || 0)), 0);
-  const pricing = previewLines.length === expectedLineCount && expectedLineCount > 0 ? previewPurchase(previewLines) : null;
+  const overCapacity = expectedLineCount > MAX_TICKETS_PER_PURCHASE;
+  const pricing = previewLines.length === expectedLineCount && expectedLineCount > 0 && !overCapacity ? previewPurchase(previewLines) : null;
 
   const selectCustomer = (customer: any) => { setForm((current) => ({ ...current, customerId: String(customer.id), customerName: "", customerPhone: "" })); setCustomerQuery(""); };
   const updateLine = (id: number, patch: Partial<TicketLine>) => setLines((current) => current.map((line) => {
@@ -109,6 +111,7 @@ export default function LocalTicketDeskPage() {
   const issuePurchaseAction = () => {
     setAttemptedSubmit(true);
     if (customerInvalid) return toast.error("Select a customer or add a name and phone");
+    if (overCapacity) return toast.error(`One purchase can issue at most ${MAX_TICKETS_PER_PURCHASE} tickets — split this into two purchases`);
     if (linesInvalid) return toast.error(mode === "group" ? "Every group line needs a ticket type and a quantity of at least 1" : "Select a ticket type and approved price for every line");
     try {
       const result = issuePurchase({
@@ -136,6 +139,10 @@ export default function LocalTicketDeskPage() {
     window.setTimeout(() => window.print(), 0);
     if (created) toast.message("Local print agent not found — opening the browser print dialog instead.");
   };
+  const reprintPurchase = (purchase: any, customer: any) => {
+    setCreated({ purchase, customer });
+    toast.success("Ready to reprint — use the receipt buttons below");
+  };
 
   return <>
     <PageHeader eyebrow={t("tickets.eyebrow")} title={t("tickets.title")} description={t("tickets.description")} actions={<StatusPill tone="info">{t("tickets.vatBadge")}</StatusPill>}/>
@@ -157,17 +164,17 @@ export default function LocalTicketDeskPage() {
             <Field label={t("tickets.fullName")} error={attemptedSubmit && customerInvalid && !form.customerName.trim() ? t("common.required") : undefined}><TextField value={form.customerName} onChange={(event) => setForm({ ...form, customerName: event.target.value })} className={attemptedSubmit && customerInvalid && !form.customerName.trim() ? "border-danger ring-1 ring-danger/30" : undefined}/></Field>
             <Field label={t("common.phone")} error={attemptedSubmit && customerInvalid && !form.customerPhone.trim() ? t("common.required") : undefined}><TextField value={form.customerPhone} onChange={(event) => setForm({ ...form, customerPhone: event.target.value })} inputMode="tel" placeholder="+968 …" className={attemptedSubmit && customerInvalid && !form.customerPhone.trim() ? "border-danger ring-1 ring-danger/30" : undefined}/></Field>
             <Field label={t("tickets.email")}><TextField type="email" value={form.customerEmail} onChange={(event) => setForm({ ...form, customerEmail: event.target.value })} placeholder="name@example.com"/></Field>
-            <Field label={t("tickets.country")}><TextField value={form.customerCountry} onChange={(event) => setForm({ ...form, customerCountry: event.target.value })} placeholder="Oman"/></Field>
+            <Field label={t("common.country")}><SelectField value={form.customerCountry} onChange={(event) => setForm({ ...form, customerCountry: event.target.value })}>{COUNTRIES.map((country) => <option key={country} value={country}>{country}</option>)}</SelectField></Field>
           </div>}
         </Surface>
         <Surface>
           <div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("tickets.recentPurchases")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("tickets.recentPurchasesHint")}</p></div><StatusPill>{groupedPurchases.length}</StatusPill></div>
           <SearchField value={ticketQuery} onChange={setTicketQuery} placeholder={t("tickets.searchTickets")}/>
-          <div className="mt-4">{groupedPurchases.length ? <TableFrame><TableHeader><div className="grid grid-cols-[1.25fr_.75fr_auto] gap-3"><span>{t("receipt.customer")}</span><span>{t("tickets.visitDate")}</span><span className="text-right">{t("common.total")}</span></div></TableHeader>{groupedPurchases.slice(0, 8).map(({ purchase, customer }) => <TableRow key={purchase.id} className="grid-cols-[1.25fr_.75fr_auto]"><div className="min-w-0"><div className="truncate text-sm font-medium">{customer?.fullName || "Customer"}</div><div className="mt-1 truncate font-mono text-[10px] text-accent">{purchase.lines.map((line) => line.ticketNumber).join(" · ")}</div></div><div className="text-xs text-muted">{dateLabel(purchase.visitDate)}</div><b className="text-right text-sm">{money(purchase.totalAmount)}</b></TableRow>)}</TableFrame> : <EmptyState title="No purchases yet" description="Issued purchases will appear here for quick lookup."/>}</div>
+          <div className="mt-4">{groupedPurchases.length ? <TableFrame><TableHeader><div className="grid grid-cols-[1.1fr_.65fr_.55fr_auto] gap-3"><span>{t("receipt.customer")}</span><span>{t("tickets.visitDate")}</span><span>{t("common.total")}</span><span className="text-right">{t("tickets.reprint")}</span></div></TableHeader>{groupedPurchases.slice(0, 8).map(({ purchase, customer }) => <TableRow key={purchase.id} className="grid-cols-[1.1fr_.65fr_.55fr_auto]"><div className="min-w-0"><div className="truncate text-sm font-medium">{customer?.fullName || "Customer"}</div><div className="mt-1 truncate font-mono text-[10px] text-accent">{purchase.lines.map((line) => line.ticketNumber).join(" · ")}</div></div><div className="text-xs text-muted">{dateLabel(purchase.visitDate)}</div><b className="text-sm">{money(purchase.totalAmount)}</b><button onClick={() => reprintPurchase(purchase, customer)} aria-label="Reprint this ticket" className="justify-self-end rounded-full bg-fill p-2 text-muted hover:bg-[#e8e8ed] hover:text-ink"><Printer size={14}/></button></TableRow>)}</TableFrame> : <EmptyState title="No purchases yet" description="Issued purchases will appear here for quick lookup."/>}</div>
         </Surface>
       </div>
       <Surface className="h-fit">
-        <div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("tickets.visitorLines")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("tickets.visitorLinesHint")}</p></div><StatusPill tone={mode === "individual" ? (validCount === lines.length ? "success" : "warning") : (linesInvalid ? "warning" : "success")}>{mode === "individual" ? `${validCount}/${lines.length} ${t("tickets.ready")}` : `${expectedLineCount} ${t("tickets.ticketsCount")}`}</StatusPill></div>
+        <div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("tickets.visitorLines")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("tickets.visitorLinesHint")}</p></div><StatusPill tone={mode === "individual" ? (validCount === lines.length ? "success" : "warning") : (overCapacity ? "danger" : linesInvalid ? "warning" : "success")}>{mode === "individual" ? `${validCount}/${lines.length} ${t("tickets.ready")}` : overCapacity ? `${expectedLineCount} — over ${MAX_TICKETS_PER_PURCHASE} limit` : `${expectedLineCount} ${t("tickets.ticketsCount")}`}</StatusPill></div>
         <div className="mb-4 grid grid-cols-2 gap-2 rounded-2xl bg-well p-1">
           <button onClick={() => setMode("individual")} className={cx("flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-semibold transition", mode === "individual" ? "bg-white shadow-sm text-ink" : "text-muted hover:text-ink")}><UserRound size={14}/>{t("tickets.individual")}</button>
           <button onClick={() => setMode("group")} className={cx("flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-semibold transition", mode === "group" ? "bg-white shadow-sm text-ink" : "text-muted hover:text-ink")}><Users size={14}/>{t("tickets.group")}</button>

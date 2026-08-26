@@ -469,6 +469,27 @@ export async function createExpenseAdjustment(data: {
   return rows[0]!;
 }
 
+// Balance = money added to the category, plus transfers in, minus money
+// deducted, transfers out, and actual recorded expenses against it — i.e.
+// what's left to spend in that category for the given period.
+export async function getExpenseCategoryBalances(from?: string, to?: string) {
+  const [categories, adjustments, expenses] = await Promise.all([
+    listExpenseCategories(false),
+    listExpenseAdjustments(from, to),
+    listExpenseRecords(from, to),
+  ]);
+  return categories.map((category) => {
+    const categoryAdjustments = adjustments.filter((entry) => entry.categoryId === category.id);
+    const totalAdded = categoryAdjustments.filter((entry) => entry.type === "add").reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const totalDeducted = categoryAdjustments.filter((entry) => entry.type === "deduct").reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const totalTransferredIn = categoryAdjustments.filter((entry) => entry.type === "transfer_in").reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const totalTransferredOut = categoryAdjustments.filter((entry) => entry.type === "transfer_out").reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const totalExpenses = expenses.filter((entry) => entry.categoryId === category.id).reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const balance = totalAdded - totalDeducted + totalTransferredIn - totalTransferredOut - totalExpenses;
+    return { categoryId: category.id, categoryName: category.name, categoryCode: category.code, totalAdded, totalDeducted, totalTransferredIn, totalTransferredOut, totalExpenses, balance };
+  });
+}
+
 export async function createExpenseTransfer(data: {
   businessDate: string; fromCategoryId: number; fromCategoryName: string;
   toCategoryId: number; toCategoryName: string; amount: string; note?: string; createdBy: number;

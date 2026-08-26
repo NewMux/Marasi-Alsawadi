@@ -2,13 +2,14 @@ import { useMemo, useState } from "react";
 import { ArrowUpRight, CalendarDays, Phone, Plus, Users } from "lucide-react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
-import { EmptyState, Field, MetricCard, PageHeader, PrimaryButton, SearchField, SecondaryButton, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField } from "@/components/MarasiUI";
+import { EmptyState, Field, MetricCard, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField } from "@/components/MarasiUI";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { COUNTRIES, DEFAULT_COUNTRY } from "@/lib/countries";
 import { dateLabel, money } from "@/localApp/format";
 import { useT } from "@/localApp/i18n";
 import { createCustomer, useLocalStore } from "@/localApp/store";
 
-const blankNewCustomer = { fullName: "", phone: "", email: "", country: "" };
+const blankNewCustomer = { fullName: "", phone: "", email: "", country: DEFAULT_COUNTRY };
 
 export default function LocalCustomerDirectoryPage() {
   const [, setLocation] = useLocation();
@@ -51,7 +52,7 @@ export default function LocalCustomerDirectoryPage() {
       <MetricCard icon={CalendarDays} label={t("customers.purchaseRecords")} value={String(totalVisits)} detail={t("customers.groupedVisits")} tone="green"/>
       <MetricCard icon={Phone} label={t("customers.searchCoverage")} value={t("customers.threeFields")} detail="" tone="amber"/>
     </div>
-    <Surface className="mt-6"><div className="flex flex-col gap-3 sm:flex-row"><div className="flex-1"><SearchField value={query} onChange={setQuery} placeholder={t("customers.searchPlaceholder")}/></div><TextField value={countryFilter} onChange={(event) => setCountryFilter(event.target.value)} placeholder={t("common.country")} className="sm:w-48"/></div></Surface>
+    <Surface className="mt-6"><div className="flex flex-col gap-3 sm:flex-row"><div className="flex-1"><SearchField value={query} onChange={setQuery} placeholder={t("customers.searchPlaceholder")}/></div><SelectField value={countryFilter} onChange={(event) => setCountryFilter(event.target.value)} className="sm:w-48"><option value="">{t("customers.allCountries")}</option>{COUNTRIES.map((country) => <option key={country} value={country}>{country}</option>)}</SelectField></div></Surface>
     <Surface className="mt-6">
       {rows.length ? <TableFrame><TableHeader><div className="grid grid-cols-[1.25fr_1fr_.65fr_auto] gap-3"><span>{t("receipt.customer")}</span><span>{t("customers.lastVisit")}</span><span>{t("customers.lifetime")}</span><span className="text-right">{t("customers.history")}</span></div></TableHeader>
         {rows.map(({ customer, visits, total }) => <div key={customer.id}>
@@ -75,7 +76,7 @@ export default function LocalCustomerDirectoryPage() {
           <Field label={t("tickets.fullName")}><TextField value={newCustomer.fullName} onChange={(event) => setNewCustomer({ ...newCustomer, fullName: event.target.value })}/></Field>
           <Field label={t("common.phone")}><TextField value={newCustomer.phone} onChange={(event) => setNewCustomer({ ...newCustomer, phone: event.target.value })} inputMode="tel" placeholder="+968 …"/></Field>
           <Field label={t("common.email")}><TextField type="email" value={newCustomer.email} onChange={(event) => setNewCustomer({ ...newCustomer, email: event.target.value })} placeholder="name@example.com"/></Field>
-          <Field label={t("common.country")}><TextField value={newCustomer.country} onChange={(event) => setNewCustomer({ ...newCustomer, country: event.target.value })} placeholder="Oman"/></Field>
+          <Field label={t("common.country")}><SelectField value={newCustomer.country} onChange={(event) => setNewCustomer({ ...newCustomer, country: event.target.value })}>{COUNTRIES.map((country) => <option key={country} value={country}>{country}</option>)}</SelectField></Field>
         </div>
         <DialogFooter><PrimaryButton onClick={submitNewCustomer}>{t("common.save")}</PrimaryButton></DialogFooter>
       </DialogContent>

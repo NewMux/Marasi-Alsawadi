@@ -26,9 +26,9 @@ import {
   searchCustomers, updateExpenseCategory, updateExpenseRecord, updateServiceRate, updateTicketFee, deleteServiceRate,
   createPrdTicketPurchase, listPrdRates, listTicketDiscountTiers, createTicketDiscountTier, updateTicketDiscountTier, deleteTicketDiscountTier,
   listPrdTicketPurchases, listPrdTicketLines, getCustomerById,
-  listExpenseAdjustments, createExpenseAdjustment, createExpenseTransfer,
+  listExpenseAdjustments, createExpenseAdjustment, createExpenseTransfer, getExpenseCategoryBalances,
 } from "../ticketingDb";
-import { calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney } from "../ticketingRules";
+import { calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
 import { publicTicketUrl, requestOrigin } from "../ticketUrl";
 import { isAllowedAttachmentMimeType, saveExpenseAttachment } from "../attachments";
@@ -212,6 +212,7 @@ export const platformRouter = router({
       discountTiers: await listTicketDiscountTiers(Boolean(ctx.user.role === "super_admin")),
       fees: await listTicketFees(Boolean(ctx.user.role === "super_admin")),
       vatPercent: 5,
+      maxTicketsPerPurchase: MAX_TICKETS_PER_PURCHASE,
     })),
     discountTiers: router({
       list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listTicketDiscountTiers(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
@@ -228,13 +229,13 @@ export const platformRouter = router({
       }),
       delete: superAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => { const result = await deleteTicketDiscountTier(input.id); await logActivity(ctx.user.id, "ticket_discount.delete", "ticket_discount_tier", input.id); return result; }),
     }),
-    purchasePreview: protectedProcedure.input(z.object({ lines: z.array(prdLineInput).min(1).max(500) })).query(async ({ input }) => (await resolvePrdPricing(input.lines)).pricing),
+    purchasePreview: protectedProcedure.input(z.object({ lines: z.array(prdLineInput).min(1).max(MAX_TICKETS_PER_PURCHASE) })).query(async ({ input }) => (await resolvePrdPricing(input.lines)).pricing),
     purchaseList: protectedProcedure.input(z.object({ query: z.string().optional(), from: z.string().optional(), to: z.string().optional() }).optional()).query(({ input }) => listPrdTicketPurchases(input?.query, input?.from, input?.to)),
     purchaseLines: protectedProcedure.input(z.object({ purchaseId: z.number().int().positive() })).query(({ input }) => listPrdTicketLines(input.purchaseId)),
     purchaseCreate: protectedProcedure.input(z.object({
       customerId: z.number().int().positive().optional(), customerName: z.string().min(1).optional(), customerPhone: z.string().min(3).optional(),
       customerEmail: z.string().email().optional(), customerNationality: z.string().max(64).optional(), visitDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-      lines: z.array(prdLineInput).min(1).max(500), paymentMethod: z.enum(["cash", "card", "bank", "mixed"]).default("cash"), notes: z.string().max(1000).optional(),
+      lines: z.array(prdLineInput).min(1).max(MAX_TICKETS_PER_PURCHASE), paymentMethod: z.enum(["cash", "card", "bank", "mixed"]).default("cash"), notes: z.string().max(1000).optional(),
     }).refine((input) => Boolean(input.customerId || (input.customerName && input.customerPhone)), { message: "Select an existing customer or provide name and phone" })).mutation(async ({ input, ctx }) => {
       const customer = input.customerId ? await getCustomerById(input.customerId) : await createGuest({ fullName: input.customerName!, phone: input.customerPhone!, email: input.customerEmail, nationality: input.customerNationality });
       if (!customer) throw new TRPCError({ code: "NOT_FOUND", message: "Customer record was not found" });
@@ -678,6 +679,8 @@ export const platformRouter = router({
     expenseAdjustments: router({
       list: managerProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
         .query(({ input }) => listExpenseAdjustments(input?.from, input?.to)),
+      balances: managerProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
+        .query(({ input }) => getExpenseCategoryBalances(input?.from, input?.to)),
       adjust: managerProcedure.input(z.object({
         businessDate: z.string(), categoryId: z.number().int().positive(), type: z.enum(["add", "deduct"]),
         amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to two decimals"), note: z.string().max(512).optional(),

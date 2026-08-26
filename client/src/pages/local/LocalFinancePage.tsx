@@ -40,10 +40,31 @@ export default function LocalFinancePage() {
   const [categoryForm, setCategoryForm] = useState(blankCategoryForm);
   const [expenseForm, setExpenseForm] = useState(blankExpenseForm);
   const [adjustmentForm, setAdjustmentForm] = useState(blankAdjustmentForm);
+  const [categoryReportKey, setCategoryReportKey] = useState("");
 
   const periodPurchases = useMemo(() => store.purchases.filter((purchase) => purchase.visitDate >= range.from && purchase.visitDate <= range.to), [store.purchases, range]);
   const periodExpenses = useMemo(() => store.expenses.filter((expense) => expense.businessDate >= range.from && expense.businessDate <= range.to), [store.expenses, range]);
   const periodAdjustments = useMemo(() => store.expenseAdjustments.filter((entry) => entry.businessDate >= range.from && entry.businessDate <= range.to).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()), [store.expenseAdjustments, range]);
+  const categoryBalances = useMemo(() => store.expenseCategories.filter((category) => category.active).map((category) => {
+    const categoryAdjustments = periodAdjustments.filter((entry) => entry.categoryId === category.id);
+    const totalAdded = categoryAdjustments.filter((entry) => entry.type === "add").reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const totalDeducted = categoryAdjustments.filter((entry) => entry.type === "deduct").reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const totalTransferredIn = categoryAdjustments.filter((entry) => entry.type === "transfer_in").reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const totalTransferredOut = categoryAdjustments.filter((entry) => entry.type === "transfer_out").reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const totalExpenses = periodExpenses.filter((entry) => entry.categoryId === category.id).reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const balance = totalAdded - totalDeducted + totalTransferredIn - totalTransferredOut - totalExpenses;
+    return { categoryId: category.id, categoryName: category.name, totalAdded, totalDeducted, totalTransferredIn, totalTransferredOut, totalExpenses, balance };
+  }), [store.expenseCategories, periodAdjustments, periodExpenses]);
+  const categoryReport = useMemo(() => {
+    if (!categoryReportKey) return null;
+    if (categoryReportKey === "revenue:tickets") {
+      return { title: "Ticket Sales — revenue report", total: periodPurchases.reduce((sum, purchase) => sum + Number(purchase.totalAmount), 0), rows: periodPurchases.map((purchase) => ({ date: purchase.visitDate, description: `Purchase #${purchase.id} (${purchase.lines.length} ticket${purchase.lines.length === 1 ? "" : "s"})`, amount: purchase.totalAmount })) };
+    }
+    const categoryId = Number(categoryReportKey.split(":")[1]);
+    const rows = periodExpenses.filter((expense) => expense.categoryId === categoryId);
+    const categoryName = store.expenseCategories.find((category) => category.id === categoryId)?.name || "Category";
+    return { title: `${categoryName} — expense report`, total: rows.reduce((sum, expense) => sum + Number(expense.amount), 0), rows: rows.map((expense) => ({ date: expense.businessDate, description: expense.description || expense.payee || "Expense", amount: expense.amount })) };
+  }, [categoryReportKey, periodPurchases, periodExpenses, store.expenseCategories]);
   const revenue = periodPurchases.reduce((sum, purchase) => sum + Number(purchase.totalAmount), 0);
   const costs = periodExpenses.reduce((sum, expense) => sum + Number(expense.amount), 0);
   const activeCategories = store.expenseCategories.filter((category) => category.active);
@@ -144,6 +165,19 @@ export default function LocalFinancePage() {
         <MetricCard icon={revenue >= costs ? TrendingUp : TrendingDown} label={t("finance.net")} value={money(revenue - costs)} detail="" tone={revenue >= costs ? "blue" : "red"}/>
       </div>
       <Surface className="mt-6">
+        <h2 className="font-serif text-2xl tracking-[-.035em]">{t("finance.singleCategoryReport")}</h2>
+        <p className="mt-2 text-xs leading-5 text-muted">{t("finance.singleCategoryReportHint")}</p>
+        <div className="mt-4 max-w-sm"><Field label={t("finance.reportOn")}><SelectField value={categoryReportKey} onChange={(event) => setCategoryReportKey(event.target.value)}>
+          <option value="">{t("finance.chooseReportSource")}</option>
+          <optgroup label="Revenue"><option value="revenue:tickets">{t("finance.ticketSales")}</option></optgroup>
+          <optgroup label={t("finance.tabCategories")}>{store.expenseCategories.filter((category) => category.active).map((category) => <option key={category.id} value={`expense:${category.id}`}>{category.name}</option>)}</optgroup>
+        </SelectField></Field></div>
+        {categoryReport && <div className="mt-5 border-t border-divider pt-5">
+          <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-serif text-xl tracking-[-.03em]">{categoryReport.title}</h3><p className="mt-1 text-xs text-muted">{categoryReport.rows.length} · {range.from} to {range.to}</p></div><div className="flex items-center gap-3"><b className="text-lg">{money(categoryReport.total)}</b><SecondaryButton onClick={() => exportCsv(`marasi-${categoryReportKey.replace(":", "-")}-${range.from}-to-${range.to}.csv`, [["Date", "Description", "Amount (OMR)"], ...categoryReport.rows.map((row) => [row.date, row.description, String(row.amount)])])}><Download size={14} className="mr-2"/>{t("common.export")}</SecondaryButton></div></div>
+          {categoryReport.rows.length ? <div className="mt-4 divide-y divide-divider">{categoryReport.rows.map((row, index) => <div key={index} className="flex items-center justify-between gap-3 py-3"><div><b className="text-sm">{row.description}</b><div className="mt-1 text-xs text-muted">{row.date}</div></div><b className="text-sm">{money(row.amount)}</b></div>)}</div> : <p className="py-8 text-center text-sm text-muted">{t("finance.noExpenses")}</p>}
+        </div>}
+      </Surface>
+      <Surface className="mt-6">
         <h2 className="font-serif text-2xl tracking-[-.035em]">{t("finance.recordExpense")}</h2>
         <p className="mt-2 text-xs leading-5 text-muted">{t("finance.recordExpenseHint")}</p>
         <div className="mt-5 grid gap-3 sm:grid-cols-2">
@@ -237,7 +271,13 @@ export default function LocalFinancePage() {
       </Surface>
     </div>}
 
-    {tab === "adjustments" && <div className="grid gap-6 xl:grid-cols-[.8fr_1.2fr]">
+    {tab === "adjustments" && <>
+    <Surface>
+      <h2 className="font-serif text-2xl tracking-[-.035em]">{t("finance.categoryBalances")}</h2>
+      <p className="mt-1.5 text-xs leading-5 text-muted">{t("finance.categoryBalancesHint")}</p>
+      {categoryBalances.length ? <TableFrame className="mt-4"><TableHeader><div className="grid grid-cols-[1.2fr_.55fr_.55fr_.55fr_.55fr_.6fr] gap-3"><span>{t("common.category")}</span><span>{t("finance.adjustmentAdd")}</span><span>{t("finance.adjustmentDeduct")}</span><span>{t("finance.adjustTransfer")}</span><span>{t("finance.expenses")}</span><span className="text-right">{t("finance.balance")}</span></div></TableHeader>{categoryBalances.map((entry) => <TableRow key={entry.categoryId} className="grid-cols-[1.2fr_.55fr_.55fr_.55fr_.55fr_.6fr]"><span className="truncate text-xs font-medium">{entry.categoryName}</span><span className="text-xs text-success">+{money(entry.totalAdded)}</span><span className="text-xs text-danger">−{money(entry.totalDeducted)}</span><span className="text-xs text-muted">{entry.totalTransferredIn - entry.totalTransferredOut >= 0 ? "+" : "−"}{money(Math.abs(entry.totalTransferredIn - entry.totalTransferredOut))}</span><span className="text-xs text-danger">−{money(entry.totalExpenses)}</span><b className={cx("text-right text-sm", entry.balance >= 0 ? "text-ink" : "text-danger")}>{money(entry.balance)}</b></TableRow>)}</TableFrame> : <p className="mt-4 py-8 text-center text-sm text-muted">{t("finance.noExpenses")}</p>}
+    </Surface>
+    <div className="mt-6 grid gap-6 xl:grid-cols-[.8fr_1.2fr]">
       <Surface>
         <h2 className="font-serif text-2xl tracking-[-.035em]">{t("finance.tabAdjustments")}</h2>
         <div className="my-4 grid grid-cols-2 gap-2 rounded-2xl bg-well p-1">
@@ -258,6 +298,7 @@ export default function LocalFinancePage() {
         <div className="mb-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><h2 className="font-serif text-2xl tracking-[-.035em]">{t("finance.transactionLog")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("finance.transactionLogHint")}</p></div><SecondaryButton onClick={() => exportCsv(`marasi-category-adjustments-${range.from}-to-${range.to}.csv`, [["Date", "Category", "Type", "Amount (OMR)", "Related category", "Note"], ...periodAdjustments.map((entry) => [entry.businessDate, entry.categoryName, t(adjustmentTypeKeys[entry.type]), entry.amount, entry.relatedCategoryName || "", entry.note])])}><Download size={14} className="mr-2"/>{t("common.export")}</SecondaryButton></div>
         {periodAdjustments.length ? <TableFrame><TableHeader><div className="grid grid-cols-[.7fr_1fr_.9fr_.7fr_1fr] gap-3"><span>{t("common.date")}</span><span>{t("common.category")}</span><span>{t("finance.adjustmentType")}</span><span>{t("common.amount")}</span><span>{t("finance.adjustmentNote")}</span></div></TableHeader>{periodAdjustments.map((entry) => <TableRow key={entry.id} className="grid-cols-[.7fr_1fr_.9fr_.7fr_1fr]"><span className="text-xs text-muted">{entry.businessDate}</span><span className="truncate text-xs">{entry.categoryName}</span><StatusPill tone={entry.type === "add" || entry.type === "transfer_in" ? "success" : "warning"}>{t(adjustmentTypeKeys[entry.type])}</StatusPill><b className={cx("text-sm", entry.type === "add" || entry.type === "transfer_in" ? "text-success" : "text-danger")}>{entry.type === "add" || entry.type === "transfer_in" ? "+" : "−"}{money(entry.amount)}</b><span className="truncate text-xs text-muted">{entry.relatedCategoryName ? `${entry.type === "transfer_out" ? "→" : "←"} ${entry.relatedCategoryName}${entry.note ? " — " : ""}` : ""}{entry.note}</span></TableRow>)}</TableFrame> : <p className="py-8 text-center text-sm text-muted">{t("finance.noAdjustments")}</p>}
       </Surface>
-    </div>}
+    </div>
+    </>}
   </>;
 }

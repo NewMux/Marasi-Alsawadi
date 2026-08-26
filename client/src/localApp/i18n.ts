@@ -83,6 +83,7 @@ const dict = {
   "tickets.price": { en: "Price", ar: "السعر" },
   "tickets.noRateForType": { en: "No price is configured for this ticket type yet.", ar: "لا يوجد سعر مُعد لهذا النوع من التذاكر بعد." },
   "tickets.ticketsCount": { en: "tickets", ar: "تذاكر" },
+  "tickets.reprint": { en: "Reprint", ar: "إعادة طباعة" },
   "tickets.recentPurchases": { en: "Recent purchases", ar: "المشتريات الأخيرة" },
   "tickets.recentPurchasesHint": { en: "Continuous ticket numbers and customer visits.", ar: "أرقام تذاكر متسلسلة وسجل زيارات العملاء." },
   "tickets.searchTickets": { en: "Ticket number, customer, or phone", ar: "رقم التذكرة أو العميل أو الهاتف" },
@@ -128,6 +129,7 @@ const dict = {
   "customers.description": { en: "Search customer profiles and every ticket purchase by name, phone, email, or country.", ar: "ابحث عن ملفات العملاء وكل عملية شراء بالاسم أو الهاتف أو البريد الإلكتروني أو الدولة." },
   "customers.newPurchase": { en: "New purchase", ar: "عملية جديدة" },
   "customers.newCustomer": { en: "New customer", ar: "عميل جديد" },
+  "customers.allCountries": { en: "All countries", ar: "كل الدول" },
   "customers.profiles": { en: "Customer profiles", ar: "ملفات العملاء" },
   "customers.matchingSearch": { en: "Matching current search", ar: "مطابقة للبحث الحالي" },
   "customers.purchaseRecords": { en: "Purchase records", ar: "سجلات الشراء" },
@@ -205,6 +207,14 @@ const dict = {
   "finance.typeDeducted": { en: "Deducted", ar: "خُصم" },
   "finance.typeTransferOut": { en: "Transferred out", ar: "حُوّل إلى" },
   "finance.typeTransferIn": { en: "Transferred in", ar: "حُوّل من" },
+  "finance.categoryBalances": { en: "Category balances", ar: "أرصدة الفئات" },
+  "finance.categoryBalancesHint": { en: "What's left in each category for the selected period, after adjustments, transfers, and recorded expenses.", ar: "المتبقي في كل فئة خلال الفترة المحددة، بعد التعديلات والتحويلات والمصروفات المسجلة." },
+  "finance.balance": { en: "Balance", ar: "الرصيد" },
+  "finance.singleCategoryReport": { en: "Single-category report", ar: "تقرير فئة واحدة" },
+  "finance.singleCategoryReportHint": { en: "Generate a report scoped to ticket sales or one expense category on its own.", ar: "أنشئ تقريرًا يقتصر على مبيعات التذاكر أو فئة مصروفات واحدة فقط." },
+  "finance.reportOn": { en: "Report on", ar: "التقرير عن" },
+  "finance.chooseReportSource": { en: "Choose ticket sales or an expense category", ar: "اختر مبيعات التذاكر أو فئة مصروفات" },
+  "finance.ticketSales": { en: "Ticket Sales", ar: "مبيعات التذاكر" },
 } as const;
 
 export type TranslationKey = keyof typeof dict;

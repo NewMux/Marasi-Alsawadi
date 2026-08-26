@@ -11,6 +11,7 @@ export {
   minorToMoney,
   PRD_VAT_PERCENT,
   STARTING_TICKET_NUMBER,
+  MAX_TICKETS_PER_PURCHASE,
   formatPrdTicketNumber as formatLocalTicketNumber,
 } from "../../../server/ticketingRules";
 export type {

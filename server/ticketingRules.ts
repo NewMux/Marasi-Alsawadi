@@ -166,6 +166,14 @@ export function calculatePrdPurchasePricing(input: {
 // drizzle/migrations/0008_add_prd_ticketing_model.sql (lastNumber =
 // STARTING_TICKET_NUMBER - 1) and must be kept in sync with this constant.
 export const STARTING_TICKET_NUMBER = 17843;
+
+// Group Booking has no meaningful business limit on party size, but a single
+// purchase inserts one row per ticket in one multi-row SQL statement
+// (server/ticketingDb.ts's createPrdTicketPurchase) — mysql2's placeholder
+// ceiling is 65535 and each ticket line binds 12 columns, so ~5461 rows is
+// the hard technical wall. This stays comfortably under that while still
+// being far beyond any real resort group (previously an arbitrary 500).
+export const MAX_TICKETS_PER_PURCHASE = 2000;
 export function formatPrdTicketNumber(sequenceNumber: number) {
   return String(sequenceNumber);
 }
