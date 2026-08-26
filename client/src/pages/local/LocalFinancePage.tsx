@@ -14,7 +14,16 @@ const blankRateForm = { id: "", name: "", code: "", ticketType: "waterpark" as "
 const blankDiscountForm = { id: "", minTickets: "25", maxTickets: "29", percentage: "15" };
 const blankFeeForm = { id: "", name: "", code: "", calculationType: "fixed" as "fixed" | "percentage", value: "", applicationBasis: "per_transaction" as "per_ticket" | "per_transaction", displayOrder: "0" };
 const blankCategoryForm = { id: "", name: "", code: "" };
-const blankExpenseForm = { businessDate: today(), categoryId: "", amount: "", payee: "", description: "" };
+const blankExpenseForm = { businessDate: today(), categoryId: "", amount: "", payee: "", description: "", receiptNumber: "", attachmentDataUrl: "", attachmentName: "" };
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function LocalFinancePage() {
   const t = useT();
@@ -44,10 +53,22 @@ export default function LocalFinancePage() {
   const submitExpense = () => {
     if (!expenseForm.categoryId || !expenseForm.amount || Number(expenseForm.amount) <= 0 || !expenseForm.description.trim()) return toast.error("Choose a category and add a positive amount and description");
     try {
-      addExpense({ businessDate: expenseForm.businessDate, categoryId: Number(expenseForm.categoryId), amount: expenseForm.amount, payee: expenseForm.payee.trim() || undefined, description: expenseForm.description.trim() });
+      addExpense({
+        businessDate: expenseForm.businessDate, categoryId: Number(expenseForm.categoryId), amount: expenseForm.amount,
+        payee: expenseForm.payee.trim() || undefined, description: expenseForm.description.trim(),
+        receiptNumber: expenseForm.receiptNumber.trim() || undefined,
+        attachmentDataUrl: expenseForm.attachmentDataUrl || undefined, attachmentName: expenseForm.attachmentName || undefined,
+      });
       setExpenseForm({ ...blankExpenseForm, businessDate: expenseForm.businessDate });
       toast.success("Expense recorded");
     } catch (error) { toast.error(error instanceof Error ? error.message : "Could not record this expense"); }
+  };
+
+  const onAttachmentSelected = async (file: File | undefined) => {
+    if (!file) return setExpenseForm((current) => ({ ...current, attachmentDataUrl: "", attachmentName: "" }));
+    if (file.size > 5 * 1024 * 1024) return toast.error("Attachment must be 5 MB or smaller");
+    const dataUrl = await readFileAsDataUrl(file);
+    setExpenseForm((current) => ({ ...current, attachmentDataUrl: dataUrl, attachmentName: file.name }));
   };
 
   const submitRate = () => {
@@ -108,14 +129,22 @@ export default function LocalFinancePage() {
           <Field label={t("common.category")}><SelectField value={expenseForm.categoryId} onChange={(event) => setExpenseForm({ ...expenseForm, categoryId: event.target.value })}><option value="">{t("finance.selectCategory")}</option>{activeCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</SelectField></Field>
           <Field label={t("common.amount")}><TextField inputMode="decimal" value={expenseForm.amount} onChange={(event) => setExpenseForm({ ...expenseForm, amount: event.target.value })}/></Field>
           <Field label={t("finance.payee")}><TextField value={expenseForm.payee} onChange={(event) => setExpenseForm({ ...expenseForm, payee: event.target.value })}/></Field>
+          <Field label={t("finance.receiptNumber")}><TextField value={expenseForm.receiptNumber} onChange={(event) => setExpenseForm({ ...expenseForm, receiptNumber: event.target.value })}/></Field>
           <div className="sm:col-span-2"><Field label={t("common.description")}><TextField value={expenseForm.description} onChange={(event) => setExpenseForm({ ...expenseForm, description: event.target.value })}/></Field></div>
+          <div className="sm:col-span-2">
+            <Field label={t("finance.attachment")}>
+              <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" onChange={(event) => onAttachmentSelected(event.target.files?.[0])} className="block w-full text-xs text-muted file:mr-3 file:rounded-lg file:border-0 file:bg-fill file:px-3 file:py-2 file:text-xs file:font-semibold file:text-ink hover:file:bg-[#e8e8ed]"/>
+            </Field>
+            <p className="mt-1.5 text-[11px] leading-4 text-muted">{t("finance.attachmentHint")}</p>
+            {expenseForm.attachmentName && <p className="mt-1 truncate text-[11px] text-accent">{expenseForm.attachmentName}</p>}
+          </div>
         </div>
         <PrimaryButton className="mt-5" onClick={submitExpense}>{t("finance.recordExpense")}</PrimaryButton>
       </Surface>
       <Surface className="mt-6">
         <div className="mb-4 flex items-center justify-between gap-3"><h2 className="font-serif text-2xl tracking-[-.035em]">{t("finance.ledger")}</h2><span className="text-[11px] font-medium text-subtle">{periodExpenses.length}</span></div>
         <p className="mb-4 text-xs leading-5 text-muted">{t("finance.ledgerHint")}</p>
-        {periodExpenses.length ? <div className="divide-y divide-divider">{periodExpenses.map((expense) => <div key={expense.id} className="flex flex-wrap items-center justify-between gap-3 py-3"><div><b className="text-sm text-ink">{expense.description}</b><div className="mt-1 text-xs text-muted">{expense.categoryName} · {expense.businessDate}</div></div><div className="flex items-center gap-3"><b className="text-sm font-medium text-danger">−{money(expense.amount)}</b><SecondaryButton onClick={() => removeExpense(expense.id)}>{t("common.delete")}</SecondaryButton></div></div>)}</div> : <p className="py-8 text-center text-sm text-muted">{t("finance.noExpenses")}</p>}
+        {periodExpenses.length ? <div className="divide-y divide-divider">{periodExpenses.map((expense) => <div key={expense.id} className="flex flex-wrap items-center justify-between gap-3 py-3"><div><b className="text-sm text-ink">{expense.description}</b><div className="mt-1 text-xs text-muted">{expense.categoryName} · {expense.businessDate}{expense.receiptNumber ? ` · #${expense.receiptNumber}` : ""}</div>{expense.attachmentDataUrl && <a href={expense.attachmentDataUrl} download={expense.attachmentName || "receipt"} className="mt-1 inline-block text-xs font-medium text-accent hover:underline">{t("finance.viewAttachment")}</a>}</div><div className="flex items-center gap-3"><b className="text-sm font-medium text-danger">−{money(expense.amount)}</b><SecondaryButton onClick={() => removeExpense(expense.id)}>{t("common.delete")}</SecondaryButton></div></div>)}</div> : <p className="py-8 text-center text-sm text-muted">{t("finance.noExpenses")}</p>}
       </Surface>
     </>}
 

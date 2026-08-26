@@ -35,7 +35,9 @@ The application uses port `3000` inside its own container. The Coolify proxy rou
 
 Create a new database such as `marasi_erp` with a unique least-privileged application user and separate persistent storage. Enable backups before importing or creating production records. Apply the repository migrations in order and rehearse `0006_add_super_admin_auth_and_ticket_fee_lines.sql` on a disposable database first.
 
-The migration extends users with local credentials and the `super_admin` role, creates hashed sessions, creates fee definitions and rate assignments, adds ticket subtotal/fee totals, creates immutable ticket lines, and backfills one base line for existing tickets without inventing historical fees. Apply `0007_fix_reservation_omr_precision.sql` after 0006 to preserve two-decimal OMR reservation rates and totals. Apply `0008_add_prd_ticketing_model.sql` after 0007 — it adds the Waterpark/Companion ticket-type model, the continuous non-date ticket-number sequence, group-discount tiers, and seeds the PRD default prices (3 OMR Waterpark, 2 OMR Companion) and discount tiers (25–29→15%, 50–99→25%, 100+→50%); a Super Admin can edit all of these afterward from Commercial Settings. Do not apply any of these migrations to an existing project’s database.
+The migration extends users with local credentials and the `super_admin` role, creates hashed sessions, creates fee definitions and rate assignments, adds ticket subtotal/fee totals, creates immutable ticket lines, and backfills one base line for existing tickets without inventing historical fees. Apply `0007_fix_reservation_omr_precision.sql` after 0006 to preserve two-decimal OMR reservation rates and totals. Apply `0008_add_prd_ticketing_model.sql` after 0007 — it adds the Waterpark/Companion ticket-type model, the continuous non-date ticket-number sequence, group-discount tiers, and seeds the PRD default prices (3 OMR Waterpark, 2 OMR Companion) and discount tiers (25–29→15%, 50–99→25%, 100+→50%); a Super Admin can edit all of these afterward from Commercial Settings. Apply `0009_add_expense_receipt_attachment_and_categories.sql` after 0008 — it adds `receiptNumber`/`attachmentPath`/`attachmentOriginalName` to expense records and seeds the client’s actual accounting-sheet expense categories (Salaries, Utilities, Maintenance, COGS, Advertising & Marketing, Office Supplies, Fixture & Furniture, Tax & VAT, Petty Cash, Other Expenses); a Super Admin can still add/remove categories afterward. Do not apply any of these migrations to an existing project’s database.
+
+**Expense attachments need persistent storage.** Uploaded receipt scans/photos are written to `./uploads/expenses` inside the app container (see `server/attachments.ts`), which is wiped on every redeploy unless mounted as a Coolify persistent volume. In the application’s **Persistent Storage** settings, add a volume mounted at `/app/uploads` (or wherever the container’s working directory resolves to) before real expense attachments are recorded — otherwise every redeploy silently deletes them while the database rows referencing them remain.
 
 ## Runtime environment
 
@@ -105,6 +107,8 @@ Before a production migration or release, back up the new Marasi database and re
 | Apply migration 0006 after rehearsal | Deployment operator | Pending |
 | Apply migration 0007 after 0006 rehearsal | Deployment operator | Pending |
 | Apply migration 0008 after 0007 rehearsal | Deployment operator | Pending |
+| Apply migration 0009 after 0008 rehearsal | Deployment operator | Pending |
+| Mount persistent storage for `/uploads` (expense attachments) | Deployment operator | Pending |
 | Bootstrap and change the first Super Admin password | Deployment operator / resort owner | Pending |
 | Add approved prices, fee items, and expense categories | Super Admin | Pending |
 | Create cashier, manager, and guard accounts | Super Admin | Pending |

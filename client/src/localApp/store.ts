@@ -8,8 +8,11 @@ export type LocalRate = PrdRateInput & { active: boolean };
 export type LocalDiscountTier = PrdDiscountTierInput & { active: boolean };
 export type LocalFee = TicketFeeInput & { active: boolean };
 export type LocalExpenseCategory = { id: number; name: string; code: string; active: boolean };
-export type LocalCustomer = { id: number; fullName: string; phone: string; createdAt: string };
-export type LocalExpense = { id: number; businessDate: string; categoryId: number; categoryName: string; amount: string; payee: string; description: string };
+export type LocalCustomer = { id: number; fullName: string; phone: string; email: string; createdAt: string };
+export type LocalExpense = {
+  id: number; businessDate: string; categoryId: number; categoryName: string; amount: string; payee: string; description: string;
+  receiptNumber: string; attachmentDataUrl: string; attachmentName: string;
+};
 export type LocalPurchaseLine = {
   ticketNumber: string; ticketType: PrdTicketType; freeEntryCategory: PrdFreeEntryCategory | null; rateId: number;
   label: string; code: string | null; basePrice: string; discountPercentage: string; discountAmount: string;
@@ -49,10 +52,19 @@ function defaultData(): StoreData {
       { id: 3, minTickets: 100, maxTickets: null, percentage: "50.00", active: true },
     ],
     fees: [],
+    // Matches the client's actual accounting-sheet categories. Super Admin
+    // can still add/remove from here afterward.
     expenseCategories: [
-      { id: 1, name: "Utilities", code: "UTIL", active: true },
-      { id: 2, name: "Maintenance", code: "MAINT", active: true },
-      { id: 3, name: "Supplies", code: "SUPPLY", active: true },
+      { id: 1, name: "Salaries (Full Time / Part Time / Over Time / Freelance)", code: "SALARIES", active: true },
+      { id: 2, name: "Utilities (Electricity / Water / Telephone / Internet)", code: "UTILITIES", active: true },
+      { id: 3, name: "Maintenance", code: "MAINTENANCE", active: true },
+      { id: 4, name: "COGS (Chlorine, Paint, etc.)", code: "COGS", active: true },
+      { id: 5, name: "Advertising & Marketing", code: "ADVERTISING_MARKETING", active: true },
+      { id: 6, name: "Office Supplies", code: "OFFICE_SUPPLIES", active: true },
+      { id: 7, name: "Fixture & Furniture", code: "FIXTURE_FURNITURE", active: true },
+      { id: 8, name: "Tax & VAT (Municipality 3% / Tourism 4% / VAT 5%)", code: "TAX_VAT", active: true },
+      { id: 9, name: "Petty Cash (cleaning labor, ticket printing, external labor, gardening labor, cleaning tools, maintenance tools, fuel, etc.)", code: "PETTY_CASH", active: true },
+      { id: 10, name: "Other Expenses", code: "OTHER_EXPENSES", active: true },
     ],
     customers: [],
     purchases: [],
@@ -182,22 +194,32 @@ export function removeExpenseCategory(id: number) {
 }
 
 // ─── Customers ──────────────────────────────────────────────────────────────
-export function findOrCreateCustomer(input: { customerId?: number; fullName?: string; phone?: string }) {
+export function findOrCreateCustomer(input: { customerId?: number; fullName?: string; phone?: string; email?: string }) {
   if (input.customerId) {
     const existing = data.customers.find((customer) => customer.id === input.customerId);
     if (existing) return existing;
   }
-  const customer: LocalCustomer = { id: nextId(), fullName: (input.fullName || "").trim(), phone: (input.phone || "").trim(), createdAt: new Date().toISOString() };
+  const customer: LocalCustomer = {
+    id: nextId(), fullName: (input.fullName || "").trim(), phone: (input.phone || "").trim(),
+    email: (input.email || "").trim(), createdAt: new Date().toISOString(),
+  };
   data = { ...data, customers: [...data.customers, customer] };
   persist();
   return customer;
 }
 
 // ─── Expenses ───────────────────────────────────────────────────────────────
-export function addExpense(input: { businessDate: string; categoryId: number; amount: string; payee?: string; description: string }) {
+export function addExpense(input: {
+  businessDate: string; categoryId: number; amount: string; payee?: string; description: string;
+  receiptNumber?: string; attachmentDataUrl?: string; attachmentName?: string;
+}) {
   const category = data.expenseCategories.find((entry) => entry.id === input.categoryId);
   if (!category?.active) throw new Error("Choose an active expense category");
-  const expense: LocalExpense = { id: nextId(), businessDate: input.businessDate, categoryId: input.categoryId, categoryName: category.name, amount: input.amount, payee: input.payee || "", description: input.description };
+  const expense: LocalExpense = {
+    id: nextId(), businessDate: input.businessDate, categoryId: input.categoryId, categoryName: category.name,
+    amount: input.amount, payee: input.payee || "", description: input.description,
+    receiptNumber: input.receiptNumber || "", attachmentDataUrl: input.attachmentDataUrl || "", attachmentName: input.attachmentName || "",
+  };
   data = { ...data, expenses: [...data.expenses, expense] };
   persist();
   return expense;
@@ -223,13 +245,13 @@ export function previewPurchase(lines: PurchaseLineDraft[]) {
 }
 
 export function issuePurchase(input: {
-  customerId?: number; customerName?: string; customerPhone?: string; visitDate: string;
+  customerId?: number; customerName?: string; customerPhone?: string; customerEmail?: string; visitDate: string;
   lines: PurchaseLineDraft[]; paymentMethod: "cash" | "card" | "bank" | "mixed"; notes?: string;
 }) {
   if (!input.customerId && !(input.customerName?.trim() && input.customerPhone?.trim())) throw new Error("Select a customer or add a name and phone");
   const pricing = previewPurchase(input.lines);
   if (!pricing) throw new Error("Select a ticket type and approved price for every line");
-  const customer = findOrCreateCustomer({ customerId: input.customerId, fullName: input.customerName, phone: input.customerPhone });
+  const customer = findOrCreateCustomer({ customerId: input.customerId, fullName: input.customerName, phone: input.customerPhone, email: input.customerEmail });
   const startNumber = data.nextTicketNumber;
   const lines: LocalPurchaseLine[] = pricing.lines.map((line, index) => ({
     ticketNumber: formatLocalTicketNumber(startNumber + index), ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory,

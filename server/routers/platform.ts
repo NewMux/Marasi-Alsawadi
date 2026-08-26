@@ -30,6 +30,7 @@ import {
 import { calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
 import { publicTicketUrl, requestOrigin } from "../ticketUrl";
+import { isAllowedAttachmentMimeType, saveExpenseAttachment } from "../attachments";
 
 const managerProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (!['manager', 'admin', 'super_admin'].includes(ctx.user.role))
@@ -230,10 +231,11 @@ export const platformRouter = router({
     purchaseList: protectedProcedure.input(z.object({ query: z.string().optional(), from: z.string().optional(), to: z.string().optional() }).optional()).query(({ input }) => listPrdTicketPurchases(input?.query, input?.from, input?.to)),
     purchaseLines: protectedProcedure.input(z.object({ purchaseId: z.number().int().positive() })).query(({ input }) => listPrdTicketLines(input.purchaseId)),
     purchaseCreate: protectedProcedure.input(z.object({
-      customerId: z.number().int().positive().optional(), customerName: z.string().min(1).optional(), customerPhone: z.string().min(3).optional(), visitDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      customerId: z.number().int().positive().optional(), customerName: z.string().min(1).optional(), customerPhone: z.string().min(3).optional(),
+      customerEmail: z.string().email().optional(), visitDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       lines: z.array(prdLineInput).min(1).max(500), paymentMethod: z.enum(["cash", "card", "bank", "mixed"]).default("cash"), notes: z.string().max(1000).optional(),
     }).refine((input) => Boolean(input.customerId || (input.customerName && input.customerPhone)), { message: "Select an existing customer or provide name and phone" })).mutation(async ({ input, ctx }) => {
-      const customer = input.customerId ? await getCustomerById(input.customerId) : await createGuest({ fullName: input.customerName!, phone: input.customerPhone! });
+      const customer = input.customerId ? await getCustomerById(input.customerId) : await createGuest({ fullName: input.customerName!, phone: input.customerPhone!, email: input.customerEmail });
       if (!customer) throw new TRPCError({ code: "NOT_FOUND", message: "Customer record was not found" });
       const resolved = await resolvePrdPricing(input.lines);
       const result = await createPrdTicketPurchase({ customerId: customer.id, visitDate: input.visitDate, lines: resolved.lines, discountTiers: resolved.tiers.map((tier) => ({ ...tier, percentage: String(tier.percentage), maxTickets: tier.maxTickets === null ? null : Number(tier.maxTickets) })), fees: resolved.fees, paymentMethod: input.paymentMethod, notes: input.notes?.trim(), issuedBy: ctx.user.id });
@@ -621,17 +623,23 @@ export const platformRouter = router({
       create: protectedProcedure.input(z.object({
         businessDate: z.string(), categoryId: z.number(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to two decimals"),
         payee: z.string().optional(), description: z.string().min(1),
+        receiptNumber: z.string().max(64).optional(),
+        attachment: z.object({ dataBase64: z.string(), mimeType: z.string(), fileName: z.string().max(256) }).optional(),
         department: z.enum(["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]).default("general"),
       })).mutation(async ({ input, ctx }) => {
         const category = await getExpenseCategory(input.categoryId);
         if (!category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active expense category" });
+        if (input.attachment && !isAllowedAttachmentMimeType(input.attachment.mimeType)) throw new TRPCError({ code: "BAD_REQUEST", message: "Attachment must be a JPEG, PNG, WEBP image, or a PDF" });
         const stream = input.department === "aqua_park" || input.department === "fnb" ? input.department : "extras";
         const financeEntry = await createFinanceEntry({
           date: input.businessDate, stream, type: "expense", amount: input.amount,
           description: input.description, referenceType: "expense_record", createdBy: ctx.user.id,
         } as any);
+        const { attachment, ...expenseInput } = input;
+        const saved = attachment ? await saveExpenseAttachment(attachment) : null;
         const expense = await createExpenseRecord({
-          ...input, businessDate: input.businessDate as any, categoryName: category.name,
+          ...expenseInput, businessDate: input.businessDate as any, categoryName: category.name,
+          attachmentPath: saved?.attachmentPath ?? null, attachmentOriginalName: saved?.attachmentOriginalName ?? null,
           financeEntryId: financeEntry.id, createdBy: ctx.user.id,
         } as any);
         await logActivity(ctx.user.id, "expense.create", "expense_record", expense.id, `${category.code}:${input.amount}`);
@@ -639,7 +647,7 @@ export const platformRouter = router({
       }),
       update: managerProcedure.input(z.object({
         id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to two decimals").optional(),
-        payee: z.string().optional(), description: z.string().min(1).optional(),
+        payee: z.string().optional(), description: z.string().min(1).optional(), receiptNumber: z.string().max(64).optional(),
         department: z.enum(["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]).optional(),
       })).mutation(async ({ input, ctx }) => {
         const { id, categoryId, ...data } = input;

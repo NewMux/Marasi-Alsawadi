@@ -18,6 +18,7 @@ const MIGRATION_FILES = [
   "drizzle/migrations/0006_add_super_admin_auth_and_ticket_fee_lines.sql",
   "drizzle/migrations/0007_fix_reservation_omr_precision.sql",
   "drizzle/migrations/0008_add_prd_ticketing_model.sql",
+  "drizzle/migrations/0009_add_expense_receipt_attachment_and_categories.sql",
 ];
 
 async function main() {

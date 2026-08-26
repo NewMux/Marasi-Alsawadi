@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
 import net from "net";
+import path from "node:path";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
@@ -39,6 +40,10 @@ export function createApp() {
   app.get("/healthz", (_req, res) => {
     res.status(200).json({ status: "ok" });
   });
+  // Expense attachments (receipt scans/photos) — see server/attachments.ts.
+  // Persisted under ./uploads, which needs a Coolify persistent-storage mount
+  // to survive a redeploy.
+  app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
   // tRPC API
   app.use(
     "/api/trpc",

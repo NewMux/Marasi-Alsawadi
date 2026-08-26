@@ -19,6 +19,15 @@ describe("local app store", () => {
     expect(state.nextTicketNumber).toBe(STARTING_TICKET_NUMBER);
   });
 
+  it("seeds the client's accounting-sheet expense categories on first run", () => {
+    const codes = getSnapshot().expenseCategories.map((category) => category.code);
+    expect(codes).toEqual([
+      "SALARIES", "UTILITIES", "MAINTENANCE", "COGS", "ADVERTISING_MARKETING",
+      "OFFICE_SUPPLIES", "FIXTURE_FURNITURE", "TAX_VAT", "PETTY_CASH", "OTHER_EXPENSES",
+    ]);
+    expect(getSnapshot().expenseCategories.every((category) => category.active)).toBe(true);
+  });
+
   it("issues a purchase using the real PRD pricing engine (free entry, discount, VAT)", () => {
     const waterpark = getSnapshot().rates.find((rate) => rate.code === "WATERPARK")!;
     const companion = getSnapshot().rates.find((rate) => rate.code === "COMPANION")!;
@@ -74,6 +83,26 @@ describe("local app store", () => {
     expect(getSnapshot().expenses).toContainEqual(expect.objectContaining({ id: expense.id, categoryName: "Pool chemicals" }));
     removeExpense(expense.id);
     expect(getSnapshot().expenses).toHaveLength(0);
+  });
+
+  it("records the receipt number and attachment on an expense entry", () => {
+    const category = addExpenseCategory({ name: "Pool chemicals", code: "POOL" });
+    const expense = addExpense({
+      businessDate: "2026-08-25", categoryId: category.id, amount: "85.00", description: "Chlorine",
+      receiptNumber: "RCPT-0042", attachmentDataUrl: "data:image/png;base64,abc123", attachmentName: "receipt.png",
+    });
+    expect(getSnapshot().expenses).toContainEqual(expect.objectContaining({
+      id: expense.id, receiptNumber: "RCPT-0042", attachmentDataUrl: "data:image/png;base64,abc123", attachmentName: "receipt.png",
+    }));
+  });
+
+  it("stores the customer's email alongside name and phone when issuing a ticket", () => {
+    const waterpark = getSnapshot().rates.find((rate) => rate.code === "WATERPARK")!;
+    const result = issuePurchase({
+      customerName: "Fatma Al-Kindi", customerPhone: "+968 9911 2233", customerEmail: "fatma@example.com",
+      visitDate: "2026-08-25", lines: [{ rateId: waterpark.id, ticketType: "waterpark", freeEntryCategory: null }], paymentMethod: "cash",
+    });
+    expect(result.customer).toMatchObject({ fullName: "Fatma Al-Kindi", phone: "+968 9911 2233", email: "fatma@example.com" });
   });
 
   it("supports adding custom prices and fee items beyond the PRD defaults", () => {

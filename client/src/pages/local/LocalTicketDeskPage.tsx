@@ -11,8 +11,8 @@ import type { PrdFreeEntryCategory, PrdTicketType } from "@/localApp/pricing";
 import { issuePurchase, previewPurchase, useLocalStore, type PurchaseLineDraft } from "@/localApp/store";
 
 type TicketLine = { id: number; rateId: string; ticketType: PrdTicketType; freeEntryCategory: "" | PrdFreeEntryCategory };
-type FormState = { customerId: string; customerName: string; customerPhone: string; visitDate: string; paymentMethod: "cash" | "card" | "bank" | "mixed"; notes: string };
-const blankForm = (): FormState => ({ customerId: "", customerName: "", customerPhone: "", visitDate: today(), paymentMethod: "cash", notes: "" });
+type FormState = { customerId: string; customerName: string; customerPhone: string; customerEmail: string; visitDate: string; paymentMethod: "cash" | "card" | "bank" | "mixed"; notes: string };
+const blankForm = (): FormState => ({ customerId: "", customerName: "", customerPhone: "", customerEmail: "", visitDate: today(), paymentMethod: "cash", notes: "" });
 const blankLine = (id: number): TicketLine => ({ id, rateId: "", ticketType: "waterpark", freeEntryCategory: "" });
 const freeKeys: Record<PrdFreeEntryCategory, TranslationKey> = { under_two: "tickets.underTwo", person_of_determination: "tickets.pod", senior: "tickets.senior" };
 
@@ -77,7 +77,8 @@ export default function LocalTicketDeskPage() {
     try {
       const result = issuePurchase({
         customerId: form.customerId ? Number(form.customerId) : undefined, customerName: form.customerId ? undefined : form.customerName.trim(),
-        customerPhone: form.customerId ? undefined : form.customerPhone.trim(), visitDate: form.visitDate, paymentMethod: form.paymentMethod,
+        customerPhone: form.customerId ? undefined : form.customerPhone.trim(), customerEmail: form.customerId ? undefined : form.customerEmail.trim() || undefined,
+        visitDate: form.visitDate, paymentMethod: form.paymentMethod,
         notes: form.notes.trim() || undefined, lines: previewLines,
       });
       setCreated(result);
@@ -115,6 +116,7 @@ export default function LocalTicketDeskPage() {
             <div className="text-[10px] font-semibold uppercase tracking-[.14em] text-subtle">{t("tickets.newWalkIn")}</div>
             <Field label={t("tickets.fullName")}><TextField value={form.customerName} onChange={(event) => setForm({ ...form, customerName: event.target.value })}/></Field>
             <Field label={t("common.phone")}><TextField value={form.customerPhone} onChange={(event) => setForm({ ...form, customerPhone: event.target.value })} inputMode="tel" placeholder="+968 …"/></Field>
+            <Field label={t("tickets.email")}><TextField type="email" value={form.customerEmail} onChange={(event) => setForm({ ...form, customerEmail: event.target.value })} placeholder="name@example.com"/></Field>
           </div>}
         </Surface>
         <Surface>
