@@ -8,10 +8,15 @@ export type LocalRate = PrdRateInput & { active: boolean };
 export type LocalDiscountTier = PrdDiscountTierInput & { active: boolean };
 export type LocalFee = TicketFeeInput & { active: boolean };
 export type LocalExpenseCategory = { id: number; name: string; code: string; active: boolean };
-export type LocalCustomer = { id: number; fullName: string; phone: string; email: string; createdAt: string };
+export type LocalCustomer = { id: number; fullName: string; phone: string; email: string; country: string; createdAt: string };
 export type LocalExpense = {
   id: number; businessDate: string; categoryId: number; categoryName: string; amount: string; payee: string; description: string;
   receiptNumber: string; attachmentDataUrl: string; attachmentName: string;
+};
+export type LocalExpenseAdjustmentType = "add" | "deduct" | "transfer_out" | "transfer_in";
+export type LocalExpenseAdjustment = {
+  id: number; businessDate: string; categoryId: number; categoryName: string; type: LocalExpenseAdjustmentType;
+  amount: string; relatedCategoryId: number | null; relatedCategoryName: string | null; note: string; createdAt: string;
 };
 export type LocalPurchaseLine = {
   ticketNumber: string; ticketType: PrdTicketType; freeEntryCategory: PrdFreeEntryCategory | null; rateId: number;
@@ -35,6 +40,7 @@ type StoreData = {
   customers: LocalCustomer[];
   purchases: LocalPurchase[];
   expenses: LocalExpense[];
+  expenseAdjustments: LocalExpenseAdjustment[];
   nextTicketNumber: number;
   nextId: number;
 };
@@ -69,6 +75,7 @@ function defaultData(): StoreData {
     customers: [],
     purchases: [],
     expenses: [],
+    expenseAdjustments: [],
     nextTicketNumber: STARTING_TICKET_NUMBER,
     // Starts above every seeded id above (rates/discountTiers/expenseCategories
     // each use small fixed ids) so a newly added record can never collide with
@@ -194,18 +201,35 @@ export function removeExpenseCategory(id: number) {
 }
 
 // ─── Customers ──────────────────────────────────────────────────────────────
-export function findOrCreateCustomer(input: { customerId?: number; fullName?: string; phone?: string; email?: string }) {
+export function findOrCreateCustomer(input: { customerId?: number; fullName?: string; phone?: string; email?: string; country?: string }) {
   if (input.customerId) {
     const existing = data.customers.find((customer) => customer.id === input.customerId);
     if (existing) return existing;
   }
   const customer: LocalCustomer = {
     id: nextId(), fullName: (input.fullName || "").trim(), phone: (input.phone || "").trim(),
-    email: (input.email || "").trim(), createdAt: new Date().toISOString(),
+    email: (input.email || "").trim(), country: (input.country || "").trim(), createdAt: new Date().toISOString(),
   };
   data = { ...data, customers: [...data.customers, customer] };
   persist();
   return customer;
+}
+
+// Lets front-desk staff save a visitor's profile without issuing a ticket
+// (e.g. pre-registering a group before they arrive).
+export function createCustomer(input: { fullName: string; phone: string; email?: string; country?: string }) {
+  const customer: LocalCustomer = {
+    id: nextId(), fullName: input.fullName.trim(), phone: input.phone.trim(),
+    email: (input.email || "").trim(), country: (input.country || "").trim(), createdAt: new Date().toISOString(),
+  };
+  data = { ...data, customers: [...data.customers, customer] };
+  persist();
+  return customer;
+}
+
+export function updateCustomer(id: number, patch: Partial<Pick<LocalCustomer, "fullName" | "phone" | "email" | "country">>) {
+  data = { ...data, customers: data.customers.map((customer) => (customer.id === id ? { ...customer, ...patch } : customer)) };
+  persist();
 }
 
 // ─── Expenses ───────────────────────────────────────────────────────────────
@@ -229,6 +253,38 @@ export function removeExpense(id: number) {
   persist();
 }
 
+// ─── Expense category adjustments (+/- and transfers) ──────────────────────
+export function addExpenseAdjustment(input: { businessDate: string; categoryId: number; type: "add" | "deduct"; amount: string; note?: string }) {
+  const category = data.expenseCategories.find((entry) => entry.id === input.categoryId);
+  if (!category?.active) throw new Error("Choose an active expense category");
+  const adjustment: LocalExpenseAdjustment = {
+    id: nextId(), businessDate: input.businessDate, categoryId: category.id, categoryName: category.name,
+    type: input.type, amount: input.amount, relatedCategoryId: null, relatedCategoryName: null, note: input.note || "", createdAt: new Date().toISOString(),
+  };
+  data = { ...data, expenseAdjustments: [...data.expenseAdjustments, adjustment] };
+  persist();
+  return adjustment;
+}
+
+export function transferExpenseCategory(input: { businessDate: string; fromCategoryId: number; toCategoryId: number; amount: string; note?: string }) {
+  if (input.fromCategoryId === input.toCategoryId) throw new Error("Choose two different categories");
+  const fromCategory = data.expenseCategories.find((entry) => entry.id === input.fromCategoryId);
+  const toCategory = data.expenseCategories.find((entry) => entry.id === input.toCategoryId);
+  if (!fromCategory?.active || !toCategory?.active) throw new Error("Choose two active expense categories");
+  const createdAt = new Date().toISOString();
+  const transferOut: LocalExpenseAdjustment = {
+    id: nextId(), businessDate: input.businessDate, categoryId: fromCategory.id, categoryName: fromCategory.name,
+    type: "transfer_out", amount: input.amount, relatedCategoryId: toCategory.id, relatedCategoryName: toCategory.name, note: input.note || "", createdAt,
+  };
+  const transferIn: LocalExpenseAdjustment = {
+    id: nextId(), businessDate: input.businessDate, categoryId: toCategory.id, categoryName: toCategory.name,
+    type: "transfer_in", amount: input.amount, relatedCategoryId: fromCategory.id, relatedCategoryName: fromCategory.name, note: input.note || "", createdAt,
+  };
+  data = { ...data, expenseAdjustments: [...data.expenseAdjustments, transferOut, transferIn] };
+  persist();
+  return [transferOut, transferIn];
+}
+
 // ─── Ticket purchases ───────────────────────────────────────────────────────
 export type PurchaseLineDraft = { rateId: number; ticketType: PrdTicketType; freeEntryCategory: PrdFreeEntryCategory | null };
 
@@ -245,13 +301,13 @@ export function previewPurchase(lines: PurchaseLineDraft[]) {
 }
 
 export function issuePurchase(input: {
-  customerId?: number; customerName?: string; customerPhone?: string; customerEmail?: string; visitDate: string;
+  customerId?: number; customerName?: string; customerPhone?: string; customerEmail?: string; customerCountry?: string; visitDate: string;
   lines: PurchaseLineDraft[]; paymentMethod: "cash" | "card" | "bank" | "mixed"; notes?: string;
 }) {
   if (!input.customerId && !(input.customerName?.trim() && input.customerPhone?.trim())) throw new Error("Select a customer or add a name and phone");
   const pricing = previewPurchase(input.lines);
   if (!pricing) throw new Error("Select a ticket type and approved price for every line");
-  const customer = findOrCreateCustomer({ customerId: input.customerId, fullName: input.customerName, phone: input.customerPhone, email: input.customerEmail });
+  const customer = findOrCreateCustomer({ customerId: input.customerId, fullName: input.customerName, phone: input.customerPhone, email: input.customerEmail, country: input.customerCountry });
   const startNumber = data.nextTicketNumber;
   const lines: LocalPurchaseLine[] = pricing.lines.map((line, index) => ({
     ticketNumber: formatLocalTicketNumber(startNumber + index), ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory,

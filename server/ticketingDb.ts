@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
-  expenseCategories, expenseRecords, guests, salesTicketSequences, salesTransactionLines, salesTransactions,
+  expenseAdjustments, expenseCategories, expenseRecords, guests, salesTicketSequences, salesTransactionLines, salesTransactions,
   serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers,
   ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries,
 } from "../drizzle/schema";
@@ -220,14 +220,23 @@ export async function listApplicableTicketFees(rateId: number) {
     .then((rows) => rows.map((entry) => entry.fee));
 }
 
-export async function searchCustomers(query?: string) {
+export async function searchCustomers(query?: string, country?: string) {
   const db = await getDb(); if (!db) return [];
+  const conditions = [];
   const normalized = query?.trim();
-  if (!normalized) return db.select().from(guests).orderBy(desc(guests.createdAt)).limit(100);
-  const pattern = `%${normalized}%`;
-  return db.select().from(guests)
-    .where(or(sql`LOWER(${guests.fullName}) LIKE LOWER(${pattern})`, sql`${guests.phone} LIKE ${pattern}`))
-    .orderBy(desc(guests.createdAt)).limit(100);
+  if (normalized) {
+    const pattern = `%${normalized}%`;
+    conditions.push(or(
+      sql`LOWER(${guests.fullName}) LIKE LOWER(${pattern})`,
+      sql`${guests.phone} LIKE ${pattern}`,
+      sql`LOWER(${guests.email}) LIKE LOWER(${pattern})`,
+    ));
+  }
+  const countryNormalized = country?.trim();
+  if (countryNormalized) conditions.push(sql`LOWER(${guests.nationality}) LIKE LOWER(${`%${countryNormalized}%`})`);
+  const base = db.select().from(guests);
+  const filtered = conditions.length ? base.where(and(...conditions)) : base;
+  return filtered.orderBy(desc(guests.createdAt)).limit(200);
 }
 
 export async function getCustomerById(id: number) {
@@ -438,6 +447,47 @@ export async function updateExpenseRecord(id: number, data: Partial<typeof expen
 export async function deleteExpenseRecord(id: number) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   await db.delete(expenseRecords).where(eq(expenseRecords.id, id));
+}
+
+// ─── Expense category adjustments (+/- and transfers) ──────────────────────
+export async function listExpenseAdjustments(from?: string, to?: string) {
+  const db = await getDb(); if (!db) return [];
+  const conditions: any[] = [];
+  if (from) conditions.push(sql`${expenseAdjustments.businessDate} >= ${from}`);
+  if (to) conditions.push(sql`${expenseAdjustments.businessDate} <= ${to}`);
+  const base = db.select().from(expenseAdjustments).orderBy(desc(expenseAdjustments.businessDate), desc(expenseAdjustments.id));
+  return conditions.length ? base.where(and(...conditions)) : base;
+}
+
+export async function createExpenseAdjustment(data: {
+  businessDate: string; categoryId: number; categoryName: string; type: "add" | "deduct";
+  amount: string; note?: string; createdBy: number;
+}) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(expenseAdjustments).values(data as any);
+  const rows = await db.select().from(expenseAdjustments).orderBy(desc(expenseAdjustments.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function createExpenseTransfer(data: {
+  businessDate: string; fromCategoryId: number; fromCategoryName: string;
+  toCategoryId: number; toCategoryName: string; amount: string; note?: string; createdBy: number;
+}) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  return db.transaction(async (tx) => {
+    await tx.insert(expenseAdjustments).values({
+      businessDate: data.businessDate, categoryId: data.fromCategoryId, categoryName: data.fromCategoryName,
+      type: "transfer_out", amount: data.amount, relatedCategoryId: data.toCategoryId, relatedCategoryName: data.toCategoryName,
+      note: data.note, createdBy: data.createdBy,
+    } as any);
+    await tx.insert(expenseAdjustments).values({
+      businessDate: data.businessDate, categoryId: data.toCategoryId, categoryName: data.toCategoryName,
+      type: "transfer_in", amount: data.amount, relatedCategoryId: data.fromCategoryId, relatedCategoryName: data.fromCategoryName,
+      note: data.note, createdBy: data.createdBy,
+    } as any);
+    const rows = await tx.select().from(expenseAdjustments).orderBy(desc(expenseAdjustments.id)).limit(2);
+    return rows;
+  });
 }
 
 export async function getOperationalFinancialSummary(from: string, to: string) {

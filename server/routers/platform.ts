@@ -26,6 +26,7 @@ import {
   searchCustomers, updateExpenseCategory, updateExpenseRecord, updateServiceRate, updateTicketFee, deleteServiceRate,
   createPrdTicketPurchase, listPrdRates, listTicketDiscountTiers, createTicketDiscountTier, updateTicketDiscountTier, deleteTicketDiscountTier,
   listPrdTicketPurchases, listPrdTicketLines, getCustomerById,
+  listExpenseAdjustments, createExpenseAdjustment, createExpenseTransfer,
 } from "../ticketingDb";
 import { calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
@@ -115,13 +116,13 @@ export const platformRouter = router({
   }),
 
   customers: router({
-    search: protectedProcedure.input(z.object({ query: z.string().optional() }).optional())
-      .query(({ input }) => searchCustomers(input?.query)),
+    search: protectedProcedure.input(z.object({ query: z.string().optional(), country: z.string().optional() }).optional())
+      .query(({ input }) => searchCustomers(input?.query, input?.country)),
     create: protectedProcedure.input(z.object({
-      fullName: z.string().min(1), phone: z.string().min(3), email: z.string().optional(),
+      fullName: z.string().min(1), phone: z.string().min(3), email: z.string().email().optional().or(z.literal("")),
       nationality: z.string().optional(), notes: z.string().optional(),
     })).mutation(async ({ input, ctx }) => {
-      const customer = await createGuest(input);
+      const customer = await createGuest({ ...input, email: input.email || undefined });
       await logActivity(ctx.user.id, "customer.create", "guest", customer?.id, `${input.fullName}:${input.phone}`);
       return customer;
     }),
@@ -232,10 +233,10 @@ export const platformRouter = router({
     purchaseLines: protectedProcedure.input(z.object({ purchaseId: z.number().int().positive() })).query(({ input }) => listPrdTicketLines(input.purchaseId)),
     purchaseCreate: protectedProcedure.input(z.object({
       customerId: z.number().int().positive().optional(), customerName: z.string().min(1).optional(), customerPhone: z.string().min(3).optional(),
-      customerEmail: z.string().email().optional(), visitDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      customerEmail: z.string().email().optional(), customerNationality: z.string().max(64).optional(), visitDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       lines: z.array(prdLineInput).min(1).max(500), paymentMethod: z.enum(["cash", "card", "bank", "mixed"]).default("cash"), notes: z.string().max(1000).optional(),
     }).refine((input) => Boolean(input.customerId || (input.customerName && input.customerPhone)), { message: "Select an existing customer or provide name and phone" })).mutation(async ({ input, ctx }) => {
-      const customer = input.customerId ? await getCustomerById(input.customerId) : await createGuest({ fullName: input.customerName!, phone: input.customerPhone!, email: input.customerEmail });
+      const customer = input.customerId ? await getCustomerById(input.customerId) : await createGuest({ fullName: input.customerName!, phone: input.customerPhone!, email: input.customerEmail, nationality: input.customerNationality });
       if (!customer) throw new TRPCError({ code: "NOT_FOUND", message: "Customer record was not found" });
       const resolved = await resolvePrdPricing(input.lines);
       const result = await createPrdTicketPurchase({ customerId: customer.id, visitDate: input.visitDate, lines: resolved.lines, discountTiers: resolved.tiers.map((tier) => ({ ...tier, percentage: String(tier.percentage), maxTickets: tier.maxTickets === null ? null : Number(tier.maxTickets) })), fees: resolved.fees, paymentMethod: input.paymentMethod, notes: input.notes?.trim(), issuedBy: ctx.user.id });
@@ -672,6 +673,30 @@ export const platformRouter = router({
         await deleteExpenseRecord(input.id);
         if (existing.financeEntryId) await deleteFinanceEntry(existing.financeEntryId);
         await logActivity(ctx.user.id, "expense.delete", "expense_record", input.id);
+      }),
+    }),
+    expenseAdjustments: router({
+      list: managerProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
+        .query(({ input }) => listExpenseAdjustments(input?.from, input?.to)),
+      adjust: managerProcedure.input(z.object({
+        businessDate: z.string(), categoryId: z.number().int().positive(), type: z.enum(["add", "deduct"]),
+        amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to two decimals"), note: z.string().max(512).optional(),
+      })).mutation(async ({ input, ctx }) => {
+        const category = await getExpenseCategory(input.categoryId);
+        if (!category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active expense category" });
+        const adjustment = await createExpenseAdjustment({ businessDate: input.businessDate, categoryId: category.id, categoryName: category.name, type: input.type, amount: input.amount, note: input.note?.trim(), createdBy: ctx.user.id });
+        await logActivity(ctx.user.id, "expense_adjustment.create", "expense_adjustment", adjustment.id, `${input.type}:${category.code}:${input.amount}`);
+        return adjustment;
+      }),
+      transfer: managerProcedure.input(z.object({
+        businessDate: z.string(), fromCategoryId: z.number().int().positive(), toCategoryId: z.number().int().positive(),
+        amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to two decimals"), note: z.string().max(512).optional(),
+      }).refine((input) => input.fromCategoryId !== input.toCategoryId, { message: "Choose two different categories" })).mutation(async ({ input, ctx }) => {
+        const [fromCategory, toCategory] = await Promise.all([getExpenseCategory(input.fromCategoryId), getExpenseCategory(input.toCategoryId)]);
+        if (!fromCategory?.isActive || !toCategory?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose two active expense categories" });
+        const rows = await createExpenseTransfer({ businessDate: input.businessDate, fromCategoryId: fromCategory.id, fromCategoryName: fromCategory.name, toCategoryId: toCategory.id, toCategoryName: toCategory.name, amount: input.amount, note: input.note?.trim(), createdBy: ctx.user.id });
+        await logActivity(ctx.user.id, "expense_adjustment.transfer", "expense_adjustment", rows[0]?.id, `${fromCategory.code}->${toCategory.code}:${input.amount}`);
+        return rows;
       }),
     }),
     operationalSummary: managerProcedure.input(z.object({ from: z.string(), to: z.string() }))

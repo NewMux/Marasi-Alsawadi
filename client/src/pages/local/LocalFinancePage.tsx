@@ -1,20 +1,24 @@
 import { useMemo, useState } from "react";
-import { CircleDollarSign, Download, ListChecks, ReceiptText, TrendingDown, TrendingUp } from "lucide-react";
+import { ArrowRightLeft, CircleDollarSign, Download, ListChecks, MinusCircle, PlusCircle, ReceiptText, TrendingDown, TrendingUp } from "lucide-react";
 import { toast } from "sonner";
-import { Field, MetricCard, PageHeader, PrimaryButton, SecondaryButton, SelectField, Surface, TextField, cx } from "@/components/MarasiUI";
+import { Field, MetricCard, PageHeader, PrimaryButton, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, cx } from "@/components/MarasiUI";
 import { money, today } from "@/localApp/format";
-import { useT } from "@/localApp/i18n";
+import { useT, type TranslationKey } from "@/localApp/i18n";
 import {
-  addDiscountTier, addExpense, addExpenseCategory, addFee, addRate, exportData, removeExpense,
-  updateDiscountTier, updateExpenseCategory, updateFee, updateRate, useLocalStore,
+  addDiscountTier, addExpense, addExpenseCategory, addExpenseAdjustment, addFee, addRate, exportData, removeExpense,
+  transferExpenseCategory, updateDiscountTier, updateExpenseCategory, updateFee, updateRate, useLocalStore,
 } from "@/localApp/store";
 
-type Tab = "expenses" | "pricing" | "discounts" | "fees" | "categories";
+type Tab = "expenses" | "pricing" | "discounts" | "fees" | "categories" | "adjustments";
 const blankRateForm = { id: "", name: "", code: "", ticketType: "waterpark" as "waterpark" | "companion", unitPrice: "" };
 const blankDiscountForm = { id: "", minTickets: "25", maxTickets: "29", percentage: "15" };
 const blankFeeForm = { id: "", name: "", code: "", calculationType: "fixed" as "fixed" | "percentage", value: "", applicationBasis: "per_transaction" as "per_ticket" | "per_transaction", displayOrder: "0" };
 const blankCategoryForm = { id: "", name: "", code: "" };
 const blankExpenseForm = { businessDate: today(), categoryId: "", amount: "", payee: "", description: "", receiptNumber: "", attachmentDataUrl: "", attachmentName: "" };
+const blankAdjustmentForm = { mode: "adjust" as "adjust" | "transfer", businessDate: today(), categoryId: "", toCategoryId: "", type: "add" as "add" | "deduct", amount: "", note: "" };
+const adjustmentTypeKeys: Record<string, TranslationKey> = { add: "finance.typeAdded", deduct: "finance.typeDeducted", transfer_out: "finance.typeTransferOut", transfer_in: "finance.typeTransferIn" };
+
+function exportCsv(filename: string, rows: string[][]) { const csv = rows.map((row) => row.map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`).join(",")).join("\n"); const blob = new Blob([csv], { type: "text/csv;charset=utf-8" }); const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; anchor.click(); URL.revokeObjectURL(url); }
 
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -35,9 +39,11 @@ export default function LocalFinancePage() {
   const [feeForm, setFeeForm] = useState(blankFeeForm);
   const [categoryForm, setCategoryForm] = useState(blankCategoryForm);
   const [expenseForm, setExpenseForm] = useState(blankExpenseForm);
+  const [adjustmentForm, setAdjustmentForm] = useState(blankAdjustmentForm);
 
   const periodPurchases = useMemo(() => store.purchases.filter((purchase) => purchase.visitDate >= range.from && purchase.visitDate <= range.to), [store.purchases, range]);
   const periodExpenses = useMemo(() => store.expenses.filter((expense) => expense.businessDate >= range.from && expense.businessDate <= range.to), [store.expenses, range]);
+  const periodAdjustments = useMemo(() => store.expenseAdjustments.filter((entry) => entry.businessDate >= range.from && entry.businessDate <= range.to).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()), [store.expenseAdjustments, range]);
   const revenue = periodPurchases.reduce((sum, purchase) => sum + Number(purchase.totalAmount), 0);
   const costs = periodExpenses.reduce((sum, expense) => sum + Number(expense.amount), 0);
   const activeCategories = store.expenseCategories.filter((category) => category.active);
@@ -48,6 +54,7 @@ export default function LocalFinancePage() {
     { id: "discounts", label: t("finance.tabDiscounts"), icon: CircleDollarSign },
     { id: "fees", label: t("finance.tabFees"), icon: ReceiptText },
     { id: "categories", label: t("finance.tabCategories"), icon: ListChecks },
+    { id: "adjustments", label: t("finance.tabAdjustments"), icon: ArrowRightLeft },
   ];
 
   const submitExpense = () => {
@@ -103,6 +110,21 @@ export default function LocalFinancePage() {
     if (categoryForm.id) updateExpenseCategory(Number(categoryForm.id), payload); else addExpenseCategory(payload);
     setCategoryForm(blankCategoryForm);
     toast.success(categoryForm.id ? "Category updated" : "Category added");
+  };
+
+  const submitAdjustment = () => {
+    if (!adjustmentForm.categoryId || !adjustmentForm.amount || Number(adjustmentForm.amount) <= 0) return toast.error("Choose a category and a positive amount");
+    try {
+      if (adjustmentForm.mode === "transfer") {
+        if (!adjustmentForm.toCategoryId) return toast.error("Choose a destination category");
+        transferExpenseCategory({ businessDate: adjustmentForm.businessDate, fromCategoryId: Number(adjustmentForm.categoryId), toCategoryId: Number(adjustmentForm.toCategoryId), amount: adjustmentForm.amount, note: adjustmentForm.note.trim() || undefined });
+        toast.success("Transfer logged");
+      } else {
+        addExpenseAdjustment({ businessDate: adjustmentForm.businessDate, categoryId: Number(adjustmentForm.categoryId), type: adjustmentForm.type, amount: adjustmentForm.amount, note: adjustmentForm.note.trim() || undefined });
+        toast.success("Adjustment logged");
+      }
+      setAdjustmentForm({ ...blankAdjustmentForm, businessDate: adjustmentForm.businessDate });
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Could not log this adjustment"); }
   };
 
   return <>
@@ -212,6 +234,29 @@ export default function LocalFinancePage() {
           <div><b>{category.name}</b><span className="ml-2 font-mono text-[10px] text-accent">{category.code}</span>{!category.active && <span className="ml-2 text-[10px] text-danger">{t("finance.inactive")}</span>}</div>
           <div className="flex gap-2"><SecondaryButton onClick={() => setCategoryForm({ id: String(category.id), name: category.name, code: category.code })}>{t("common.edit")}</SecondaryButton><SecondaryButton onClick={() => updateExpenseCategory(category.id, { active: !category.active })}>{category.active ? t("common.retire") : t("common.activate")}</SecondaryButton></div>
         </div>)}</div>
+      </Surface>
+    </div>}
+
+    {tab === "adjustments" && <div className="grid gap-6 xl:grid-cols-[.8fr_1.2fr]">
+      <Surface>
+        <h2 className="font-serif text-2xl tracking-[-.035em]">{t("finance.tabAdjustments")}</h2>
+        <div className="my-4 grid grid-cols-2 gap-2 rounded-2xl bg-well p-1">
+          <button onClick={() => setAdjustmentForm({ ...adjustmentForm, mode: "adjust" })} className={cx("flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-semibold transition", adjustmentForm.mode === "adjust" ? "bg-white shadow-sm text-ink" : "text-muted hover:text-ink")}><PlusCircle size={14}/>{t("finance.adjustAdd")}</button>
+          <button onClick={() => setAdjustmentForm({ ...adjustmentForm, mode: "transfer" })} className={cx("flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-semibold transition", adjustmentForm.mode === "transfer" ? "bg-white shadow-sm text-ink" : "text-muted hover:text-ink")}><ArrowRightLeft size={14}/>{t("finance.adjustTransfer")}</button>
+        </div>
+        <div className="grid gap-4">
+          <Field label={t("finance.expenseDate")}><TextField type="date" value={adjustmentForm.businessDate} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, businessDate: event.target.value })}/></Field>
+          <Field label={adjustmentForm.mode === "transfer" ? t("finance.fromCategory") : t("common.category")}><SelectField value={adjustmentForm.categoryId} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, categoryId: event.target.value })}><option value="">{t("finance.selectCategory")}</option>{activeCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</SelectField></Field>
+          {adjustmentForm.mode === "transfer" ? <Field label={t("finance.toCategory")}><SelectField value={adjustmentForm.toCategoryId} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, toCategoryId: event.target.value })}><option value="">{t("finance.selectCategory")}</option>{activeCategories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</SelectField></Field>
+            : <Field label={t("finance.adjustmentType")}><SelectField value={adjustmentForm.type} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, type: event.target.value as "add" | "deduct" })}><option value="add">{t("finance.adjustmentAdd")}</option><option value="deduct">{t("finance.adjustmentDeduct")}</option></SelectField></Field>}
+          <Field label={t("common.amount")}><TextField inputMode="decimal" value={adjustmentForm.amount} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, amount: event.target.value })}/></Field>
+          <Field label={t("finance.adjustmentNote")}><TextField value={adjustmentForm.note} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, note: event.target.value })}/></Field>
+        </div>
+        <PrimaryButton className="mt-5" onClick={submitAdjustment}>{adjustmentForm.mode === "transfer" ? t("finance.logTransfer") : adjustmentForm.type === "add" ? t("finance.logAddition") : t("finance.logDeduction")}{adjustmentForm.mode === "transfer" ? <ArrowRightLeft size={15} className="ml-2"/> : adjustmentForm.type === "add" ? <PlusCircle size={15} className="ml-2"/> : <MinusCircle size={15} className="ml-2"/>}</PrimaryButton>
+      </Surface>
+      <Surface>
+        <div className="mb-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><h2 className="font-serif text-2xl tracking-[-.035em]">{t("finance.transactionLog")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("finance.transactionLogHint")}</p></div><SecondaryButton onClick={() => exportCsv(`marasi-category-adjustments-${range.from}-to-${range.to}.csv`, [["Date", "Category", "Type", "Amount (OMR)", "Related category", "Note"], ...periodAdjustments.map((entry) => [entry.businessDate, entry.categoryName, t(adjustmentTypeKeys[entry.type]), entry.amount, entry.relatedCategoryName || "", entry.note])])}><Download size={14} className="mr-2"/>{t("common.export")}</SecondaryButton></div>
+        {periodAdjustments.length ? <TableFrame><TableHeader><div className="grid grid-cols-[.7fr_1fr_.9fr_.7fr_1fr] gap-3"><span>{t("common.date")}</span><span>{t("common.category")}</span><span>{t("finance.adjustmentType")}</span><span>{t("common.amount")}</span><span>{t("finance.adjustmentNote")}</span></div></TableHeader>{periodAdjustments.map((entry) => <TableRow key={entry.id} className="grid-cols-[.7fr_1fr_.9fr_.7fr_1fr]"><span className="text-xs text-muted">{entry.businessDate}</span><span className="truncate text-xs">{entry.categoryName}</span><StatusPill tone={entry.type === "add" || entry.type === "transfer_in" ? "success" : "warning"}>{t(adjustmentTypeKeys[entry.type])}</StatusPill><b className={cx("text-sm", entry.type === "add" || entry.type === "transfer_in" ? "text-success" : "text-danger")}>{entry.type === "add" || entry.type === "transfer_in" ? "+" : "−"}{money(entry.amount)}</b><span className="truncate text-xs text-muted">{entry.relatedCategoryName ? `${entry.type === "transfer_out" ? "→" : "←"} ${entry.relatedCategoryName}${entry.note ? " — " : ""}` : ""}{entry.note}</span></TableRow>)}</TableFrame> : <p className="py-8 text-center text-sm text-muted">{t("finance.noAdjustments")}</p>}
       </Surface>
     </div>}
   </>;

@@ -40,8 +40,49 @@ const ticketTypeLabels: Record<TicketReceiptLine["ticketType"], { ar: string; en
   companion: { ar: "تذكرة مرافق", en: "Companion Ticket" },
 };
 
-function lineLabel(line: TicketReceiptLine) {
+function lineLabel(line: Pick<TicketReceiptLine, "ticketType" | "freeEntryCategory">) {
   return line.freeEntryCategory ? freeEntryLabels[line.freeEntryCategory] : ticketTypeLabels[line.ticketType];
+}
+
+type ReceiptLineGroup = {
+  ticketType: TicketReceiptLine["ticketType"];
+  freeEntryCategory: TicketReceiptLine["freeEntryCategory"];
+  ticketNumbers: string[];
+  basePrice: number;
+  discountAmount: number;
+  vatAmount: number;
+  totalAmount: number;
+};
+
+// Group Booking purchases issue one ticket per person, so a 10-visitor group
+// line still produces 10 individual line records. Collapsing consecutive
+// same-type lines into a single printed row with a ticket-number range keeps
+// the receipt short instead of listing every ticket separately, while
+// individual (non-group) purchases pass through unchanged since runs of 1
+// print exactly as before.
+function groupReceiptLines(lines: TicketReceiptLine[]): ReceiptLineGroup[] {
+  const groups: ReceiptLineGroup[] = [];
+  for (const line of lines) {
+    const last = groups[groups.length - 1];
+    if (last && last.ticketType === line.ticketType && last.freeEntryCategory === line.freeEntryCategory) {
+      last.ticketNumbers.push(line.ticketNumber);
+      last.basePrice += Number(line.basePrice || 0);
+      last.discountAmount += Number(line.discountAmount || 0);
+      last.vatAmount += Number(line.vatAmount || 0);
+      last.totalAmount += Number(line.totalAmount || 0);
+    } else {
+      groups.push({
+        ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory, ticketNumbers: [line.ticketNumber],
+        basePrice: Number(line.basePrice || 0), discountAmount: Number(line.discountAmount || 0),
+        vatAmount: Number(line.vatAmount || 0), totalAmount: Number(line.totalAmount || 0),
+      });
+    }
+  }
+  return groups;
+}
+
+function ticketRangeLabel(ticketNumbers: string[]) {
+  return ticketNumbers.length > 1 ? `#${ticketNumbers[0]}–#${ticketNumbers[ticketNumbers.length - 1]} (×${ticketNumbers.length})` : `#${ticketNumbers[0]}`;
 }
 
 function omr(value: unknown) {
@@ -92,17 +133,17 @@ export function TicketReceiptTicket({ data }: { data: TicketReceiptData }) {
 
       <table><tbody><tr><td className="label" style={{ fontWeight: 700, paddingBottom: 6 }}>تفاصيل التذاكر / Ticket Details</td></tr></tbody></table>
 
-      {data.lines.map((line, index) => {
-        const label = lineLabel(line);
-        return <div key={line.ticketNumber}>
+      {groupReceiptLines(data.lines).map((group, index, groups) => {
+        const label = lineLabel(group);
+        return <div key={group.ticketNumbers[0]}>
           <table style={{ marginBottom: 6 }}><tbody>
-            <tr><td className="label" style={{ fontWeight: 700 }}>{toArabicIndic(index + 1)}) {label.ar}<br/><span style={{ fontWeight: 400, fontSize: 10 }}>{label.en}</span></td><td className="value">#{line.ticketNumber}</td></tr>
-            <tr><td className="label" style={{ fontSize: 10 }}>السعر الأساسي / Base</td><td className="value" style={{ fontSize: 10 }}>{omr(line.basePrice)}</td></tr>
-            {Number(line.discountAmount) > 0 && <tr><td className="label" style={{ fontSize: 10 }}>الخصم / Discount</td><td className="value" style={{ fontSize: 10 }}>−{omr(line.discountAmount)}</td></tr>}
-            <tr><td className="label" style={{ fontSize: 10 }}>ضريبة ٥٪ / VAT 5%</td><td className="value" style={{ fontSize: 10 }}>{omr(line.vatAmount)}</td></tr>
-            <tr><td className="label" style={{ fontWeight: 700 }}>الإجمالي / Line Total</td><td className="value" style={{ fontWeight: 700 }}>{omr(line.totalAmount)}{line.freeEntryCategory ? " — FREE" : ""}</td></tr>
+            <tr><td className="label" style={{ fontWeight: 700 }}>{toArabicIndic(index + 1)}) {label.ar}{group.ticketNumbers.length > 1 ? ` ×${group.ticketNumbers.length}` : ""}<br/><span style={{ fontWeight: 400, fontSize: 10 }}>{label.en}{group.ticketNumbers.length > 1 ? ` ×${group.ticketNumbers.length}` : ""}</span></td><td className="value">{ticketRangeLabel(group.ticketNumbers)}</td></tr>
+            <tr><td className="label" style={{ fontSize: 10 }}>السعر الأساسي / Base</td><td className="value" style={{ fontSize: 10 }}>{omr(group.basePrice)}</td></tr>
+            {group.discountAmount > 0 && <tr><td className="label" style={{ fontSize: 10 }}>الخصم / Discount</td><td className="value" style={{ fontSize: 10 }}>−{omr(group.discountAmount)}</td></tr>}
+            <tr><td className="label" style={{ fontSize: 10 }}>ضريبة ٥٪ / VAT 5%</td><td className="value" style={{ fontSize: 10 }}>{omr(group.vatAmount)}</td></tr>
+            <tr><td className="label" style={{ fontWeight: 700 }}>الإجمالي / Line Total</td><td className="value" style={{ fontWeight: 700 }}>{omr(group.totalAmount)}{group.freeEntryCategory ? " — FREE" : ""}</td></tr>
           </tbody></table>
-          {index < data.lines.length - 1 && <div style={{ borderTop: "1px dotted #ccc", margin: "6px 0" }}/>}
+          {index < groups.length - 1 && <div style={{ borderTop: "1px dotted #ccc", margin: "6px 0" }}/>}
         </div>;
       })}
 

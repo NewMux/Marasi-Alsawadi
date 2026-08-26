@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { STARTING_TICKET_NUMBER } from "./pricing";
 import {
-  addDiscountTier, addExpense, addExpenseCategory, addFee, addRate, getSnapshot,
-  issuePurchase, previewPurchase, removeExpense, resetStore, updateRate,
+  addDiscountTier, addExpense, addExpenseAdjustment, addExpenseCategory, addFee, addRate, createCustomer, getSnapshot,
+  issuePurchase, previewPurchase, removeExpense, resetStore, transferExpenseCategory, updateCustomer, updateRate,
 } from "./store";
 
 describe("local app store", () => {
@@ -103,6 +103,45 @@ describe("local app store", () => {
       visitDate: "2026-08-25", lines: [{ rateId: waterpark.id, ticketType: "waterpark", freeEntryCategory: null }], paymentMethod: "cash",
     });
     expect(result.customer).toMatchObject({ fullName: "Fatma Al-Kindi", phone: "+968 9911 2233", email: "fatma@example.com" });
+  });
+
+  it("lets staff save a standalone customer profile with a country, without issuing a ticket", () => {
+    const customer = createCustomer({ fullName: "Yousuf Al-Balushi", phone: "+968 9922 1100", country: "Oman" });
+    expect(getSnapshot().purchases).toHaveLength(0);
+    expect(getSnapshot().customers).toContainEqual(expect.objectContaining({ id: customer.id, fullName: "Yousuf Al-Balushi", country: "Oman" }));
+    updateCustomer(customer.id, { country: "UAE" });
+    expect(getSnapshot().customers.find((entry) => entry.id === customer.id)?.country).toBe("UAE");
+  });
+
+  it("issues one consecutive ticket per person for a flattened group-booking quantity line", () => {
+    const waterpark = getSnapshot().rates.find((rate) => rate.code === "WATERPARK")!;
+    const startNumber = getSnapshot().nextTicketNumber;
+    const groupLines = Array.from({ length: 5 }, () => ({ rateId: waterpark.id, ticketType: "waterpark" as const, freeEntryCategory: null }));
+    const result = issuePurchase({ customerName: "Al Falaj School Trip", customerPhone: "+968 9900 1122", visitDate: "2026-08-25", lines: groupLines, paymentMethod: "cash" });
+    expect(result.purchase.lines).toHaveLength(5);
+    expect(result.purchase.lines.map((line) => line.ticketNumber)).toEqual(
+      Array.from({ length: 5 }, (_, index) => String(startNumber + index)),
+    );
+  });
+
+  it("logs a manual add/deduct adjustment against a category", () => {
+    const category = getSnapshot().expenseCategories[0];
+    const adjustment = addExpenseAdjustment({ businessDate: "2026-08-25", categoryId: category.id, type: "add", amount: "50.00", note: "Top-up" });
+    expect(adjustment).toMatchObject({ categoryId: category.id, categoryName: category.name, type: "add", amount: "50.00", note: "Top-up" });
+    expect(getSnapshot().expenseAdjustments).toHaveLength(1);
+  });
+
+  it("logs a linked transfer_out/transfer_in pair when transferring between categories", () => {
+    const [from, to] = getSnapshot().expenseCategories;
+    const [transferOut, transferIn] = transferExpenseCategory({ businessDate: "2026-08-25", fromCategoryId: from.id, toCategoryId: to.id, amount: "20.00" });
+    expect(transferOut).toMatchObject({ categoryId: from.id, type: "transfer_out", relatedCategoryId: to.id, amount: "20.00" });
+    expect(transferIn).toMatchObject({ categoryId: to.id, type: "transfer_in", relatedCategoryId: from.id, amount: "20.00" });
+    expect(getSnapshot().expenseAdjustments).toHaveLength(2);
+  });
+
+  it("rejects a transfer between the same category", () => {
+    const category = getSnapshot().expenseCategories[0];
+    expect(() => transferExpenseCategory({ businessDate: "2026-08-25", fromCategoryId: category.id, toCategoryId: category.id, amount: "10.00" })).toThrow();
   });
 
   it("supports adding custom prices and fee items beyond the PRD defaults", () => {

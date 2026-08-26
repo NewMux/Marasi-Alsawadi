@@ -506,6 +506,26 @@ export const expenseRecords = mysqlTable("expense_records", {
 });
 export type ExpenseRecord = typeof expenseRecords.$inferSelect;
 
+// A manual +/- correction against one category's running total, or a
+// transfer between two categories (recorded as a linked transfer_out /
+// transfer_in pair so the log always nets to zero across the pair). Kept
+// separate from expenseRecords (real, receipted expenses) so this stays a
+// simple, exportable audit trail rather than another expense-entry path.
+export const expenseAdjustments = mysqlTable("expense_adjustments", {
+  id: int("id").autoincrement().primaryKey(),
+  businessDate: date("businessDate").notNull(),
+  categoryId: int("categoryId").notNull(),
+  categoryName: varchar("categoryName", { length: 160 }).notNull(),
+  type: mysqlEnum("type", ["add", "deduct", "transfer_out", "transfer_in"]).notNull(),
+  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
+  relatedCategoryId: int("relatedCategoryId"),
+  relatedCategoryName: varchar("relatedCategoryName", { length: 160 }),
+  note: varchar("note", { length: 512 }),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type ExpenseAdjustment = typeof expenseAdjustments.$inferSelect;
+
 // ─── Activity Log ─────────────────────────────────────────────────────────────
 export const activityLog = mysqlTable("activity_log", {
   id: int("id").autoincrement().primaryKey(),
