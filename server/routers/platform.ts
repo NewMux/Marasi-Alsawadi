@@ -567,7 +567,7 @@ export const platformRouter = router({
       return entry;
     }),
     summary: managerProcedure.input(z.object({ from: z.string(), to: z.string() }))
-      .query(({ input }) => getOperationalFinancialSummary(input.from, input.to)),
+      .query(({ input }) => getRevenueSummary(input.from, input.to)),
     occupancy: managerProcedure.input(z.object({ from: z.string(), to: z.string() }))
       .query(({ input }) => getOccupancyStats(input.from, input.to)),
     aquaAttendance: managerProcedure.input(z.object({ from: z.string(), to: z.string() }))
