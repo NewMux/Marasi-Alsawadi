@@ -19,6 +19,7 @@ const MIGRATION_FILES = [
   "drizzle/migrations/0007_fix_reservation_omr_precision.sql",
   "drizzle/migrations/0008_add_prd_ticketing_model.sql",
   "drizzle/migrations/0009_add_expense_receipt_attachment_and_categories.sql",
+  "drizzle/migrations/0010_fix_guests_id_reference_column.sql",
 ];
 
 async function main() {

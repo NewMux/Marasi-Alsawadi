@@ -9,6 +9,10 @@ const today = new Date().toISOString().slice(0, 10);
 const monthStart = `${today.slice(0, 8)}01`;
 const money = (value: unknown) => `OMR ${Number(value || 0).toLocaleString("en-OM", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const dateLabel = (value: unknown) => value ? new Date(value as string).toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : "—";
+// The DB driver returns DATE columns as JS Date objects, not "YYYY-MM-DD"
+// strings — String(dateObject).slice(0, 10) mangles them via Date's own
+// toString() instead of an ISO date, breaking the same-day comparison below.
+const toIsoDate = (value: unknown) => { const date = new Date(value as string); return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(0, 10); };
 
 function SetupChecklist({ setLocation }: { setLocation: (path: string) => void }) { return <Surface className="mt-6" tone="tinted"><SectionHeader eyebrow="First launch" title="Set up the quoted system" description="Complete the essentials once, then run the daily workflow from one place."/><div className="grid gap-3 md:grid-cols-4"><button onClick={() => setLocation("/settings")} className="rounded-2xl border border-[#cce5ff] bg-white p-4 text-left transition hover:-translate-y-0.5 hover:shadow-md"><div className="text-[10px] font-semibold uppercase tracking-[.14em] text-accent">01</div><b className="mt-2 block text-sm">Configure prices</b><p className="mt-1 text-xs leading-5 text-muted">Set base ticket prices, fees, and expense categories.</p></button><button onClick={() => setLocation("/tickets")} className="rounded-2xl border border-[#cce5ff] bg-white p-4 text-left transition hover:-translate-y-0.5 hover:shadow-md"><div className="text-[10px] font-semibold uppercase tracking-[.14em] text-accent">02</div><b className="mt-2 block text-sm">Issue a ticket</b><p className="mt-1 text-xs leading-5 text-muted">Capture a customer and print the first receipt.</p></button><button onClick={() => setLocation("/finance")} className="rounded-2xl border border-[#cce5ff] bg-white p-4 text-left transition hover:-translate-y-0.5 hover:shadow-md"><div className="text-[10px] font-semibold uppercase tracking-[.14em] text-accent">03</div><b className="mt-2 block text-sm">Record expenses</b><p className="mt-1 text-xs leading-5 text-muted">Keep dated costs and the report in sync.</p></button><button onClick={() => setLocation("/reports")} className="rounded-2xl border border-[#cce5ff] bg-white p-4 text-left transition hover:-translate-y-0.5 hover:shadow-md"><div className="text-[10px] font-semibold uppercase tracking-[.14em] text-accent">04</div><b className="mt-2 block text-sm">Review result</b><p className="mt-1 text-xs leading-5 text-muted">Compare revenue, expenses, and net result.</p></button></div></Surface>; }
 
@@ -22,7 +26,7 @@ export default function CommandCenterPage() {
   const { data: summary } = trpc.platform.finance.operationalSummary.useQuery({ from: monthStart, to: today }, { enabled: canManage });
   const { data: expenses = [] } = trpc.platform.finance.expenses.list.useQuery({ from: monthStart, to: today }, { enabled: canManage });
   const { data: scans = [] } = trpc.platform.gate.recentScans.useQuery(undefined, { enabled: isGuard || canManage });
-  const todayTickets = tickets.filter((entry: any) => String(entry.t?.visitDate || entry.visitDate).slice(0, 10) === today);
+  const todayTickets = tickets.filter((entry: any) => toIsoDate(entry.t?.visitDate || entry.visitDate) === today);
   const revenue = Number(summary?.revenue || tickets.reduce((total: number, entry: any) => total + Number(entry.t?.totalAmount || entry.totalAmount || 0), 0));
   const expenseTotal = Number(summary?.expenses || expenses.reduce((total: number, entry: any) => total + Number(entry.amount || 0), 0));
   const recentTickets = useMemo(() => tickets.slice(0, 6), [tickets]);
