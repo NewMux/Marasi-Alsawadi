@@ -478,7 +478,7 @@ export type PettyCashRequest = typeof pettyCashRequests.$inferSelect;
 // ─── Expense Category and Expense Ledger ───────────────────────────────────────
 export const expenseCategories = mysqlTable("expense_categories", {
   id: int("id").autoincrement().primaryKey(),
-  name: varchar("name", { length: 96 }).notNull().unique(),
+  name: varchar("name", { length: 160 }).notNull().unique(),
   code: varchar("code", { length: 32 }).notNull().unique(),
   isActive: boolean("isActive").default(true).notNull(),
   createdBy: int("createdBy").notNull(),

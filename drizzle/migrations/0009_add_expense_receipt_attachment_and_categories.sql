@@ -7,6 +7,10 @@ ALTER TABLE expense_records
   ADD COLUMN attachmentPath VARCHAR(512) NULL AFTER receiptNumber,
   ADD COLUMN attachmentOriginalName VARCHAR(256) NULL AFTER attachmentPath;
 
+-- The client's "Petty Cash" category name (with its full list of examples)
+-- is 124 characters — wider than the original 96-char limit.
+ALTER TABLE expense_categories MODIFY COLUMN name VARCHAR(160) NOT NULL;
+
 INSERT INTO expense_categories (name, code, isActive, createdBy)
 SELECT 'Salaries (Full Time / Part Time / Over Time / Freelance)', 'SALARIES', TRUE, 1
 WHERE NOT EXISTS (SELECT 1 FROM expense_categories WHERE code = 'SALARIES');
