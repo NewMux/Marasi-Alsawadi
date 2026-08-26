@@ -38,8 +38,14 @@ async function main() {
       continue;
     }
     console.log(`apply ${relativePath} ...`);
-    const sql = readFileSync(join(process.cwd(), relativePath), "utf8");
-    await connection.query(sql);
+    const raw = readFileSync(join(process.cwd(), relativePath), "utf8");
+    // drizzle-kit's own generated files (e.g. 0000_chubby_marrow.sql) use
+    // "--> statement-breakpoint" to mark statement boundaries for its own
+    // migrator — it isn't valid SQL and must be stripped/split on, not
+    // executed. Hand-written migrations don't contain this marker, so the
+    // split is a no-op for them.
+    const statements = raw.split(/--\>\s*statement-breakpoint/g).map((part) => part.trim()).filter(Boolean);
+    for (const statement of statements) await connection.query(statement);
     await connection.query("INSERT INTO `_schema_migrations` (filename) VALUES (?)", [relativePath]);
     console.log(`done  ${relativePath}`);
   }
