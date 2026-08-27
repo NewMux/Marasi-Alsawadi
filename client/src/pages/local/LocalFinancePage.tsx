@@ -3,7 +3,7 @@ import { ArrowRightLeft, CircleDollarSign, Download, ListChecks, MinusCircle, Pl
 import { toast } from "sonner";
 import { Field, MetricCard, PageHeader, PrimaryButton, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, cx } from "@/components/MarasiUI";
 import { money, today } from "@/localApp/format";
-import { useT, type TranslationKey } from "@/localApp/i18n";
+import { useT, type TranslationKey } from "@/lib/i18n";
 import {
   addDiscountTier, addExpense, addExpenseCategory, addExpenseAdjustment, addFee, addRate, exportData, removeExpense,
   transferExpenseCategory, updateDiscountTier, updateExpenseCategory, updateFee, updateRate, useLocalStore,

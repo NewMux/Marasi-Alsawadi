@@ -2,7 +2,7 @@ import { ArrowUpRight, DollarSign, TrendingDown, Users } from "lucide-react";
 import { useLocation } from "wouter";
 import { EmptyState, MetricCard, PageHeader, PrimaryButton, StatusPill, Surface, TableFrame, TableHeader, TableRow } from "@/components/MarasiUI";
 import { dateLabel, money } from "@/localApp/format";
-import { useT } from "@/localApp/i18n";
+import { useT } from "@/lib/i18n";
 import { useLocalStore } from "@/localApp/store";
 
 export default function LocalOverviewPage() {

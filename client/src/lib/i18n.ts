@@ -40,6 +40,26 @@ const dict = {
   "common.email": { en: "Email", ar: "البريد الإلكتروني" },
   "common.optional": { en: "optional", ar: "اختياري" },
 
+  "login.eyebrowSecure": { en: "Secure operations", ar: "عمليات آمنة" },
+  "login.title": { en: "Sign in to continue.", ar: "سجّل الدخول للمتابعة." },
+  "login.description": { en: "Use the staff account provided by the Super Admin. Pricing and configuration remain restricted by role.", ar: "استخدم حساب الموظف الذي زوّدك به المسؤول الأعلى. تبقى الأسعار والإعدادات مقيدة حسب الصلاحية." },
+  "login.username": { en: "Username", ar: "اسم المستخدم" },
+  "login.password": { en: "Password", ar: "كلمة المرور" },
+  "login.signingIn": { en: "Signing in…", ar: "جارٍ تسجيل الدخول…" },
+  "login.signIn": { en: "Sign in", ar: "تسجيل الدخول" },
+  "login.footer": { en: "Authorized resort personnel only.", ar: "لموظفي المنتجع المخوّلين فقط." },
+  "login.eyebrowProtect": { en: "Account protection", ar: "حماية الحساب" },
+  "login.changeTitle": { en: "Choose a new password.", ar: "اختر كلمة مرور جديدة." },
+  "login.changeDescription": { en: "Your temporary password must be replaced before this account can access resort operations.", ar: "يجب استبدال كلمة المرور المؤقتة قبل أن يتمكن هذا الحساب من الوصول إلى عمليات المنتجع." },
+  "login.tempPassword": { en: "Temporary password", ar: "كلمة المرور المؤقتة" },
+  "login.newPassword": { en: "New password", ar: "كلمة المرور الجديدة" },
+  "login.newPasswordHint": { en: "Use at least 12 characters.", ar: "استخدم ١٢ حرفًا على الأقل." },
+  "login.confirmPassword": { en: "Confirm new password", ar: "تأكيد كلمة المرور الجديدة" },
+  "login.updating": { en: "Updating…", ar: "جارٍ التحديث…" },
+  "login.updatePassword": { en: "Update password", ar: "تحديث كلمة المرور" },
+  "login.passwordMismatch": { en: "New passwords do not match", ar: "كلمتا المرور الجديدتان غير متطابقتين" },
+  "login.passwordUpdated": { en: "Password updated. Sign in again.", ar: "تم تحديث كلمة المرور. سجّل الدخول مرة أخرى." },
+
   "overview.eyebrow": { en: "Today at a glance", ar: "نظرة على اليوم" },
   "overview.title": { en: "Command Center", ar: "لوحة التحكم" },
   "overview.description": { en: "Revenue, tickets, and expenses for the resort day — all saved locally in this browser.", ar: "الإيرادات والتذاكر والمصروفات ليوم المنتجع — محفوظة محليًا في هذا المتصفح." },
@@ -121,6 +141,38 @@ const dict = {
   "tickets.print58": { en: "58 mm receipt", ar: "إيصال ٥٨ مم" },
   "tickets.purchaseReady": { en: "Purchase ready", ar: "العملية جاهزة" },
   "tickets.purchaseReadyHint": { en: "Print the receipt for the customer. Ticket numbers continue across all visits.", ar: "اطبع الإيصال للعميل. تستمر أرقام التذاكر عبر جميع الزيارات." },
+  "tickets.descriptionReal": { en: "Build one purchase with Waterpark or Companion lines, apply the PRD rules, and print a normal receipt.", ar: "أنشئ عملية شراء واحدة بتذاكر أكوا بارك أو مرافق، وطبّق قواعد التسعير، واطبع الإيصال العادي." },
+  "tickets.vatBadgeReal": { en: "5% VAT · server calculated", ar: "ضريبة القيمة المضافة ٥٪ · تُحسب من الخادم" },
+  "tickets.searchingCustomers": { en: "Searching customers…", ar: "جارٍ البحث عن العملاء…" },
+  "tickets.idPrefix": { en: "ID", ar: "المعرّف" },
+  "tickets.noPhone": { en: "No phone", ar: "لا يوجد هاتف" },
+  "tickets.select": { en: "Select", ar: "تحديد" },
+  "tickets.purchasesCount": { en: "purchases", ar: "عملية شراء" },
+  "tickets.loadingHistory": { en: "Loading purchase history…", ar: "جارٍ تحميل سجل المشتريات…" },
+  "tickets.customerTicketCol": { en: "Customer / ticket", ar: "العميل / التذكرة" },
+  "tickets.visitCol": { en: "Visit", ar: "الزيارة" },
+  "tickets.customerFallback": { en: "Customer", ar: "عميل" },
+  "tickets.noPurchasesYet": { en: "No purchases yet", ar: "لا توجد مشتريات بعد" },
+  "tickets.noPurchasesHint": { en: "Issued purchases will appear here for quick lookup.", ar: "ستظهر عمليات الشراء الصادرة هنا للرجوع إليها بسرعة." },
+  "tickets.readyPill": { en: "ready", ar: "جاهز" },
+  "tickets.overCapacity": { en: "One purchase can issue at most {max} tickets — split this into two purchases", ar: "يمكن لعملية شراء واحدة إصدار {max} تذكرة كحد أقصى — قسّم هذا إلى عمليتين" },
+  "tickets.overCapacityPill": { en: "tickets — over {max} limit", ar: "تذكرة — تجاوز حد {max}" },
+  "tickets.everyGroupLineNeeds": { en: "Every group line needs a ticket type and a quantity of at least 1", ar: "كل سطر مجموعة يحتاج إلى نوع تذكرة وكمية لا تقل عن ١" },
+  "tickets.selectTypeAndPrice": { en: "Select a ticket type and approved price for every line", ar: "اختر نوع التذكرة والسعر المعتمد لكل سطر" },
+  "tickets.waitingOnPreview": { en: "Waiting on the price preview — try again in a moment", ar: "بانتظار معاينة السعر — حاول مرة أخرى بعد قليل" },
+  "tickets.groupNotePrefix": { en: "Group", ar: "المجموعة" },
+  "tickets.sentToPrinter": { en: "Sent to the receipt printer", ar: "أُرسلت إلى طابعة الإيصالات" },
+  "tickets.printAgentNotFound": { en: "Local print agent not found — opening the browser print dialog instead.", ar: "لم يُعثر على وكيل الطباعة المحلي — سيتم فتح نافذة طباعة المتصفح بدلاً من ذلك." },
+  "tickets.readyToReprint": { en: "Ready to reprint — use the receipt buttons below", ar: "جاهز لإعادة الطباعة — استخدم أزرار الإيصال أدناه" },
+  "tickets.couldNotLoadReprint": { en: "Could not load this ticket for reprinting", ar: "تعذّر تحميل هذه التذكرة لإعادة طباعتها" },
+  "tickets.approvedPriceReal": { en: "Approved base price", ar: "السعر الأساسي المعتمد" },
+  "tickets.choosePriceOf": { en: "Choose", ar: "اختر سعر" },
+  "tickets.chargeableVisitors": { en: "Chargeable visitors", ar: "زوار مدفوعون" },
+  "tickets.atLeastOne": { en: "At least 1", ar: "١ على الأقل" },
+  "tickets.eachOf": { en: "each", ar: "لكل تذكرة" },
+  "tickets.ofThisType": { en: "of this type.", ar: "من هذا النوع." },
+  "tickets.noPriceConfigured": { en: "No price is configured for this ticket type yet — ask a super admin to add one.", ar: "لا يوجد سعر مُعد لهذا النوع من التذاكر بعد — اطلب من المسؤول الأعلى إضافته." },
+  "tickets.selectCustomerOrWalkIn": { en: "Select a customer or add a name and phone", ar: "اختر عميلًا أو أضف اسمًا وهاتفًا" },
 
   "receipt.customer": { en: "Customer", ar: "العميل" },
 
@@ -145,6 +197,25 @@ const dict = {
   "customers.purchases": { en: "purchases", ar: "عمليات شراء" },
   "customers.noMatch": { en: "No matching customers", ar: "لا يوجد عملاء مطابقون" },
   "customers.noMatchHint": { en: "Try a name, phone number, or ticket number. New profiles are created at the Ticket Desk.", ar: "جرّب اسمًا أو رقم هاتف أو رقم تذكرة. تُنشأ الملفات الجديدة من مكتب التذاكر." },
+  "customers.descriptionReal": { en: "Search customer profiles and every PRD ticket purchase by name, phone, email, or country.", ar: "ابحث عن ملفات العملاء وكل عملية شراء تذاكر بالاسم أو الهاتف أو البريد الإلكتروني أو الدولة." },
+  "customers.searchPlaceholderReal": { en: "Search customer name, phone, email, or ticket number", ar: "ابحث باسم العميل أو الهاتف أو البريد الإلكتروني أو رقم التذكرة" },
+  "customers.searchCoverageValue": { en: "Name · phone · email", ar: "الاسم · الهاتف · البريد" },
+  "customers.searchCoverageDetail": { en: "Plus a country filter", ar: "بالإضافة إلى تصفية حسب الدولة" },
+  "customers.searching": { en: "Searching…", ar: "جارٍ البحث…" },
+  "customers.profileUnit": { en: "profile", ar: "ملف" },
+  "customers.profileUnitPlural": { en: "profiles", ar: "ملفات" },
+  "customers.loadError": { en: "Could not load customers", ar: "تعذّر تحميل العملاء" },
+  "customers.loadErrorHint": { en: "Refresh the page or try again from the ticket desk.", ar: "أعد تحميل الصفحة أو حاول مرة أخرى من مكتب التذاكر." },
+  "customers.openTicketDeskLower": { en: "Open ticket desk", ar: "فتح مكتب التذاكر" },
+  "customers.searchingHistory": { en: "Searching customer history…", ar: "جارٍ البحث في سجل العملاء…" },
+  "customers.noMatchHintReal": { en: "Try a name, phone number, email, or country. New profiles can be created here or at the Ticket Desk.", ar: "جرّب اسمًا أو رقم هاتف أو بريدًا إلكترونيًا أو دولة. يمكن إنشاء ملفات جديدة هنا أو من مكتب التذاكر." },
+  "customers.waterparkPurchase": { en: "Waterpark purchase", ar: "عملية شراء أكوا بارك" },
+  "customers.noTicketsYet": { en: "No tickets issued yet for this profile.", ar: "لم تُصدر أي تذاكر لهذا الملف بعد." },
+  "customers.newCustomerProfile": { en: "New customer profile", ar: "ملف عميل جديد" },
+  "customers.phoneNumber": { en: "Phone number", ar: "رقم الهاتف" },
+  "customers.saveCustomer": { en: "Save customer", ar: "حفظ العميل" },
+  "customers.savedToast": { en: "Customer profile saved", ar: "تم حفظ ملف العميل" },
+  "customers.requiredToast": { en: "Full name and phone are required", ar: "الاسم الكامل والهاتف مطلوبان" },
 
   "finance.eyebrow": { en: "Financial command", ar: "الإدارة المالية" },
   "finance.title": { en: "Finance & settings", ar: "المالية والإعدادات" },
@@ -221,5 +292,11 @@ export type TranslationKey = keyof typeof dict;
 
 export function useT() {
   const { isArabic } = useLanguage();
-  return (key: TranslationKey) => dict[key][isArabic ? "ar" : "en"];
+  return (key: TranslationKey, params?: Record<string, string | number>): string => {
+    const text: string = dict[key][isArabic ? "ar" : "en"];
+    if (!params) return text;
+    let result = text;
+    for (const name of Object.keys(params)) result = result.replaceAll(`{${name}}`, String(params[name]));
+    return result;
+  };
 }

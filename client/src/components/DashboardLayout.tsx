@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import { BarChart3, DollarSign, Download, Home, LogOut, Search, Settings, Sparkles, Ticket } from "lucide-react";
 import { cx } from "@/components/MarasiUI";
 import { LanguageToggle, useLanguage } from "@/contexts/LanguageContext";
-import { useT } from "@/localApp/i18n";
+import { useT } from "@/lib/i18n";
 import { exportData } from "@/localApp/store";
 import { isLocalMode } from "@/lib/localMode";
 import marasiLogoIcon from "@/assets/marasi-logo-icon.webp";

@@ -7,7 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { printViaAgent } from "@/lib/printAgent";
 import { COUNTRIES, DEFAULT_COUNTRY } from "@/lib/countries";
 import { dateLabel, money, today } from "@/localApp/format";
-import { useT, type TranslationKey } from "@/localApp/i18n";
+import { useT, type TranslationKey } from "@/lib/i18n";
 import { MAX_TICKETS_PER_PURCHASE, type PrdFreeEntryCategory, type PrdTicketType } from "@/localApp/pricing";
 import { issuePurchase, previewPurchase, useLocalStore, type PurchaseLineDraft } from "@/localApp/store";
 

@@ -6,7 +6,7 @@ import { EmptyState, Field, MetricCard, PageHeader, PrimaryButton, SearchField, 
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { COUNTRIES, DEFAULT_COUNTRY } from "@/lib/countries";
 import { dateLabel, money } from "@/localApp/format";
-import { useT } from "@/localApp/i18n";
+import { useT } from "@/lib/i18n";
 import { createCustomer, useLocalStore } from "@/localApp/store";
 
 const blankNewCustomer = { fullName: "", phone: "", email: "", country: DEFAULT_COUNTRY };
