@@ -89,11 +89,15 @@ button:active { transform: scale(.98); }
 }
 
 @page { size: 80mm auto; margin: 0; }
+@page report { size: A4; margin: 14mm; }
 
 @media print {
-  html, body { margin: 0 !important; padding: 0 !important; background: white !important; }
-  body * { visibility: hidden !important; }
-  #print-ticket, #print-ticket * { visibility: visible !important; }
+  html, body { margin: 0 !important; padding: 0 !important; background: white !important; height: auto !important; }
+  /* display:none (not visibility:hidden) so the hidden dashboard is removed from
+     document flow entirely — otherwise its real height still forces a second,
+     blank printed page even though nothing on it is visible. */
+  body * { display: none !important; }
+  #print-ticket, #print-ticket *, #print-report, #print-report * { display: revert !important; visibility: visible !important; }
   #print-ticket { position: absolute; left: 0; top: 0; display: block !important; width: 80mm; background: white; color: #111; }
   #print-ticket.receipt-58 { width: 58mm; }
 
@@ -117,4 +121,26 @@ button:active { transform: scale(.98); }
   #print-ticket .price-note { font-size: 6.5pt; color: #333; margin-top: .5mm; }
   #print-ticket .terms { font-size: 6.3pt; color: #444; line-height: 1.6; }
   #print-ticket .contact { font-size: 7pt; color: #333; line-height: 1.7; }
+
+  /* A4 printable reports (Command Center comprehensive report, Revenue
+     Report exports) — a second, independent print target from the 80mm
+     thermal ticket above, using its own named @page size. */
+  #print-report { page: report; position: static; display: block !important; width: 100%; background: white; color: #111; font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; }
+  #print-report .report-header { display: flex !important; align-items: center; gap: 14px; border-bottom: 2px solid #0e7490; padding-bottom: 10px; margin-bottom: 16px; }
+  #print-report .report-logo { height: 50px; width: auto; }
+  #print-report .report-heading { flex: 1; }
+  #print-report .report-title { font-size: 17pt; font-weight: 700; letter-spacing: -.02em; }
+  #print-report .report-sub { font-size: 8.5pt; color: #555; margin-top: 2px; }
+  #print-report .report-section { margin-top: 16px; page-break-inside: avoid; }
+  #print-report .report-section-title { font-size: 12pt; font-weight: 700; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin-bottom: 8px; }
+  #print-report table { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
+  #print-report th, #print-report td { text-align: left; padding: 5px 6px; border-bottom: 1px solid #eee; }
+  #print-report th { font-size: 7.5pt; text-transform: uppercase; letter-spacing: .05em; color: #666; }
+  #print-report td.num, #print-report th.num { text-align: right; }
+  #print-report .report-stat-grid { display: flex !important; flex-wrap: wrap; gap: 10px; }
+  #print-report .report-stat { flex: 1 1 30%; border: 1px solid #ddd; border-radius: 8px; padding: 10px 12px; }
+  #print-report .report-stat-label { font-size: 7.5pt; color: #666; text-transform: uppercase; letter-spacing: .04em; }
+  #print-report .report-stat-value { font-size: 15pt; font-weight: 700; margin-top: 2px; }
+  #print-report .report-chart-row { display: flex !important; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+  #print-report .report-footer { margin-top: 22px; padding-top: 8px; border-top: 1px solid #ddd; font-size: 7.5pt; color: #888; }
 }

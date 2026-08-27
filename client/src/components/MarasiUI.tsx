@@ -31,7 +31,7 @@ export function Field({ label, description, hint, error, children }: { label: st
 }
 
 export function TextField(props: InputHTMLAttributes<HTMLInputElement>) { return <Input {...props} className={cx("h-11 rounded-xl border-line bg-well text-sm shadow-none focus:border-accent focus:ring-4 focus:ring-accent/10", props.className)} />; }
-export function SelectField(props: SelectHTMLAttributes<HTMLSelectElement>) { return <select {...props} className={cx("h-11 rounded-xl border border-line bg-well px-3.5 text-sm text-ink outline-none transition focus:border-accent focus:ring-4 focus:ring-accent/10", props.className)} />; }
+export function SelectField(props: SelectHTMLAttributes<HTMLSelectElement>) { return <select {...props} className={cx("h-11 w-full min-w-0 rounded-xl border border-line bg-well px-3.5 text-sm text-ink outline-none transition focus:border-accent focus:ring-4 focus:ring-accent/10", props.className)} />; }
 
 export function PrimaryButton({ children, pending, className = "", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { pending?: boolean }) { return <Button {...props} disabled={pending || props.disabled} className={cx("h-11 rounded-full bg-accent px-5 font-medium text-white shadow-[0_7px_18px_rgba(14,116,144,.2)] hover:bg-accent-hover", className)}>{pending ? <><Loader2 size={15} className="mr-2 animate-spin"/>Saving…</> : children}</Button>; }
 export function SecondaryButton({ children, className = "", ...props }: ButtonHTMLAttributes<HTMLButtonElement>) { return <Button {...props} variant="outline" className={cx("h-10 rounded-full border-line bg-white px-4 text-xs font-medium text-ink hover:bg-fill", className)}>{children}</Button>; }
