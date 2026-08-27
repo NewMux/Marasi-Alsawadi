@@ -6,6 +6,7 @@ import { LanguageToggle, useLanguage } from "@/contexts/LanguageContext";
 import { useT } from "@/localApp/i18n";
 import { exportData } from "@/localApp/store";
 import { isLocalMode } from "@/lib/localMode";
+import marasiLogoIcon from "@/assets/marasi-logo-icon.webp";
 
 type Role = "staff" | "manager" | "admin" | "guard" | "super_admin";
 type NavItem = { label: string; arabicLabel: string; mobileLabel: string; path: string; icon: any; roles: Role[]; group: string };
@@ -30,7 +31,7 @@ const items = isLocalMode() ? localItems : backendItems;
 
 export function permittedPath(path: string, role?: string) { const normalized = path.split("?")[0]; const item = items.find((entry) => entry.path === normalized); return Boolean(item && role && item.roles.includes(role as Role)); }
 
-function Brand({ onClick, mobile = false }: { onClick: () => void; mobile?: boolean }) { return <button onClick={onClick} className={cx("flex items-center gap-3 text-left", mobile ? "font-serif text-lg tracking-[-.03em] md:hidden" : "mb-9 px-3")}><span className={cx("grid place-items-center bg-accent text-white shadow-[0_8px_18px_rgba(0,113,227,.22)]", mobile ? "h-8 w-8 rounded-[10px]" : "h-10 w-10 rounded-[14px]")}><Sparkles size={mobile ? 14 : 18}/></span><span><span className={cx("block font-serif tracking-[-.04em]", mobile ? "text-lg leading-5" : "text-[20px] leading-5")}>Marasi</span>{!mobile && <span className="mt-1 block text-[10px] font-medium tracking-wide text-muted">Alsawadi Resort</span>}</span></button>; }
+function Brand({ onClick, mobile = false }: { onClick: () => void; mobile?: boolean }) { return <button onClick={onClick} className={cx("flex items-center gap-3 text-left", mobile ? "font-serif text-lg tracking-[-.03em] md:hidden" : "mb-9 px-3")}><img src={marasiLogoIcon} alt="Marasi Alsawadi" className={cx("shrink-0 object-contain", mobile ? "h-8 w-8" : "h-10 w-10")}/><span><span className={cx("block font-serif tracking-[-.04em]", mobile ? "text-lg leading-5" : "text-[20px] leading-5")}>Marasi</span>{!mobile && <span className="mt-1 block text-[10px] font-medium tracking-wide text-muted">Alsawadi Resort</span>}</span></button>; }
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();

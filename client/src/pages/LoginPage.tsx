@@ -2,12 +2,13 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
-import { KeyRound, Loader2, ShieldCheck, Sparkles } from "lucide-react";
+import { KeyRound, Loader2, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import marasiLogoFull from "@/assets/marasi-logo-full.webp";
 
 function AuthShell({ eyebrow, title, description, children }: { eyebrow: string; title: string; description: string; children: React.ReactNode }) {
-  return <main className="grid min-h-screen place-items-center bg-canvas px-4 py-10 text-ink"><div className="w-full max-w-[440px]"><div className="mb-6 flex items-center justify-center gap-3"><span className="grid h-11 w-11 place-items-center rounded-[15px] bg-accent text-white shadow-[0_10px_24px_rgba(0,113,227,.25)]"><Sparkles size={19}/></span><div><div className="font-serif text-[22px] tracking-[-.04em]">Marasi</div><div className="text-[10px] font-medium tracking-wide text-muted">ALSawadi Resort</div></div></div><section className="rounded-[28px] border border-white bg-white p-6 shadow-[0_18px_50px_rgba(0,0,0,.10)] sm:p-8"><div className="text-[11px] font-semibold uppercase tracking-[.13em] text-accent">{eyebrow}</div><h1 className="mt-3 font-serif text-[34px] leading-[1.05] tracking-[-.05em]">{title}</h1><p className="mt-3 text-sm leading-6 text-muted">{description}</p><div className="mt-7">{children}</div></section><p className="mt-5 text-center text-[11px] text-subtle">Authorized resort personnel only.</p></div></main>;
+  return <main className="grid min-h-screen place-items-center bg-canvas px-4 py-10 text-ink"><div className="w-full max-w-[440px]"><div className="mb-6 flex justify-center"><img src={marasiLogoFull} alt="Marasi Alsawadi Resort &amp; Aqua Park" className="h-32 w-auto"/></div><section className="rounded-[28px] border border-white bg-white p-6 shadow-[0_18px_50px_rgba(0,0,0,.10)] sm:p-8"><div className="text-[11px] font-semibold uppercase tracking-[.13em] text-accent">{eyebrow}</div><h1 className="mt-3 font-serif text-[34px] leading-[1.05] tracking-[-.05em]">{title}</h1><p className="mt-3 text-sm leading-6 text-muted">{description}</p><div className="mt-7">{children}</div></section><p className="mt-5 text-center text-[11px] text-subtle">Authorized resort personnel only.</p></div></main>;
 }
 
 export default function LoginPage() {
