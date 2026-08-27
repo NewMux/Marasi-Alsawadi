@@ -22,8 +22,8 @@ export function Surface({ children, className = "", tone = "plain" }: { children
   return <section className={cx("rounded-[24px] border border-black/[.06] p-5 shadow-[0_10px_30px_rgba(0,0,0,.045)] md:p-6", tones[tone], className)}>{children}</section>;
 }
 
-export function SectionHeader({ title, description, action, eyebrow }: { title: string; description?: string; action?: ReactNode; eyebrow?: string }) {
-  return <div className="mb-5 flex items-start justify-between gap-4"><div>{eyebrow && <div className="mb-1 text-[10px] font-semibold uppercase tracking-[.16em] text-accent">{eyebrow}</div>}<h2 className="font-serif text-[23px] leading-tight tracking-[-.04em] text-ink">{title}</h2>{description && <p className="mt-1.5 max-w-2xl text-[13px] leading-5 text-muted">{description}</p>}</div>{action}</div>;
+export function SectionHeader({ title, description, action, eyebrow, tone = "light" }: { title: string; description?: string; action?: ReactNode; eyebrow?: string; tone?: "light" | "dark" }) {
+  return <div className="mb-5 flex items-start justify-between gap-4"><div>{eyebrow && <div className={cx("mb-1 text-[10px] font-semibold uppercase tracking-[.16em]", tone === "dark" ? "text-teal-tint" : "text-accent")}>{eyebrow}</div>}<h2 className={cx("font-serif text-[23px] leading-tight tracking-[-.04em]", tone === "dark" ? "text-white" : "text-ink")}>{title}</h2>{description && <p className={cx("mt-1.5 max-w-2xl text-[13px] leading-5", tone === "dark" ? "text-[#c5c5ca]" : "text-muted")}>{description}</p>}</div>{action}</div>;
 }
 
 export function Field({ label, description, hint, error, children }: { label: string; description?: string; hint?: string; error?: string; children: ReactNode }) {
