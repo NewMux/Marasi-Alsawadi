@@ -25,6 +25,32 @@
   --color-warning-bg: #fff4d6;
   --color-danger: #d70015;
   --color-danger-bg: #ffebeb;
+
+  /* Standard shadcn/ui token names, mapped onto the palette above. Several
+     imported ui/*.tsx primitives (Dialog, AlertDialog, Command, ...) are
+     styled with these Tailwind classes (bg-background, border-input, etc.)
+     out of the box, but this project never defined the underlying
+     --color-* variables — Tailwind then has nothing to resolve them to, so
+     e.g. a Dialog's "bg-background" paints nothing and the page shows
+     through. Defining them here (instead of per-component overrides) fixes
+     every current and future use of these primitives in one place. */
+  --color-background: #ffffff;
+  --color-foreground: var(--color-ink);
+  --color-card: #ffffff;
+  --color-card-foreground: var(--color-ink);
+  --color-popover: #ffffff;
+  --color-popover-foreground: var(--color-ink);
+  --color-primary: var(--color-accent);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--color-fill);
+  --color-secondary-foreground: var(--color-ink);
+  --color-accent-foreground: #ffffff;
+  --color-muted-foreground: var(--color-muted);
+  --color-destructive: var(--color-danger);
+  --color-destructive-foreground: #ffffff;
+  --color-border: var(--color-line);
+  --color-input: var(--color-line);
+  --color-ring: var(--color-accent);
 }
 
 * { box-sizing: border-box; }
