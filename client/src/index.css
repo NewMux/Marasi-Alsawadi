@@ -13,8 +13,12 @@
   --color-muted: #6e6e73;
   --color-subtle: #86868b;
   --color-faint: #a1a1a6;
-  --color-accent: #0071e3;
-  --color-accent-hover: #0077ed;
+  --color-accent: #0e7490;
+  --color-accent-hover: #0e8aa3;
+  /* Secondary brand color sampled from the logo's sun/arc — not wired into
+     any component yet, available for a future accent (e.g. the receipt
+     once the client sends its dedicated print artwork). */
+  --color-gold: #af8244;
   --color-line: #d2d2d7;
   --color-divider: #e5e5ea;
   --color-well: #fbfbfd;
