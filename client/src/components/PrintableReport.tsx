@@ -1,15 +1,31 @@
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import marasiLogoFull from "@/assets/marasi-logo-full.webp";
 
 export function printReport() { window.print(); }
 
+/** CSV can't embed a logo image, but it can carry the same generated-by/date
+ * metadata as the printed report — prepend these rows to a CSV export so
+ * the exported file isn't just a bare data dump. */
+export function csvReportHeaderRows(generatedLabel: string, generatedByLabel: string, generatedBy: string): string[][] {
+  const now = new Date();
+  const dateLabel = now.toLocaleDateString("en-GB", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
+  return [["Marasi Alsawadi Resort & Aqua Park"], [`${generatedLabel} ${dateLabel}`], [`${generatedByLabel} ${generatedBy}`], []];
+}
+
 /** A4 printable document root — hidden in the normal view, shown only under
  * `@media print` via the `#print-report` masking rule in index.css (a
- * separate print target from the 80mm ticket receipt). */
+ * separate print target from the 80mm ticket receipt). Portalled to a
+ * sibling of #root (see index.html) rather than rendered inline in the
+ * page: the print CSS hides every other element under <body>, and a
+ * display:none ancestor collapses its whole subtree to a zero-size box
+ * even when this element's own display is "block" — so a report rendered
+ * deep inside the dashboard layout would print blank. */
 export function ReportDocument({ title, generatedByLabel, generatedBy, generatedLabel, children }: { title: string; generatedByLabel: string; generatedBy: string; generatedLabel: string; children: ReactNode }) {
   const now = new Date();
   const dateLabel = now.toLocaleDateString("en-GB", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
-  return <div id="print-report" className="hidden">
+  const printRoot = document.getElementById("print-root");
+  const node = <div id="print-report" className="hidden">
     <div className="report-header">
       <img src={marasiLogoFull} alt="Marasi Alsawadi Resort & Aqua Park" className="report-logo"/>
       <div className="report-heading">
@@ -20,6 +36,7 @@ export function ReportDocument({ title, generatedByLabel, generatedBy, generated
     </div>
     {children}
   </div>;
+  return printRoot ? createPortal(node, printRoot) : node;
 }
 
 export function ReportSection({ title, children }: { title: string; children: ReactNode }) {

@@ -97,7 +97,13 @@ button:active { transform: scale(.98); }
      document flow entirely — otherwise its real height still forces a second,
      blank printed page even though nothing on it is visible. */
   body * { display: none !important; }
-  #print-ticket, #print-ticket *, #print-report, #print-report * { display: revert !important; visibility: visible !important; }
+  /* #print-ticket/#print-report are portalled to #print-root, a sibling of
+     #root (see index.html and TicketReceipt.tsx/PrintableReport.tsx) — not
+     rendered inline inside the dashboard layout. Unmasking only the target
+     and its descendants (and not #print-root itself) would leave #print-root
+     display:none, collapsing its child to a zero-size box despite its own
+     display being "block". Unmask the whole #print-root subtree instead. */
+  #print-root, #print-root * { display: revert !important; visibility: visible !important; }
   #print-ticket { position: absolute; left: 0; top: 0; display: block !important; width: 80mm; background: white; color: #111; }
   #print-ticket.receipt-58 { width: 58mm; }
 

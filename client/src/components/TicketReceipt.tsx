@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { cx } from "@/components/MarasiUI";
 
 // Matches the client-supplied ticket mockup exactly: a fixed bilingual
@@ -176,7 +177,14 @@ export function TicketReceiptTicket({ data }: { data: TicketReceiptData }) {
 }
 
 export function TicketReceipt({ data, width }: { data: TicketReceiptData; width: "80" | "58" }) {
-  return <div id="print-ticket" className={cx("print-ticket hidden", width === "58" ? "receipt-58" : "receipt-80")}>
+  const printRoot = document.getElementById("print-root");
+  const node = <div id="print-ticket" className={cx("print-ticket hidden", width === "58" ? "receipt-58" : "receipt-80")}>
     <TicketReceiptTicket data={data}/>
   </div>;
+  // Portalled to a sibling of #root (see index.html) instead of rendering
+  // inline in the page tree: the print CSS hides every other element under
+  // <body>, and a display:none ancestor collapses its whole subtree to a
+  // zero-size box even when the descendant's own display is "block" — so a
+  // receipt rendered deep inside the dashboard layout would print blank.
+  return printRoot ? createPortal(node, printRoot) : node;
 }
