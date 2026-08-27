@@ -5,7 +5,7 @@ import {
   createAquaTicket, createDailyTask, createFinanceEntry, createGuest, createLocalUser, createPettyCashRequest, deleteFinanceEntry,
   createHousekeepingTask, createInventoryItem, createMaintenanceRequest,
   createLeaveRequest, createReservation, createShift, createStaffProfile, createUnit,
-  createWorkbookImport, getActivityLog, getAquaAttendance, getAquaCapacity,
+  createWorkbookImport, getActivityLog, getAquaAttendance, getAquaCapacity, getFinanceEntry,
   getOccupancyStats, getRevenueSummary, getUserByUsername, linkStaffToUser,
   isValidDateRange, listAquaTickets, listAttendance, listDailyTasks, listFinanceEntries, listGuests,
   listHousekeepingTasks, listInventory, listMaintenanceRequests,
@@ -557,16 +557,27 @@ export const platformRouter = router({
 
   finance: router({
     list: managerProcedure.input(z.object({
-      from: z.string().optional(), to: z.string().optional(), stream: z.string().optional(),
-    })).query(({ input }) => listFinanceEntries(input.from, input.to, input.stream)),
+      from: z.string().optional(), to: z.string().optional(), stream: z.string().optional(), descriptionPrefix: z.string().optional(),
+    })).query(({ input }) => listFinanceEntries(input.from, input.to, input.stream, input.descriptionPrefix)),
     create: managerProcedure.input(z.object({
       date: z.string(), stream: z.enum(["rooms", "aqua_park", "fnb", "extras"]),
       type: z.enum(["revenue", "expense"]).default("revenue"),
-      amount: z.string(), description: z.string().optional(),
+      amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to two decimals"),
+      description: z.string().max(512).optional(),
     })).mutation(async ({ input, ctx }) => {
       const entry = await createFinanceEntry({ ...input, createdBy: ctx.user.id } as any);
       await logActivity(ctx.user.id, "finance.create", "finance_entry", entry.id, `${input.stream}:${input.amount}`);
       return entry;
+    }),
+    // Only for manually created entries (no referenceType) — ticket- and
+    // reservation-derived finance entries must stay in sync with their
+    // source record, so they're never deletable through this endpoint.
+    delete: superAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+      const entry = await getFinanceEntry(input.id);
+      if (!entry) throw new TRPCError({ code: "NOT_FOUND", message: "Finance entry was not found" });
+      if (entry.referenceType) throw new TRPCError({ code: "BAD_REQUEST", message: "This entry is linked to a ticket or reservation and cannot be removed here" });
+      await deleteFinanceEntry(input.id);
+      await logActivity(ctx.user.id, "finance.delete", "finance_entry", input.id);
     }),
     summary: managerProcedure.input(z.object({ from: z.string(), to: z.string() }))
       .query(({ input }) => getRevenueSummary(input.from, input.to)),
@@ -620,8 +631,8 @@ export const platformRouter = router({
       }),
     }),
     expenses: router({
-      list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
-        .query(({ input }) => listExpenseRecords(input?.from, input?.to)),
+      list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional(), descriptionPrefix: z.string().optional() }).optional())
+        .query(({ input }) => listExpenseRecords(input?.from, input?.to, input?.descriptionPrefix)),
       create: protectedProcedure.input(z.object({
         businessDate: z.string(), categoryId: z.number(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to two decimals"),
         payee: z.string().optional(), description: z.string().min(1),

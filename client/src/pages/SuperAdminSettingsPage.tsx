@@ -1,14 +1,17 @@
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { Field as UiField, PageHeader, PrimaryButton, SelectField, Surface, TextField, cx as join } from "@/components/MarasiUI";
-import { CircleDollarSign, ListChecks, ReceiptText, ShieldCheck, Users } from "lucide-react";
+import { CircleDollarSign, Landmark, ListChecks, ReceiptText, ShieldCheck, Users } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import { useT } from "@/lib/i18n";
+import { useT, type TranslationKey } from "@/lib/i18n";
 
 const money = (value: unknown) => `OMR ${Number(value || 0).toFixed(2)}`;
-type Tab = "pricing" | "fees" | "discounts" | "categories" | "users" | "audit";
+const today = new Date().toISOString().slice(0, 10);
+const OPENING_BALANCE_MARKER = "Opening balance";
+type Tab = "pricing" | "fees" | "discounts" | "categories" | "opening" | "users" | "audit";
 type Role = "staff" | "manager" | "admin" | "guard" | "super_admin";
+const STREAM_KEYS: Record<string, TranslationKey> = { rooms: "reports.streamRooms", aqua_park: "reports.streamAquaPark", fnb: "reports.streamFnb", extras: "reports.streamExtras" };
 
 const Card = Surface;
 const Field = UiField;
@@ -25,6 +28,8 @@ export default function SuperAdminSettingsPage() {
   const [feeForm, setFeeForm] = useState({ id: "", name: "", code: "", calculationType: "fixed" as "fixed" | "percentage", value: "", applicationBasis: "per_transaction" as "per_ticket" | "per_transaction", appliesGlobally: false, displayOrder: "0", rateIds: [] as number[] });
   const [categoryForm, setCategoryForm] = useState({ id: "", name: "", code: "" });
   const [userForm, setUserForm] = useState({ username: "", name: "", email: "", role: "staff" as Role, temporaryPassword: "" });
+  const [revenueOpeningForm, setRevenueOpeningForm] = useState({ date: today, stream: "", amount: "", note: "" });
+  const [expenseOpeningForm, setExpenseOpeningForm] = useState({ date: today, categoryId: "", amount: "", note: "" });
 
   const { data: rates = [] } = trpc.platform.rates.list.useQuery({ includeInactive: true });
   const { data: fees = [] } = trpc.platform.fees.list.useQuery({ includeInactive: true });
@@ -33,11 +38,20 @@ export default function SuperAdminSettingsPage() {
   const { data: categories = [] } = trpc.platform.finance.expenseCategories.list.useQuery({ includeInactive: true });
   const { data: users = [] } = trpc.platform.admin.listUsers.useQuery();
   const { data: activity = [] } = trpc.platform.admin.activityLog.useQuery({ limit: 50 });
+  const { data: financeEntries = [] } = trpc.platform.finance.list.useQuery({ descriptionPrefix: OPENING_BALANCE_MARKER });
+  const { data: expenseRecords = [] } = trpc.platform.finance.expenses.list.useQuery({ descriptionPrefix: OPENING_BALANCE_MARKER });
   const ticketRates = (rates as any[]).filter((rate) => rate.department === "aqua_park" && (rate.ticketType === "waterpark" || rate.ticketType === "companion"));
+  const revenueOpeningBalances = (financeEntries as any[]).filter((entry) => entry.type === "revenue").sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const expenseOpeningBalances = [...(expenseRecords as any[])].sort((a, b) => String(b.businessDate).localeCompare(String(a.businessDate)));
 
   const roleLabel = (role: string): string => ({ staff: t("settings.roleCashier"), manager: t("settings.roleManager"), admin: t("settings.roleAdmin"), guard: t("settings.roleGuard"), super_admin: t("settings.roleSuperAdmin") })[role] ?? role;
 
   const refreshSettings = () => { utils.platform.rates.list.invalidate(); utils.platform.fees.invalidate(); utils.platform.finance.expenseCategories.invalidate(); utils.platform.admin.invalidate(); };
+  const refreshOpeningBalances = () => { utils.platform.finance.list.invalidate(); utils.platform.finance.expenses.list.invalidate(); };
+  const revenueOpeningCreate = trpc.platform.finance.create.useMutation({ onSuccess: () => { refreshOpeningBalances(); setRevenueOpeningForm({ date: today, stream: "", amount: "", note: "" }); toast.success(t("settings.openingBalanceAdded")); }, onError: (error) => toast.error(error.message) });
+  const revenueOpeningDelete = trpc.platform.finance.delete.useMutation({ onSuccess: () => { refreshOpeningBalances(); toast.success(t("settings.openingBalanceRemoved")); }, onError: (error) => toast.error(error.message) });
+  const expenseOpeningCreate = trpc.platform.finance.expenses.create.useMutation({ onSuccess: () => { refreshOpeningBalances(); setExpenseOpeningForm({ date: today, categoryId: "", amount: "", note: "" }); toast.success(t("settings.openingBalanceAdded")); }, onError: (error) => toast.error(error.message) });
+  const expenseOpeningDelete = trpc.platform.finance.expenses.delete.useMutation({ onSuccess: () => { refreshOpeningBalances(); toast.success(t("settings.openingBalanceRemoved")); }, onError: (error) => toast.error(error.message) });
   const resetRateForm = () => setRateForm({ id: "", name: "", code: "", department: "aqua_park", ticketType: "waterpark", unitPrice: "", description: "" });
   const resetDiscountForm = () => setDiscountForm({ id: "", minTickets: "25", maxTickets: "29", percentage: "15" });
   const rateCreate = trpc.platform.rates.create.useMutation({ onSuccess: () => { refreshSettings(); resetRateForm(); toast.success(t("settings.basePriceAdded")); }, onError: (error) => toast.error(error.message) });
@@ -58,7 +72,8 @@ export default function SuperAdminSettingsPage() {
 
   const tabs: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
     { id: "pricing", label: t("settings.tabBasePrices"), icon: CircleDollarSign }, { id: "fees", label: t("finance.tabFees"), icon: ReceiptText }, { id: "discounts", label: t("finance.tabDiscounts"), icon: CircleDollarSign },
-    { id: "categories", label: t("finance.tabCategories"), icon: ListChecks }, { id: "users", label: t("settings.tabUsers"), icon: Users },
+    { id: "categories", label: t("finance.tabCategories"), icon: ListChecks }, { id: "opening", label: t("settings.tabOpeningBalances"), icon: Landmark },
+    { id: "users", label: t("settings.tabUsers"), icon: Users },
     { id: "audit", label: t("settings.tabAudit"), icon: ShieldCheck },
   ];
 
@@ -71,6 +86,50 @@ export default function SuperAdminSettingsPage() {
     {tab === "discounts" && <div className="grid gap-6 xl:grid-cols-[.8fr_1.2fr]"><Card><h2 className="font-serif text-2xl tracking-[-.035em]">{discountForm.id ? t("settings.editGroupDiscount") : t("settings.addGroupDiscount")}</h2><p className="mt-2 text-xs leading-5 text-muted">{t("settings.appliedToChargeable")}</p><div className="mt-5 grid gap-4 sm:grid-cols-3"><Field label={t("settings.minimumTickets")}><Input type="number" min="1" value={discountForm.minTickets} onChange={(e) => setDiscountForm({ ...discountForm, minTickets: e.target.value })}/></Field><Field label={t("settings.maximumTickets")}><Input type="number" min="1" placeholder={t("settings.noMaximum")} value={discountForm.maxTickets} onChange={(e) => setDiscountForm({ ...discountForm, maxTickets: e.target.value })}/></Field><Field label={t("settings.discountPercent")}><Input inputMode="decimal" value={discountForm.percentage} onChange={(e) => setDiscountForm({ ...discountForm, percentage: e.target.value })}/></Field></div><div className="mt-5 flex gap-2"><Button className="rounded-full bg-accent text-white" onClick={() => { const minTickets = Number(discountForm.minTickets); const maxTickets = discountForm.maxTickets ? Number(discountForm.maxTickets) : null; const percentage = discountForm.percentage; if (!Number.isInteger(minTickets) || minTickets < 1 || (maxTickets !== null && (!Number.isInteger(maxTickets) || maxTickets < minTickets)) || Number(percentage) < 0 || Number(percentage) > 100) return toast.error(t("settings.validTicketRangeDiscount")); const payload = { minTickets, maxTickets, percentage }; discountForm.id ? discountUpdate.mutate({ id: Number(discountForm.id), ...payload }) : discountCreate.mutate(payload); }}>{discountForm.id ? t("settings.saveDiscount") : t("settings.addDiscount")}</Button>{discountForm.id && <Button variant="outline" onClick={resetDiscountForm}>{t("finance.cancel")}</Button>}</div></Card><Card><h2 className="font-serif text-2xl tracking-[-.035em]">{t("settings.groupDiscountTiers")}</h2><div className="mt-4 divide-y divide-divider">{discountTiers.length ? (discountTiers as any[]).map((tier: any) => <div key={tier.id} className="flex flex-wrap items-center justify-between gap-3 py-4"><div><b>{tier.minTickets}–{tier.maxTickets ?? "∞"} {t("settings.ticketsWord")}</b><div className="mt-1 text-xs text-muted">{Number(tier.percentage).toFixed(2)}% {t("settings.discountWord")} · {tier.isActive ? t("settings.activeWord") : t("settings.retiredWord")}</div></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => setDiscountForm({ id: String(tier.id), minTickets: String(tier.minTickets), maxTickets: tier.maxTickets === null ? "" : String(tier.maxTickets), percentage: String(tier.percentage) })}>{t("common.edit")}</Button><Button size="sm" variant="outline" onClick={() => discountUpdate.mutate({ id: tier.id, isActive: !tier.isActive })}>{tier.isActive ? t("common.retire") : t("common.activate")}</Button><Button size="sm" variant="outline" onClick={() => window.confirm(t("settings.confirmRetireDiscount")) && discountDelete.mutate({ id: tier.id })}>{t("common.remove")}</Button></div></div>) : <p className="py-8 text-center text-sm text-muted">{t("settings.noDiscountTiers")}</p>}</div></Card></div>}
 
     {tab === "categories" && <div className="grid gap-6 xl:grid-cols-[.8fr_1.2fr]"><Card><h2 className="font-serif text-2xl tracking-[-.035em]">{categoryForm.id ? t("settings.editCategory") : t("settings.addExpenseCategory")}</h2><div className="mt-5 grid gap-4"><Field label={t("finance.categoryName")}><Input value={categoryForm.name} onChange={(e) => setCategoryForm({ ...categoryForm, name: e.target.value })}/></Field><Field label={t("common.code")}><Input value={categoryForm.code} onChange={(e) => setCategoryForm({ ...categoryForm, code: e.target.value.toUpperCase() })}/></Field></div><div className="mt-5 flex gap-2"><Button className="rounded-full bg-accent text-white" onClick={() => { if (!categoryForm.name.trim() || !categoryForm.code.trim()) return toast.error(t("settings.addNameAndCode")); categoryForm.id ? categoryUpdate.mutate({ id: Number(categoryForm.id), name: categoryForm.name.trim(), code: categoryForm.code.trim() }) : categoryCreate.mutate({ name: categoryForm.name.trim(), code: categoryForm.code.trim() }); }}>{categoryForm.id ? t("settings.saveCategory") : t("finance.addCategory")}</Button>{categoryForm.id && <Button variant="outline" onClick={() => setCategoryForm({ id: "", name: "", code: "" })}>{t("finance.cancel")}</Button>}</div></Card><Card><h2 className="font-serif text-2xl tracking-[-.035em]">{t("settings.controlledCategoryLibrary")}</h2><div className="mt-4 divide-y divide-divider">{categories.map((category: any) => <div key={category.id} className="flex flex-wrap items-center justify-between gap-3 py-4"><div><b>{category.name}</b><span className="ml-2 font-mono text-[10px] text-accent">{category.code}</span>{!category.isActive && <span className="ml-2 text-[10px] text-danger">{t("finance.inactive")}</span>}</div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => setCategoryForm({ id: String(category.id), name: category.name, code: category.code })}>{t("common.edit")}</Button><Button size="sm" variant="outline" onClick={() => categoryUpdate.mutate({ id: category.id, isActive: !category.isActive })}>{category.isActive ? t("settings.deactivate") : t("common.activate")}</Button><Button size="sm" variant="outline" onClick={() => window.confirm(t("settings.confirmRemove", { name: category.name })) && categoryDelete.mutate({ id: category.id })}>{t("common.remove")}</Button></div></div>)}</div></Card></div>}
+
+    {tab === "opening" && <div className="grid gap-6">
+      <Surface tone="tinted"><p className="text-xs leading-5 text-body">{t("settings.openingBalancesIntro")}</p></Surface>
+      <div className="grid gap-6 xl:grid-cols-2">
+        <Card>
+          <h2 className="font-serif text-2xl tracking-[-.035em]">{t("settings.revenueOpeningBalance")}</h2>
+          <p className="mt-2 text-xs leading-5 text-muted">{t("settings.revenueOpeningBalanceHint")}</p>
+          <div className="mt-5 grid gap-4 sm:grid-cols-2">
+            <Field label={t("common.date")}><Input type="date" value={revenueOpeningForm.date} onChange={(e) => setRevenueOpeningForm({ ...revenueOpeningForm, date: e.target.value })}/></Field>
+            <Field label={t("settings.streamField")}><Select value={revenueOpeningForm.stream} onChange={(e) => setRevenueOpeningForm({ ...revenueOpeningForm, stream: e.target.value })}><option value="">{t("settings.chooseStream")}</option>{Object.entries(STREAM_KEYS).map(([key, labelKey]) => <option key={key} value={key}>{t(labelKey)}</option>)}</Select></Field>
+            <Field label={t("common.amount")}><Input inputMode="decimal" value={revenueOpeningForm.amount} onChange={(e) => setRevenueOpeningForm({ ...revenueOpeningForm, amount: e.target.value })}/></Field>
+            <Field label={t("finance.adjustmentNote")}><Input value={revenueOpeningForm.note} onChange={(e) => setRevenueOpeningForm({ ...revenueOpeningForm, note: e.target.value })}/></Field>
+          </div>
+          <Button className="mt-5 rounded-full bg-accent text-white" onClick={() => {
+            if (!revenueOpeningForm.stream || !(Number(revenueOpeningForm.amount) > 0)) return toast.error(t("settings.completeStreamAndAmount"));
+            const description = revenueOpeningForm.note.trim() ? `${OPENING_BALANCE_MARKER} — ${revenueOpeningForm.note.trim()}` : OPENING_BALANCE_MARKER;
+            revenueOpeningCreate.mutate({ date: revenueOpeningForm.date, stream: revenueOpeningForm.stream as any, type: "revenue", amount: revenueOpeningForm.amount, description });
+          }}>{t("settings.addOpeningBalance")}</Button>
+          <div className="mt-6 border-t border-divider pt-4">
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-subtle">{t("settings.recentOpeningBalances")}</div>
+            {revenueOpeningBalances.length ? <div className="divide-y divide-divider">{revenueOpeningBalances.map((entry: any) => <div key={entry.id} className="flex items-center justify-between gap-3 py-3 text-xs"><div><b>{money(entry.amount)}</b><span className="ml-2 text-muted">{STREAM_KEYS[entry.stream] ? t(STREAM_KEYS[entry.stream]) : entry.stream}</span><div className="mt-1 text-subtle">{String(entry.date).slice(0, 10)} · {entry.description}</div></div><Button size="sm" variant="outline" onClick={() => window.confirm(t("settings.confirmRemoveOpeningBalance")) && revenueOpeningDelete.mutate({ id: entry.id })}>{t("common.remove")}</Button></div>)}</div> : <p className="py-4 text-center text-xs text-muted">{t("settings.noOpeningBalancesYet")}</p>}
+          </div>
+        </Card>
+        <Card>
+          <h2 className="font-serif text-2xl tracking-[-.035em]">{t("settings.expenseOpeningBalance")}</h2>
+          <p className="mt-2 text-xs leading-5 text-muted">{t("settings.expenseOpeningBalanceHint")}</p>
+          <div className="mt-5 grid gap-4 sm:grid-cols-2">
+            <Field label={t("common.date")}><Input type="date" value={expenseOpeningForm.date} onChange={(e) => setExpenseOpeningForm({ ...expenseOpeningForm, date: e.target.value })}/></Field>
+            <Field label={t("common.category")}><Select value={expenseOpeningForm.categoryId} onChange={(e) => setExpenseOpeningForm({ ...expenseOpeningForm, categoryId: e.target.value })}><option value="">{t("finance.chooseCategory")}</option>{(categories as any[]).filter((c) => c.isActive).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</Select></Field>
+            <Field label={t("common.amount")}><Input inputMode="decimal" value={expenseOpeningForm.amount} onChange={(e) => setExpenseOpeningForm({ ...expenseOpeningForm, amount: e.target.value })}/></Field>
+            <Field label={t("finance.adjustmentNote")}><Input value={expenseOpeningForm.note} onChange={(e) => setExpenseOpeningForm({ ...expenseOpeningForm, note: e.target.value })}/></Field>
+          </div>
+          <Button className="mt-5 rounded-full bg-accent text-white" onClick={() => {
+            if (!expenseOpeningForm.categoryId || !(Number(expenseOpeningForm.amount) > 0)) return toast.error(t("settings.completeCategoryAndAmount"));
+            const description = expenseOpeningForm.note.trim() ? `${OPENING_BALANCE_MARKER} — ${expenseOpeningForm.note.trim()}` : OPENING_BALANCE_MARKER;
+            expenseOpeningCreate.mutate({ businessDate: expenseOpeningForm.date, categoryId: Number(expenseOpeningForm.categoryId), amount: expenseOpeningForm.amount, description, department: "general" });
+          }}>{t("settings.addOpeningBalance")}</Button>
+          <div className="mt-6 border-t border-divider pt-4">
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-subtle">{t("settings.recentOpeningBalances")}</div>
+            {expenseOpeningBalances.length ? <div className="divide-y divide-divider">{expenseOpeningBalances.map((entry: any) => <div key={entry.id} className="flex items-center justify-between gap-3 py-3 text-xs"><div><b>{money(entry.amount)}</b><span className="ml-2 text-muted">{entry.categoryName || entry.category}</span><div className="mt-1 text-subtle">{String(entry.businessDate).slice(0, 10)} · {entry.description}</div></div><Button size="sm" variant="outline" onClick={() => window.confirm(t("settings.confirmRemoveOpeningBalance")) && expenseOpeningDelete.mutate({ id: entry.id })}>{t("common.remove")}</Button></div>)}</div> : <p className="py-4 text-center text-xs text-muted">{t("settings.noOpeningBalancesYet")}</p>}
+          </div>
+        </Card>
+      </div>
+    </div>}
 
     {tab === "users" && <div className="grid gap-6 xl:grid-cols-[.85fr_1.15fr]"><Card><h2 className="font-serif text-2xl tracking-[-.035em]">{t("settings.createStaffAccount")}</h2><p className="mt-2 text-xs leading-5 text-muted">{t("settings.tempPasswordMustChange")}</p><div className="mt-5 grid gap-4 sm:grid-cols-2"><Field label={t("login.username")}><Input autoComplete="off" value={userForm.username} onChange={(e) => setUserForm({ ...userForm, username: e.target.value.toLowerCase() })}/></Field><Field label={t("tickets.fullName")}><Input value={userForm.name} onChange={(e) => setUserForm({ ...userForm, name: e.target.value })}/></Field><Field label={t("tickets.email")}><Input type="email" value={userForm.email} onChange={(e) => setUserForm({ ...userForm, email: e.target.value })}/></Field><Field label={t("settings.roleLabel")}><Select value={userForm.role} onChange={(e) => setUserForm({ ...userForm, role: e.target.value as Role })}><option value="staff">{t("settings.roleCashier")}</option><option value="manager">{t("settings.roleManager")}</option><option value="admin">{t("settings.roleAdmin")}</option><option value="guard">{t("settings.roleGuard")}</option><option value="super_admin">{t("settings.roleSuperAdmin")}</option></Select></Field><div className="sm:col-span-2"><Field label={t("login.tempPassword")} hint={t("settings.minimum12Chars")}><Input type="password" autoComplete="new-password" value={userForm.temporaryPassword} onChange={(e) => setUserForm({ ...userForm, temporaryPassword: e.target.value })}/></Field></div></div><Button className="mt-5 rounded-full bg-accent text-white" onClick={() => { if (!userForm.username || !userForm.name || userForm.temporaryPassword.length < 12) return toast.error(t("settings.addUsernameNamePassword")); userCreate.mutate({ ...userForm, email: userForm.email || null }); }}>{t("settings.createAccount")}</Button></Card><Card><h2 className="font-serif text-2xl tracking-[-.035em]">{t("settings.usersAndRoles")}</h2><div className="mt-4 divide-y divide-divider">{users.map((user: any) => <div key={user.id} className="flex flex-wrap items-center justify-between gap-3 py-4"><div><div className="flex items-center gap-2"><b>{user.name || user.username}</b><span className="font-mono text-[10px] text-accent">{user.username || t("settings.legacyFallback")}</span>{!user.isActive && <span className="rounded-full bg-danger-bg px-2 py-1 text-[10px] text-danger">{t("settings.disabledBadge")}</span>}</div><div className="mt-1 text-xs capitalize text-muted">{roleLabel(String(user.role))}{user.mustChangePassword ? ` · ${t("settings.passwordChangeRequired")}` : ""}</div></div><div className="flex flex-wrap gap-2"><Select value={user.role} onChange={(e) => userUpdate.mutate({ id: user.id, role: e.target.value as Role })}><option value="staff">{t("settings.roleCashier")}</option><option value="manager">{t("settings.roleManager")}</option><option value="admin">{t("settings.roleAdmin")}</option><option value="guard">{t("settings.roleGuard")}</option><option value="super_admin">{t("settings.roleSuperAdmin")}</option></Select><Button size="sm" variant="outline" onClick={() => userUpdate.mutate({ id: user.id, isActive: !user.isActive })}>{user.isActive ? t("settings.disable") : t("settings.enable")}</Button><Button size="sm" variant="outline" onClick={() => { const password = window.prompt(t("settings.tempPasswordPrompt", { name: user.name || user.username })); if (password && password.length >= 12) resetPassword.mutate({ id: user.id, temporaryPassword: password }); else if (password) toast.error(t("settings.passwordMin12")); }}>{t("settings.resetPassword")}</Button></div></div>)}</div></Card></div>}
 

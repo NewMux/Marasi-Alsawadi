@@ -370,14 +370,20 @@ export async function updateDailyTask(id: number, data: Partial<typeof dailyTask
 }
 
 // ─── Finance ──────────────────────────────────────────────────────────────────
-export async function listFinanceEntries(from?: string, to?: string, stream?: string) {
+export async function listFinanceEntries(from?: string, to?: string, stream?: string, descriptionPrefix?: string) {
   const db = await getDb(); if (!db) return [];
   const conditions: any[] = [];
   if (from) conditions.push(sql`${financeEntries.date} >= ${from}`);
   if (to) conditions.push(sql`${financeEntries.date} <= ${to}`);
   if (stream) conditions.push(eq(financeEntries.stream, stream as any));
+  if (descriptionPrefix) conditions.push(sql`${financeEntries.description} LIKE ${`${descriptionPrefix}%`}`);
   const q = db.select().from(financeEntries).orderBy(desc(financeEntries.date));
   return conditions.length ? q.where(and(...conditions)) : q;
+}
+export async function getFinanceEntry(id: number) {
+  const db = await getDb(); if (!db) return null;
+  const rows = await db.select().from(financeEntries).where(eq(financeEntries.id, id)).limit(1);
+  return rows[0] ?? null;
 }
 export async function createFinanceEntry(data: typeof financeEntries.$inferInsert) {
   const db = await getDb(); if (!db) throw new Error("no db");

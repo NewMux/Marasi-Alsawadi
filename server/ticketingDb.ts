@@ -417,11 +417,12 @@ export async function deleteExpenseCategory(id: number) {
   return { deactivated: false };
 }
 
-export async function listExpenseRecords(from?: string, to?: string) {
+export async function listExpenseRecords(from?: string, to?: string, descriptionPrefix?: string) {
   const db = await getDb(); if (!db) return [];
   const conditions: any[] = [];
   if (from) conditions.push(sql`${expenseRecords.businessDate} >= ${from}`);
   if (to) conditions.push(sql`${expenseRecords.businessDate} <= ${to}`);
+  if (descriptionPrefix) conditions.push(sql`${expenseRecords.description} LIKE ${`${descriptionPrefix}%`}`);
   const base = db.select().from(expenseRecords).orderBy(desc(expenseRecords.businessDate), desc(expenseRecords.id));
   return conditions.length ? base.where(and(...conditions)) : base;
 }
