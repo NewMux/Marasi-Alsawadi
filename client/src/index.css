@@ -15,10 +15,20 @@
   --color-faint: #a1a1a6;
   --color-accent: #0e7490;
   --color-accent-hover: #0e8aa3;
-  /* Secondary brand color sampled from the logo's sun/arc — not wired into
-     any component yet, available for a future accent (e.g. the receipt
-     once the client sends its dedicated print artwork). */
+  /* Secondary brand color sampled from the logo's sun/arc, and a matching
+     deep navy sampled from the logo's own wordmark ink — used below as the
+     dark-panel background instead of a generic near-black, so the app's
+     "dark card" surfaces read as the brand's own color rather than a
+     neutral charcoal borrowed from nowhere. */
   --color-gold: #af8244;
+  --color-navy: #153040;
+  /* Light tints of the logo's three real hues (teal wave, gold sun, green
+     palm), tuned to the same lightness/saturation so they read as one
+     consistent family when used together as icon/label accents on top of
+     --color-navy — e.g. Command Center's dark "Attention now" panel. */
+  --color-teal-tint: #93d8e3;
+  --color-gold-tint: #e3c193;
+  --color-mint: #93e3d4;
   --color-line: #d2d2d7;
   --color-divider: #e5e5ea;
   --color-well: #fbfbfd;

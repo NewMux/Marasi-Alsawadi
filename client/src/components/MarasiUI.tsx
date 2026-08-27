@@ -18,7 +18,7 @@ export function PageHeader({ eyebrow, title, description, actions, children }: {
 }
 
 export function Surface({ children, className = "", tone = "plain" }: { children: ReactNode; className?: string; tone?: "plain" | "tinted" | "dark" }) {
-  const tones = { plain: "bg-white", tinted: "bg-[#f8fbff] border-[#dbeafe]", dark: "bg-ink text-white border-ink" };
+  const tones = { plain: "bg-white", tinted: "bg-[#f1fbfc] border-[#cdedf2]", dark: "bg-navy text-white border-navy" };
   return <section className={cx("rounded-[24px] border border-black/[.06] p-5 shadow-[0_10px_30px_rgba(0,0,0,.045)] md:p-6", tones[tone], className)}>{children}</section>;
 }
 
