@@ -6,7 +6,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { useT, type TranslationKey } from "@/lib/i18n";
 
-const money = (value: unknown) => `OMR ${Number(value || 0).toFixed(2)}`;
+const money = (value: unknown) => `OMR ${Number(value || 0).toFixed(3)}`;
 const today = new Date().toISOString().slice(0, 10);
 const OPENING_BALANCE_MARKER = "Opening balance";
 type Tab = "pricing" | "fees" | "discounts" | "categories" | "opening" | "users" | "audit";

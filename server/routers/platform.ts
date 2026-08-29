@@ -135,7 +135,7 @@ export const platformRouter = router({
       name: z.string().min(2).max(128), code: z.string().min(2).max(48),
       department: z.enum(["aqua_park", "rooms", "fnb", "general"]),
       ticketType: z.enum(["waterpark", "companion"]).optional(),
-      unitPrice: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to two decimals"),
+      unitPrice: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals"),
       description: z.string().max(1000).optional(),
     })).mutation(async ({ input, ctx }) => {
       const rate = await createServiceRate({ ...input, code: normalizeRateCode(input.code), name: input.name.trim(), currency: "OMR", description: input.description?.trim() || null });
@@ -146,7 +146,7 @@ export const platformRouter = router({
       id: z.number(), name: z.string().min(2).max(128).optional(), code: z.string().min(2).max(48).optional(),
       department: z.enum(["aqua_park", "rooms", "fnb", "general"]).optional(),
       ticketType: z.enum(["waterpark", "companion"]).nullable().optional(),
-      unitPrice: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to two decimals").optional(),
+      unitPrice: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals").optional(),
       description: z.string().max(1000).nullable().optional(), isActive: z.boolean().optional(),
     })).mutation(async ({ input, ctx }) => {
       const { id, code, name, description, ...rest } = input;
@@ -562,7 +562,7 @@ export const platformRouter = router({
     create: managerProcedure.input(z.object({
       date: z.string(), stream: z.enum(["rooms", "aqua_park", "fnb", "extras"]),
       type: z.enum(["revenue", "expense"]).default("revenue"),
-      amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to two decimals"),
+      amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
       description: z.string().max(512).optional(),
     })).mutation(async ({ input, ctx }) => {
       const entry = await createFinanceEntry({ ...input, createdBy: ctx.user.id } as any);
@@ -634,7 +634,7 @@ export const platformRouter = router({
       list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional(), descriptionPrefix: z.string().optional() }).optional())
         .query(({ input }) => listExpenseRecords(input?.from, input?.to, input?.descriptionPrefix)),
       create: protectedProcedure.input(z.object({
-        businessDate: z.string(), categoryId: z.number(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to two decimals"),
+        businessDate: z.string(), categoryId: z.number(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
         payee: z.string().optional(), description: z.string().min(1),
         receiptNumber: z.string().max(64).optional(),
         attachment: z.object({ dataBase64: z.string(), mimeType: z.string(), fileName: z.string().max(256) }).optional(),
@@ -659,7 +659,7 @@ export const platformRouter = router({
         return expense;
       }),
       update: managerProcedure.input(z.object({
-        id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to two decimals").optional(),
+        id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals").optional(),
         payee: z.string().optional(), description: z.string().min(1).optional(), receiptNumber: z.string().max(64).optional(),
         department: z.enum(["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]).optional(),
       })).mutation(async ({ input, ctx }) => {
@@ -694,7 +694,7 @@ export const platformRouter = router({
         .query(({ input }) => getExpenseCategoryBalances(input?.from, input?.to)),
       adjust: managerProcedure.input(z.object({
         businessDate: z.string(), categoryId: z.number().int().positive(), type: z.enum(["add", "deduct"]),
-        amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to two decimals"), note: z.string().max(512).optional(),
+        amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"), note: z.string().max(512).optional(),
       })).mutation(async ({ input, ctx }) => {
         const category = await getExpenseCategory(input.categoryId);
         if (!category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active expense category" });
@@ -704,7 +704,7 @@ export const platformRouter = router({
       }),
       transfer: managerProcedure.input(z.object({
         businessDate: z.string(), fromCategoryId: z.number().int().positive(), toCategoryId: z.number().int().positive(),
-        amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to two decimals"), note: z.string().max(512).optional(),
+        amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"), note: z.string().max(512).optional(),
       }).refine((input) => input.fromCategoryId !== input.toCategoryId, { message: "Choose two different categories" })).mutation(async ({ input, ctx }) => {
         const [fromCategory, toCategory] = await Promise.all([getExpenseCategory(input.fromCategoryId), getExpenseCategory(input.toCategoryId)]);
         if (!fromCategory?.isActive || !toCategory?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose two active expense categories" });

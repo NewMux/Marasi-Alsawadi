@@ -23,7 +23,7 @@ function readFileAsAttachment(file: File): Promise<{ dataBase64: string; mimeTyp
     reader.readAsDataURL(file);
   });
 }
-const money = (value: unknown) => `OMR ${Number(value || 0).toLocaleString("en-OM", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const money = (value: unknown) => `OMR ${Number(value || 0).toLocaleString("en-OM", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
 // The database driver returns DATE columns as JS Date objects, not "YYYY-MM-DD"
 // strings — String(dateObject).slice(0, 10) silently mangles them (e.g. into
 // "Wed Aug 26" from Date's own toString()), which then fails the update query.

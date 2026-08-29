@@ -16,7 +16,7 @@ const allSections: ReportSections = { tickets: true, profitLoss: true, visitors:
 
 const today = new Date().toISOString().slice(0, 10);
 const monthStart = `${today.slice(0, 8)}01`;
-const money = (value: unknown) => `OMR ${Number(value || 0).toLocaleString("en-OM", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const money = (value: unknown) => `OMR ${Number(value || 0).toLocaleString("en-OM", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
 const dateLabel = (value: unknown) => value ? new Date(value as string).toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : "—";
 // The DB driver returns DATE columns as JS Date objects, not "YYYY-MM-DD"
 // strings — String(dateObject).slice(0, 10) mangles them via Date's own

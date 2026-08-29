@@ -2,9 +2,11 @@ export function formatTicketNumber(ticketYear: number, sequenceNumber: number) {
   return `MAS-${ticketYear}-${String(sequenceNumber).padStart(6, "0")}`;
 }
 
+// OMR is a 3-decimal-place currency (1 rial = 1000 baisa), not the 2-decimal
+// "cents" precision most currencies use — so up to 3 decimal digits, not 2.
 export function isPositiveMoney(value: string) {
   const amount = Number(value);
-  return Number.isFinite(amount) && amount > 0 && /^\d+(\.\d{1,2})?$/.test(value);
+  return Number.isFinite(amount) && amount > 0 && /^\d+(\.\d{1,3})?$/.test(value);
 }
 
 export function calculateTicketTotal(unitPrice: string, quantity: number) {
@@ -34,15 +36,17 @@ export type TicketPriceLine = {
   sortOrder: number;
 };
 
+// "Minor" units are baisa (thousandths of a rial), not cents — matching
+// OMR's real 3-decimal precision.
 export function moneyToMinor(value: string) {
-  if (!/^\d+(\.\d{1,2})?$/.test(value)) throw new Error("Enter an OMR amount with up to two decimals");
+  if (!/^\d+(\.\d{1,3})?$/.test(value)) throw new Error("Enter an OMR amount with up to three decimals");
   const [whole, fraction = ""] = value.split(".");
-  return Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
+  return Number(whole) * 1000 + Number(fraction.padEnd(3, "0"));
 }
 
 export function minorToMoney(value: number) {
   if (!Number.isSafeInteger(value)) throw new Error("Money value exceeds the supported range");
-  return (value / 100).toFixed(2);
+  return (value / 1000).toFixed(3);
 }
 
 function percentageToScaled(value: string) {
@@ -77,7 +81,7 @@ export function calculateTicketPricing(input: {
     if (fee.calculationType === "percentage") {
       lineMinor = Math.round((baseMinor * percentageToScaled(fee.value)) / 1_000_000);
     } else {
-      const fixedMinor = moneyToMinor(Number(fee.value).toFixed(2));
+      const fixedMinor = moneyToMinor(Number(fee.value).toFixed(3));
       lineQuantity = fee.applicationBasis === "per_ticket" ? input.quantity : 1;
       lineMinor = fixedMinor * lineQuantity;
     }
@@ -131,7 +135,7 @@ export function calculatePrdPurchasePricing(input: {
   for (let index = 0; index < vatRemainders.length && vatCentsRemaining > 0; index += 1, vatCentsRemaining -= 1) vatMinorByLine[vatRemainders[index].index] += 1;
   const applicableFees = [...input.fees].sort((a, b) => a.displayOrder - b.displayOrder || a.id - b.id);
   const feeAmounts = applicableFees.map((fee) => {
-    const value = fee.calculationType === "percentage" ? Math.round((discountedBaseMinor * percentageToBasisPoints(String(fee.value))) / 10_000) : moneyToMinor(Number(fee.value).toFixed(2));
+    const value = fee.calculationType === "percentage" ? Math.round((discountedBaseMinor * percentageToBasisPoints(String(fee.value))) / 10_000) : moneyToMinor(Number(fee.value).toFixed(3));
     const quantity = fee.applicationBasis === "per_ticket" ? chargeableTicketCount : 1;
     return { fee, amountMinor: value * quantity, quantity };
   });

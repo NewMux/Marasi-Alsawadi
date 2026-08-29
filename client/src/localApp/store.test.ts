@@ -39,17 +39,17 @@ describe("local app store", () => {
     const preview = previewPurchase(lines)!;
     expect(preview.chargeableTicketCount).toBe(25);
     expect(preview.discountPercentage).toBe("15.00");
-    expect(preview.baseSubtotal).toBe("75.00"); // 25 x 3.00
-    expect(preview.discountAmount).toBe("11.25"); // 15% of 75.00
-    expect(preview.vatAmount).toBe("3.19"); // 5% of (75.00 - 11.25) = 63.75, rounded
-    expect(preview.totalAmount).toBe("66.94");
+    expect(preview.baseSubtotal).toBe("75.000"); // 25 x 3.00
+    expect(preview.discountAmount).toBe("11.250"); // 15% of 75.000
+    expect(preview.vatAmount).toBe("3.188"); // 5% of (75.000 - 11.250) = 63.750, rounded to the nearest baisa
+    expect(preview.totalAmount).toBe("66.938");
 
     const result = issuePurchase({ customerName: "Layla Al-Hinai", customerPhone: "+968 9214 7781", visitDate: "2026-08-25", lines, paymentMethod: "cash" });
     expect(result.customer).toMatchObject({ fullName: "Layla Al-Hinai", phone: "+968 9214 7781" });
     expect(result.purchase.lines).toHaveLength(26);
     expect(result.purchase.lines[25].freeEntryCategory).toBe("senior");
-    expect(result.purchase.lines[25].totalAmount).toBe("0.00");
-    expect(result.purchase.totalAmount).toBe("66.94");
+    expect(result.purchase.lines[25].totalAmount).toBe("0.000");
+    expect(result.purchase.totalAmount).toBe("66.938");
   });
 
   it("allocates continuous, non-date ticket numbers across separate purchases", () => {

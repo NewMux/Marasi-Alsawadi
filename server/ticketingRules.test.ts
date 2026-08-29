@@ -13,8 +13,9 @@ describe("ticketing business rules", () => {
     expect(STARTING_TICKET_NUMBER).toBe(17843);
   });
 
-  it("accepts only positive two-decimal monetary values and rounds sale totals", () => {
+  it("accepts positive monetary values up to three decimals (OMR baisa) and rounds sale totals", () => {
     expect(isPositiveMoney("18.50")).toBe(true);
+    expect(isPositiveMoney("12.909")).toBe(true);
     expect(isPositiveMoney("0")).toBe(false);
     expect(isPositiveMoney("-2")).toBe(false);
     expect(calculateTicketTotal("18.50", 3)).toBe(55.5);
@@ -30,9 +31,9 @@ describe("ticketing business rules", () => {
         { id: 3, name: "Booking fee", code: "BOOK", calculationType: "fixed", value: "1.0000", applicationBasis: "per_transaction", displayOrder: 30 },
       ],
     });
-    expect(pricing).toMatchObject({ baseSubtotal: "30.00", feeTotal: "4.00", totalAmount: "34.00" });
+    expect(pricing).toMatchObject({ baseSubtotal: "30.000", feeTotal: "4.000", totalAmount: "34.000" });
     expect(pricing.lines.map((line) => [line.code, line.quantity, line.lineAmount])).toEqual([
-      ["AQUA-DAY", 3, "30.00"], ["WRIST", 3, "1.50"], ["MUNI", 1, "1.50"], ["BOOK", 1, "1.00"],
+      ["AQUA-DAY", 3, "30.000"], ["WRIST", 3, "1.500"], ["MUNI", 1, "1.500"], ["BOOK", 1, "1.000"],
     ]);
   });
 
@@ -41,9 +42,11 @@ describe("ticketing business rules", () => {
       unitPrice: "0.10", quantity: 3, rateName: "Test", rateCode: "TEST",
       fees: [{ id: 1, name: "Five percent", code: "P5", calculationType: "percentage", value: "5", applicationBasis: "per_transaction", displayOrder: 1 }],
     });
-    expect(pricing.baseSubtotal).toBe("0.30");
-    expect(pricing.feeTotal).toBe("0.02");
-    expect(pricing.totalAmount).toBe("0.32");
+    expect(pricing.baseSubtotal).toBe("0.300");
+    // Baisa-precision rounding (5% of 0.300 = 0.015 exactly) is more accurate
+    // than the old cents-only engine, which could only land on "0.02".
+    expect(pricing.feeTotal).toBe("0.015");
+    expect(pricing.totalAmount).toBe("0.315");
   });
 
   it("applies group discount to chargeable lines, excludes free entry, then calculates 5% VAT", () => {
@@ -58,12 +61,12 @@ describe("ticketing business rules", () => {
     });
     expect(pricing.chargeableTicketCount).toBe(3);
     expect(pricing.discountPercentage).toBe("10.00");
-    expect(pricing.baseSubtotal).toBe("24.00");
-    expect(pricing.discountAmount).toBe("2.40");
-    expect(pricing.vatAmount).toBe("1.08");
-    expect(pricing.feeTotal).toBe("0.00");
-    expect(pricing.totalAmount).toBe("22.68");
-    expect(pricing.lines[3].totalAmount).toBe("0.00");
+    expect(pricing.baseSubtotal).toBe("24.000");
+    expect(pricing.discountAmount).toBe("2.400");
+    expect(pricing.vatAmount).toBe("1.080");
+    expect(pricing.feeTotal).toBe("0.000");
+    expect(pricing.totalAmount).toBe("22.680");
+    expect(pricing.lines[3].totalAmount).toBe("0.000");
   });
 
   it("does not apply the discount tier when only free-entry lines exist", () => {
@@ -73,7 +76,7 @@ describe("ticketing business rules", () => {
     });
     expect(pricing.chargeableTicketCount).toBe(0);
     expect(pricing.discountPercentage).toBe("0.00");
-    expect(pricing.totalAmount).toBe("0.00");
+    expect(pricing.totalAmount).toBe("0.000");
   });
 
   it("calculates the simple revenue-versus-expenses net result", () => {

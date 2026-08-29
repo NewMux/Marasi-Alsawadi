@@ -21,6 +21,7 @@ const MIGRATION_FILES = [
   "drizzle/migrations/0009_add_expense_receipt_attachment_and_categories.sql",
   "drizzle/migrations/0010_fix_guests_id_reference_column.sql",
   "drizzle/migrations/0011_add_expense_adjustments.sql",
+  "drizzle/migrations/0012_widen_omr_amounts_to_baisa_precision.sql",
 ];
 
 async function main() {
