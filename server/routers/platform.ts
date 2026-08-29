@@ -27,6 +27,8 @@ import {
   createPrdTicketPurchase, listPrdRates, listTicketDiscountTiers, createTicketDiscountTier, updateTicketDiscountTier, deleteTicketDiscountTier,
   listPrdTicketPurchases, listPrdTicketLines, getCustomerById,
   listExpenseAdjustments, createExpenseAdjustment, createExpenseTransfer, getExpenseCategoryBalances,
+  listRevenueCategories, createRevenueCategory, updateRevenueCategory, deleteRevenueCategory, getRevenueCategory,
+  listRevenueRecords, createRevenueRecord, getRevenueRecord, updateRevenueRecord, deleteRevenueRecord,
 } from "../ticketingDb";
 import { calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
@@ -685,6 +687,76 @@ export const platformRouter = router({
         await deleteExpenseRecord(input.id);
         if (existing.financeEntryId) await deleteFinanceEntry(existing.financeEntryId);
         await logActivity(ctx.user.id, "expense.delete", "expense_record", input.id);
+      }),
+    }),
+    revenueCategories: router({
+      list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
+        .query(({ input, ctx }) => listRevenueCategories(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
+      create: superAdminProcedure.input(z.object({ name: z.string().min(1), code: z.string().min(2).max(32) }))
+        .mutation(async ({ input, ctx }) => {
+          const category = await createRevenueCategory({ ...input, createdBy: ctx.user.id });
+          await logActivity(ctx.user.id, "revenue_category.create", "revenue_category", category.id, input.code);
+          return category;
+        }),
+      update: superAdminProcedure.input(z.object({
+        id: z.number(), name: z.string().min(1).optional(), code: z.string().min(2).max(32).optional(), isActive: z.boolean().optional(),
+      })).mutation(async ({ input, ctx }) => {
+        const { id, ...data } = input;
+        const category = await updateRevenueCategory(id, data);
+        await logActivity(ctx.user.id, "revenue_category.update", "revenue_category", id, JSON.stringify(data));
+        return category;
+      }),
+      delete: superAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+        const result = await deleteRevenueCategory(input.id);
+        await logActivity(ctx.user.id, "revenue_category.delete", "revenue_category", input.id, result.deactivated ? "retired" : "deleted");
+        return result;
+      }),
+    }),
+    revenues: router({
+      list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
+        .query(({ input }) => listRevenueRecords(input?.from, input?.to)),
+      create: protectedProcedure.input(z.object({
+        businessDate: z.string(), categoryId: z.number(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
+        source: z.string().max(128).optional(), description: z.string().min(1),
+        receiptNumber: z.string().max(64).optional(),
+      })).mutation(async ({ input, ctx }) => {
+        const category = await getRevenueCategory(input.categoryId);
+        if (!category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active revenue category" });
+        const financeEntry = await createFinanceEntry({
+          date: input.businessDate, stream: "extras", type: "revenue", amount: input.amount,
+          description: input.description, referenceType: "revenue_record", createdBy: ctx.user.id,
+        } as any);
+        const revenue = await createRevenueRecord({
+          ...input, businessDate: input.businessDate as any, categoryName: category.name,
+          financeEntryId: financeEntry.id, createdBy: ctx.user.id,
+        } as any);
+        await logActivity(ctx.user.id, "revenue.create", "revenue_record", revenue.id, `${category.code}:${input.amount}`);
+        return revenue;
+      }),
+      update: managerProcedure.input(z.object({
+        id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals").optional(),
+        source: z.string().max(128).optional(), description: z.string().min(1).optional(), receiptNumber: z.string().max(64).optional(),
+      })).mutation(async ({ input, ctx }) => {
+        const { id, categoryId, ...data } = input;
+        const existing = await getRevenueRecord(id);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Revenue record was not found" });
+        const category = categoryId ? await getRevenueCategory(categoryId) : undefined;
+        if (categoryId && !category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active revenue category" });
+        await updateRevenueRecord(id, { ...data, ...(category ? { categoryId, categoryName: category.name } : {}) } as any);
+        if (existing.financeEntryId) {
+          await updateFinanceEntry(existing.financeEntryId, {
+            date: (data.businessDate ?? existing.businessDate) as any, amount: data.amount ?? existing.amount,
+            description: data.description ?? existing.description,
+          } as any);
+        }
+        await logActivity(ctx.user.id, "revenue.update", "revenue_record", id, JSON.stringify(data));
+      }),
+      delete: managerProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+        const existing = await getRevenueRecord(input.id);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Revenue record was not found" });
+        await deleteRevenueRecord(input.id);
+        if (existing.financeEntryId) await deleteFinanceEntry(existing.financeEntryId);
+        await logActivity(ctx.user.id, "revenue.delete", "revenue_record", input.id);
       }),
     }),
     expenseAdjustments: router({

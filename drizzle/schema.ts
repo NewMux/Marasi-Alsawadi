@@ -506,6 +506,37 @@ export const expenseRecords = mysqlTable("expense_records", {
 });
 export type ExpenseRecord = typeof expenseRecords.$inferSelect;
 
+// ─── Revenue Category and Manual Revenue Ledger ────────────────────────────────
+// Ticket sales post to finance_entries automatically; this is for the other
+// income sources (equipment rental, events hall, etc.) that don't come
+// through the ticketing flow, mirroring the expense category/ledger shape.
+export const revenueCategories = mysqlTable("revenue_categories", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 160 }).notNull().unique(),
+  code: varchar("code", { length: 32 }).notNull().unique(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type RevenueCategory = typeof revenueCategories.$inferSelect;
+
+export const revenueRecords = mysqlTable("revenue_records", {
+  id: int("id").autoincrement().primaryKey(),
+  businessDate: date("businessDate").notNull(),
+  categoryId: int("categoryId"),
+  categoryName: varchar("categoryName", { length: 96 }).notNull(),
+  amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
+  source: varchar("source", { length: 128 }),
+  description: varchar("description", { length: 256 }).notNull(),
+  receiptNumber: varchar("receiptNumber", { length: 64 }),
+  financeEntryId: int("financeEntryId"),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type RevenueRecord = typeof revenueRecords.$inferSelect;
+
 // A manual +/- correction against one category's running total, or a
 // transfer between two categories (recorded as a linked transfer_out /
 // transfer_in pair so the log always nets to zero across the pair). Kept

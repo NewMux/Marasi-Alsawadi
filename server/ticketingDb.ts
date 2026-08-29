@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
-  expenseAdjustments, expenseCategories, expenseRecords, guests, salesTicketSequences, salesTransactionLines, salesTransactions,
+  expenseAdjustments, expenseCategories, expenseRecords, guests, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
   serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers,
   ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries,
 } from "../drizzle/schema";
@@ -448,6 +448,75 @@ export async function updateExpenseRecord(id: number, data: Partial<typeof expen
 export async function deleteExpenseRecord(id: number) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   await db.delete(expenseRecords).where(eq(expenseRecords.id, id));
+}
+
+// ─── Revenue categories and manual revenue ledger ───────────────────────────
+export async function listRevenueCategories(includeInactive = false) {
+  const db = await getDb(); if (!db) return [];
+  const base = db.select().from(revenueCategories).orderBy(revenueCategories.name);
+  return includeInactive ? base : base.where(eq(revenueCategories.isActive, true));
+}
+
+export async function getRevenueCategory(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(revenueCategories).where(eq(revenueCategories.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function createRevenueCategory(data: typeof revenueCategories.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(revenueCategories).values(data);
+  const rows = await db.select().from(revenueCategories).orderBy(desc(revenueCategories.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function updateRevenueCategory(id: number, data: Partial<typeof revenueCategories.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(revenueCategories).set(data).where(eq(revenueCategories.id, id));
+  return getRevenueCategory(id);
+}
+
+export async function deleteRevenueCategory(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const linked = await db.select({ id: revenueRecords.id }).from(revenueRecords).where(eq(revenueRecords.categoryId, id)).limit(1);
+  if (linked.length) {
+    await db.update(revenueCategories).set({ isActive: false }).where(eq(revenueCategories.id, id));
+    return { deactivated: true };
+  }
+  await db.delete(revenueCategories).where(eq(revenueCategories.id, id));
+  return { deactivated: false };
+}
+
+export async function listRevenueRecords(from?: string, to?: string) {
+  const db = await getDb(); if (!db) return [];
+  const conditions: any[] = [];
+  if (from) conditions.push(sql`${revenueRecords.businessDate} >= ${from}`);
+  if (to) conditions.push(sql`${revenueRecords.businessDate} <= ${to}`);
+  const base = db.select().from(revenueRecords).orderBy(desc(revenueRecords.businessDate), desc(revenueRecords.id));
+  return conditions.length ? base.where(and(...conditions)) : base;
+}
+
+export async function createRevenueRecord(data: typeof revenueRecords.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(revenueRecords).values(data);
+  const rows = await db.select().from(revenueRecords).orderBy(desc(revenueRecords.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function getRevenueRecord(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(revenueRecords).where(eq(revenueRecords.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function updateRevenueRecord(id: number, data: Partial<typeof revenueRecords.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(revenueRecords).set(data).where(eq(revenueRecords.id, id));
+}
+
+export async function deleteRevenueRecord(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.delete(revenueRecords).where(eq(revenueRecords.id, id));
 }
 
 // ─── Expense category adjustments (+/- and transfers) ──────────────────────
