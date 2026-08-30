@@ -5,6 +5,18 @@ import type { TrpcContext } from "./context";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
+  // drizzle wraps DB errors in a generic "Failed query: ... params: ..."
+  // message and puts the actual driver error (e.g. mysql2's ER_BAD_FIELD_ERROR)
+  // on `.cause` — without this, that real reason never reaches the client,
+  // only the unhelpful "Failed query" wrapper the toast ends up showing.
+  errorFormatter(opts) {
+    const { shape, error } = opts;
+    const cause = error.cause as { message?: string } | undefined;
+    if (cause?.message && cause.message !== error.message) {
+      return { ...shape, message: `${shape.message} — ${cause.message}` };
+    }
+    return shape;
+  },
 });
 
 export const router = t.router;

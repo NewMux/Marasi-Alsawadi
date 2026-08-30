@@ -23,6 +23,7 @@ const MIGRATION_FILES = [
   "drizzle/migrations/0011_add_expense_adjustments.sql",
   "drizzle/migrations/0012_widen_omr_amounts_to_baisa_precision.sql",
   "drizzle/migrations/0013_add_revenue_categories_and_records.sql",
+  "drizzle/migrations/0014_fix_revenue_tables_timestamp_defaults.sql",
 ];
 
 async function main() {
