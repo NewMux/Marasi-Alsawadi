@@ -29,6 +29,7 @@ import {
   listExpenseAdjustments, createExpenseAdjustment, createExpenseTransfer, getExpenseCategoryBalances,
   listRevenueCategories, createRevenueCategory, updateRevenueCategory, deleteRevenueCategory, getRevenueCategory,
   listRevenueRecords, createRevenueRecord, getRevenueRecord, updateRevenueRecord, deleteRevenueRecord,
+  listRevenueAdjustments, createRevenueAdjustment, createRevenueTransfer, getRevenueCategoryBalances,
 } from "../ticketingDb";
 import { calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
@@ -782,6 +783,32 @@ export const platformRouter = router({
         if (!fromCategory?.isActive || !toCategory?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose two active expense categories" });
         const rows = await createExpenseTransfer({ businessDate: input.businessDate, fromCategoryId: fromCategory.id, fromCategoryName: fromCategory.name, toCategoryId: toCategory.id, toCategoryName: toCategory.name, amount: input.amount, note: input.note?.trim(), createdBy: ctx.user.id });
         await logActivity(ctx.user.id, "expense_adjustment.transfer", "expense_adjustment", rows[0]?.id, `${fromCategory.code}->${toCategory.code}:${input.amount}`);
+        return rows;
+      }),
+    }),
+    revenueAdjustments: router({
+      list: managerProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
+        .query(({ input }) => listRevenueAdjustments(input?.from, input?.to)),
+      balances: managerProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
+        .query(({ input }) => getRevenueCategoryBalances(input?.from, input?.to)),
+      adjust: managerProcedure.input(z.object({
+        businessDate: z.string(), categoryId: z.number().int().positive(), type: z.enum(["add", "deduct"]),
+        amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"), note: z.string().max(512).optional(),
+      })).mutation(async ({ input, ctx }) => {
+        const category = await getRevenueCategory(input.categoryId);
+        if (!category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active revenue category" });
+        const adjustment = await createRevenueAdjustment({ businessDate: input.businessDate, categoryId: category.id, categoryName: category.name, type: input.type, amount: input.amount, note: input.note?.trim(), createdBy: ctx.user.id });
+        await logActivity(ctx.user.id, "revenue_adjustment.create", "revenue_adjustment", adjustment.id, `${input.type}:${category.code}:${input.amount}`);
+        return adjustment;
+      }),
+      transfer: managerProcedure.input(z.object({
+        businessDate: z.string(), fromCategoryId: z.number().int().positive(), toCategoryId: z.number().int().positive(),
+        amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"), note: z.string().max(512).optional(),
+      }).refine((input) => input.fromCategoryId !== input.toCategoryId, { message: "Choose two different categories" })).mutation(async ({ input, ctx }) => {
+        const [fromCategory, toCategory] = await Promise.all([getRevenueCategory(input.fromCategoryId), getRevenueCategory(input.toCategoryId)]);
+        if (!fromCategory?.isActive || !toCategory?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose two active revenue categories" });
+        const rows = await createRevenueTransfer({ businessDate: input.businessDate, fromCategoryId: fromCategory.id, fromCategoryName: fromCategory.name, toCategoryId: toCategory.id, toCategoryName: toCategory.name, amount: input.amount, note: input.note?.trim(), createdBy: ctx.user.id });
+        await logActivity(ctx.user.id, "revenue_adjustment.transfer", "revenue_adjustment", rows[0]?.id, `${fromCategory.code}->${toCategory.code}:${input.amount}`);
         return rows;
       }),
     }),

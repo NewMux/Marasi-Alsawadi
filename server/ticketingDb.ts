@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
-  expenseAdjustments, expenseCategories, expenseRecords, guests, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
+  expenseAdjustments, expenseCategories, expenseRecords, guests, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
   serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers,
   ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries,
 } from "../drizzle/schema";
@@ -577,6 +577,74 @@ export async function createExpenseTransfer(data: {
       note: data.note, createdBy: data.createdBy,
     } as any);
     const rows = await tx.select().from(expenseAdjustments).orderBy(desc(expenseAdjustments.id)).limit(2);
+    return rows;
+  });
+}
+
+// ─── Revenue category adjustments (+/- and transfers) — the exact mirror of
+// the expense category adjustments above, kept as an entirely separate
+// table/pool so a transfer can never cross from a revenue category into an
+// expense category (that would distort the P&L by moving money between
+// what's meant to be two independent ledgers). ────────────────────────────
+export async function listRevenueAdjustments(from?: string, to?: string) {
+  const db = await getDb(); if (!db) return [];
+  const conditions: any[] = [];
+  if (from) conditions.push(sql`${revenueAdjustments.businessDate} >= ${from}`);
+  if (to) conditions.push(sql`${revenueAdjustments.businessDate} <= ${to}`);
+  const base = db.select().from(revenueAdjustments).orderBy(desc(revenueAdjustments.businessDate), desc(revenueAdjustments.id));
+  return conditions.length ? base.where(and(...conditions)) : base;
+}
+
+export async function createRevenueAdjustment(data: {
+  businessDate: string; categoryId: number; categoryName: string; type: "add" | "deduct";
+  amount: string; note?: string; createdBy: number;
+}) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(revenueAdjustments).values(data as any);
+  const rows = await db.select().from(revenueAdjustments).orderBy(desc(revenueAdjustments.id)).limit(1);
+  return rows[0]!;
+}
+
+// Balance = money added to the category, plus transfers in, minus money
+// deducted and transfers out, plus actual recorded revenue against it —
+// i.e. the running total earned under that category so far. Unlike an
+// expense category (a budget that gets spent down), recorded revenue
+// records ADD to the balance rather than subtract from it.
+export async function getRevenueCategoryBalances(from?: string, to?: string) {
+  const [categories, adjustments, revenue] = await Promise.all([
+    listRevenueCategories(false),
+    listRevenueAdjustments(from, to),
+    listRevenueRecords(from, to),
+  ]);
+  return categories.map((category) => {
+    const categoryAdjustments = adjustments.filter((entry) => entry.categoryId === category.id);
+    const totalAdded = categoryAdjustments.filter((entry) => entry.type === "add").reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const totalDeducted = categoryAdjustments.filter((entry) => entry.type === "deduct").reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const totalTransferredIn = categoryAdjustments.filter((entry) => entry.type === "transfer_in").reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const totalTransferredOut = categoryAdjustments.filter((entry) => entry.type === "transfer_out").reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const totalRevenue = revenue.filter((entry) => entry.categoryId === category.id).reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const balance = totalAdded - totalDeducted + totalTransferredIn - totalTransferredOut + totalRevenue;
+    return { categoryId: category.id, categoryName: category.name, categoryCode: category.code, totalAdded, totalDeducted, totalTransferredIn, totalTransferredOut, totalRevenue, balance };
+  });
+}
+
+export async function createRevenueTransfer(data: {
+  businessDate: string; fromCategoryId: number; fromCategoryName: string;
+  toCategoryId: number; toCategoryName: string; amount: string; note?: string; createdBy: number;
+}) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  return db.transaction(async (tx) => {
+    await tx.insert(revenueAdjustments).values({
+      businessDate: data.businessDate, categoryId: data.fromCategoryId, categoryName: data.fromCategoryName,
+      type: "transfer_out", amount: data.amount, relatedCategoryId: data.toCategoryId, relatedCategoryName: data.toCategoryName,
+      note: data.note, createdBy: data.createdBy,
+    } as any);
+    await tx.insert(revenueAdjustments).values({
+      businessDate: data.businessDate, categoryId: data.toCategoryId, categoryName: data.toCategoryName,
+      type: "transfer_in", amount: data.amount, relatedCategoryId: data.fromCategoryId, relatedCategoryName: data.fromCategoryName,
+      note: data.note, createdBy: data.createdBy,
+    } as any);
+    const rows = await tx.select().from(revenueAdjustments).orderBy(desc(revenueAdjustments.id)).limit(2);
     return rows;
   });
 }

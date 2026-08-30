@@ -650,6 +650,12 @@ const dict = {
   "finance.revenueRecorded": { en: "Revenue recorded", ar: "تم تسجيل الإيراد" },
   "finance.revenueUpdated": { en: "Revenue updated", ar: "تم تحديث الإيراد" },
   "finance.revenueRemoved": { en: "Revenue removed", ar: "تمت إزالة الإيراد" },
+  "finance.typeLabel": { en: "Type", ar: "النوع" },
+  "finance.expenseTypeWord": { en: "Expense", ar: "مصروف" },
+  "finance.revenueTypeWord": { en: "Revenue", ar: "إيراد" },
+  "finance.revenueCol": { en: "Revenue", ar: "الإيراد" },
+  "finance.noRevenueCategoriesYet": { en: "No revenue categories yet", ar: "لا توجد فئات إيرادات بعد" },
+  "finance.balanceLabel": { en: "Balance", ar: "الرصيد" },
 
   "reports.print": { en: "Print", ar: "طباعة" },
   "reports.reportDocTitle": { en: "Revenue vs. Expenses Report", ar: "تقرير الإيرادات مقابل المصروفات" },

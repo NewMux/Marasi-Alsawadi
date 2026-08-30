@@ -557,6 +557,26 @@ export const expenseAdjustments = mysqlTable("expense_adjustments", {
 });
 export type ExpenseAdjustment = typeof expenseAdjustments.$inferSelect;
 
+// A manual +/- correction against one revenue category's running total, or a
+// transfer between two revenue categories — the exact mirror of
+// expenseAdjustments, kept as a separate table since expense and revenue
+// categories are two independent pools that must never mix (a transfer
+// between them would distort the P&L).
+export const revenueAdjustments = mysqlTable("revenue_adjustments", {
+  id: int("id").autoincrement().primaryKey(),
+  businessDate: date("businessDate").notNull(),
+  categoryId: int("categoryId").notNull(),
+  categoryName: varchar("categoryName", { length: 160 }).notNull(),
+  type: mysqlEnum("type", ["add", "deduct", "transfer_out", "transfer_in"]).notNull(),
+  amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
+  relatedCategoryId: int("relatedCategoryId"),
+  relatedCategoryName: varchar("relatedCategoryName", { length: 160 }),
+  note: varchar("note", { length: 512 }),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type RevenueAdjustment = typeof revenueAdjustments.$inferSelect;
+
 // ─── Activity Log ─────────────────────────────────────────────────────────────
 export const activityLog = mysqlTable("activity_log", {
   id: int("id").autoincrement().primaryKey(),
