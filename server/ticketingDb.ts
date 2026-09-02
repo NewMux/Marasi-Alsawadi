@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
-  expenseAdjustments, expenseCategories, expenseRecords, guests, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
+  assetAdjustments, assetCategories, assetRecords, expenseAdjustments, expenseCategories, expenseRecords, guests, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
   serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers,
   ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries,
 } from "../drizzle/schema";
@@ -660,6 +660,139 @@ export async function createRevenueTransfer(data: {
       note: data.note, createdBy: data.createdBy,
     } as any);
     const rows = await tx.select().from(revenueAdjustments).orderBy(desc(revenueAdjustments.id)).limit(2);
+    return rows;
+  });
+}
+
+// ─── Asset categories and fixed-asset register — mirrors the revenue side,
+// except records here are never linked to a finance_entries row, since a
+// capital asset purchase must never affect the Revenue-vs-Expense Net Result.
+export async function listAssetCategories(includeInactive = false) {
+  const db = await getDb(); if (!db) return [];
+  const base = db.select().from(assetCategories).orderBy(assetCategories.name);
+  return includeInactive ? base : base.where(eq(assetCategories.isActive, true));
+}
+
+export async function getAssetCategory(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(assetCategories).where(eq(assetCategories.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function createAssetCategory(data: typeof assetCategories.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(assetCategories).values(data);
+  const rows = await db.select().from(assetCategories).orderBy(desc(assetCategories.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function updateAssetCategory(id: number, data: Partial<typeof assetCategories.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(assetCategories).set(data).where(eq(assetCategories.id, id));
+  return getAssetCategory(id);
+}
+
+export async function deleteAssetCategory(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const linked = await db.select({ id: assetRecords.id }).from(assetRecords).where(eq(assetRecords.categoryId, id)).limit(1);
+  if (linked.length) {
+    await db.update(assetCategories).set({ isActive: false }).where(eq(assetCategories.id, id));
+    return { deactivated: true };
+  }
+  await db.delete(assetCategories).where(eq(assetCategories.id, id));
+  return { deactivated: false };
+}
+
+export async function listAssetRecords(from?: string, to?: string) {
+  const db = await getDb(); if (!db) return [];
+  const conditions: any[] = [];
+  if (from) conditions.push(sql`${assetRecords.businessDate} >= ${from}`);
+  if (to) conditions.push(sql`${assetRecords.businessDate} <= ${to}`);
+  const base = db.select().from(assetRecords).orderBy(desc(assetRecords.businessDate), desc(assetRecords.id));
+  return conditions.length ? base.where(and(...conditions)) : base;
+}
+
+export async function createAssetRecord(data: typeof assetRecords.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(assetRecords).values(data);
+  const rows = await db.select().from(assetRecords).orderBy(desc(assetRecords.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function getAssetRecord(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(assetRecords).where(eq(assetRecords.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function updateAssetRecord(id: number, data: Partial<typeof assetRecords.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(assetRecords).set(data).where(eq(assetRecords.id, id));
+}
+
+export async function deleteAssetRecord(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.delete(assetRecords).where(eq(assetRecords.id, id));
+}
+
+export async function listAssetAdjustments(from?: string, to?: string) {
+  const db = await getDb(); if (!db) return [];
+  const conditions: any[] = [];
+  if (from) conditions.push(sql`${assetAdjustments.businessDate} >= ${from}`);
+  if (to) conditions.push(sql`${assetAdjustments.businessDate} <= ${to}`);
+  const base = db.select().from(assetAdjustments).orderBy(desc(assetAdjustments.businessDate), desc(assetAdjustments.id));
+  return conditions.length ? base.where(and(...conditions)) : base;
+}
+
+export async function createAssetAdjustment(data: {
+  businessDate: string; categoryId: number; categoryName: string; type: "add" | "deduct";
+  amount: string; note?: string; createdBy: number;
+}) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(assetAdjustments).values(data as any);
+  const rows = await db.select().from(assetAdjustments).orderBy(desc(assetAdjustments.id)).limit(1);
+  return rows[0]!;
+}
+
+// Balance = money added to the category, plus transfers in, minus money
+// deducted and transfers out, plus recorded asset purchases against it — the
+// running capital value held under that category. Like revenue (and unlike
+// an expense budget), recorded asset purchases ADD to the balance.
+export async function getAssetCategoryBalances(from?: string, to?: string) {
+  const [categories, adjustments, assets] = await Promise.all([
+    listAssetCategories(false),
+    listAssetAdjustments(from, to),
+    listAssetRecords(from, to),
+  ]);
+  return categories.map((category) => {
+    const categoryAdjustments = adjustments.filter((entry) => entry.categoryId === category.id);
+    const totalAdded = categoryAdjustments.filter((entry) => entry.type === "add").reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const totalDeducted = categoryAdjustments.filter((entry) => entry.type === "deduct").reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const totalTransferredIn = categoryAdjustments.filter((entry) => entry.type === "transfer_in").reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const totalTransferredOut = categoryAdjustments.filter((entry) => entry.type === "transfer_out").reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const totalAssets = assets.filter((entry) => entry.categoryId === category.id).reduce((sum, entry) => sum + Number(entry.amount), 0);
+    const balance = totalAdded - totalDeducted + totalTransferredIn - totalTransferredOut + totalAssets;
+    return { categoryId: category.id, categoryName: category.name, categoryCode: category.code, totalAdded, totalDeducted, totalTransferredIn, totalTransferredOut, totalAssets, balance };
+  });
+}
+
+export async function createAssetTransfer(data: {
+  businessDate: string; fromCategoryId: number; fromCategoryName: string;
+  toCategoryId: number; toCategoryName: string; amount: string; note?: string; createdBy: number;
+}) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  return db.transaction(async (tx) => {
+    await tx.insert(assetAdjustments).values({
+      businessDate: data.businessDate, categoryId: data.fromCategoryId, categoryName: data.fromCategoryName,
+      type: "transfer_out", amount: data.amount, relatedCategoryId: data.toCategoryId, relatedCategoryName: data.toCategoryName,
+      note: data.note, createdBy: data.createdBy,
+    } as any);
+    await tx.insert(assetAdjustments).values({
+      businessDate: data.businessDate, categoryId: data.toCategoryId, categoryName: data.toCategoryName,
+      type: "transfer_in", amount: data.amount, relatedCategoryId: data.fromCategoryId, relatedCategoryName: data.fromCategoryName,
+      note: data.note, createdBy: data.createdBy,
+    } as any);
+    const rows = await tx.select().from(assetAdjustments).orderBy(desc(assetAdjustments.id)).limit(2);
     return rows;
   });
 }

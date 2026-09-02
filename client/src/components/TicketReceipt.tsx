@@ -116,7 +116,7 @@ export function TicketReceiptTicket({ data }: { data: TicketReceiptData }) {
       <div className="center logo"><LogoMark/></div>
       <div className="center brand-ar">مراسي السوادي</div>
       <div className="center brand-en">MARASI ALSAWADI</div>
-      <div className="center sub">RESORT &amp; AQUA PARK</div>
+      <div className="center sub">RESORT &amp; WATERPARK</div>
 
       <div className="divider"/>
 

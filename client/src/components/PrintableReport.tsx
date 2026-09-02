@@ -10,7 +10,7 @@ export function printReport() { window.print(); }
 export function csvReportHeaderRows(generatedLabel: string, generatedByLabel: string, generatedBy: string): string[][] {
   const now = new Date();
   const dateLabel = now.toLocaleDateString("en-GB", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
-  return [["Marasi Alsawadi Resort & Aqua Park"], [`${generatedLabel} ${dateLabel}`], [`${generatedByLabel} ${generatedBy}`], []];
+  return [["Marasi Alsawadi Resort & Waterpark"], [`${generatedLabel} ${dateLabel}`], [`${generatedByLabel} ${generatedBy}`], []];
 }
 
 /** A4 printable document root — hidden in the normal view, shown only under
@@ -27,7 +27,7 @@ export function ReportDocument({ title, generatedByLabel, generatedBy, generated
   const printRoot = document.getElementById("print-root");
   const node = <div id="print-report" className="hidden">
     <div className="report-header">
-      <img src={marasiLogoFull} alt="Marasi Alsawadi Resort & Aqua Park" className="report-logo"/>
+      <img src={marasiLogoFull} alt="Marasi Alsawadi Resort & Waterpark" className="report-logo"/>
       <div className="report-heading">
         <div className="report-title">{title}</div>
         <div className="report-sub">{generatedLabel} {dateLabel}</div>

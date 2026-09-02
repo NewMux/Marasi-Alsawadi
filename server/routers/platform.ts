@@ -30,6 +30,9 @@ import {
   listRevenueCategories, createRevenueCategory, updateRevenueCategory, deleteRevenueCategory, getRevenueCategory,
   listRevenueRecords, createRevenueRecord, getRevenueRecord, updateRevenueRecord, deleteRevenueRecord,
   listRevenueAdjustments, createRevenueAdjustment, createRevenueTransfer, getRevenueCategoryBalances,
+  listAssetCategories, createAssetCategory, updateAssetCategory, deleteAssetCategory, getAssetCategory,
+  listAssetRecords, createAssetRecord, getAssetRecord, updateAssetRecord, deleteAssetRecord,
+  listAssetAdjustments, createAssetAdjustment, createAssetTransfer, getAssetCategoryBalances,
 } from "../ticketingDb";
 import { calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
@@ -764,6 +767,90 @@ export const platformRouter = router({
         await deleteRevenueRecord(input.id);
         if (existing.financeEntryId) await deleteFinanceEntry(existing.financeEntryId);
         await logActivity(ctx.user.id, "revenue.delete", "revenue_record", input.id);
+      }),
+    }),
+    assetCategories: router({
+      list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
+        .query(({ input, ctx }) => listAssetCategories(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
+      create: superAdminProcedure.input(z.object({ name: z.string().min(1), code: z.string().min(2).max(32) }))
+        .mutation(async ({ input, ctx }) => {
+          const category = await createAssetCategory({ ...input, createdBy: ctx.user.id });
+          await logActivity(ctx.user.id, "asset_category.create", "asset_category", category.id, input.code);
+          return category;
+        }),
+      update: superAdminProcedure.input(z.object({
+        id: z.number(), name: z.string().min(1).optional(), code: z.string().min(2).max(32).optional(), isActive: z.boolean().optional(),
+      })).mutation(async ({ input, ctx }) => {
+        const { id, ...data } = input;
+        const category = await updateAssetCategory(id, data);
+        await logActivity(ctx.user.id, "asset_category.update", "asset_category", id, JSON.stringify(data));
+        return category;
+      }),
+      delete: superAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+        const result = await deleteAssetCategory(input.id);
+        await logActivity(ctx.user.id, "asset_category.delete", "asset_category", input.id, result.deactivated ? "retired" : "deleted");
+        return result;
+      }),
+    }),
+    assets: router({
+      list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
+        .query(({ input }) => listAssetRecords(input?.from, input?.to)),
+      create: protectedProcedure.input(z.object({
+        businessDate: z.string(), categoryId: z.number(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
+        vendor: z.string().max(128).optional(), description: z.string().min(1),
+        receiptNumber: z.string().max(64).optional(),
+      })).mutation(async ({ input, ctx }) => {
+        const category = await getAssetCategory(input.categoryId);
+        if (!category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active asset category" });
+        const asset = await createAssetRecord({
+          ...input, businessDate: input.businessDate as any, categoryName: category.name, createdBy: ctx.user.id,
+        } as any);
+        await logActivity(ctx.user.id, "asset.create", "asset_record", asset.id, `${category.code}:${input.amount}`);
+        return asset;
+      }),
+      update: managerProcedure.input(z.object({
+        id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals").optional(),
+        vendor: z.string().max(128).optional(), description: z.string().min(1).optional(), receiptNumber: z.string().max(64).optional(),
+      })).mutation(async ({ input, ctx }) => {
+        const { id, categoryId, ...data } = input;
+        const existing = await getAssetRecord(id);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Asset record was not found" });
+        const category = categoryId ? await getAssetCategory(categoryId) : undefined;
+        if (categoryId && !category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active asset category" });
+        await updateAssetRecord(id, { ...data, ...(category ? { categoryId, categoryName: category.name } : {}) } as any);
+        await logActivity(ctx.user.id, "asset.update", "asset_record", id, JSON.stringify(data));
+      }),
+      delete: managerProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+        const existing = await getAssetRecord(input.id);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Asset record was not found" });
+        await deleteAssetRecord(input.id);
+        await logActivity(ctx.user.id, "asset.delete", "asset_record", input.id);
+      }),
+    }),
+    assetAdjustments: router({
+      list: managerProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
+        .query(({ input }) => listAssetAdjustments(input?.from, input?.to)),
+      balances: managerProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
+        .query(({ input }) => getAssetCategoryBalances(input?.from, input?.to)),
+      adjust: managerProcedure.input(z.object({
+        businessDate: z.string(), categoryId: z.number().int().positive(), type: z.enum(["add", "deduct"]),
+        amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"), note: z.string().max(512).optional(),
+      })).mutation(async ({ input, ctx }) => {
+        const category = await getAssetCategory(input.categoryId);
+        if (!category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active asset category" });
+        const adjustment = await createAssetAdjustment({ businessDate: input.businessDate, categoryId: category.id, categoryName: category.name, type: input.type, amount: input.amount, note: input.note?.trim(), createdBy: ctx.user.id });
+        await logActivity(ctx.user.id, "asset_adjustment.create", "asset_adjustment", adjustment.id, `${input.type}:${category.code}:${input.amount}`);
+        return adjustment;
+      }),
+      transfer: managerProcedure.input(z.object({
+        businessDate: z.string(), fromCategoryId: z.number().int().positive(), toCategoryId: z.number().int().positive(),
+        amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"), note: z.string().max(512).optional(),
+      }).refine((input) => input.fromCategoryId !== input.toCategoryId, { message: "Choose two different categories" })).mutation(async ({ input, ctx }) => {
+        const [fromCategory, toCategory] = await Promise.all([getAssetCategory(input.fromCategoryId), getAssetCategory(input.toCategoryId)]);
+        if (!fromCategory?.isActive || !toCategory?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose two active asset categories" });
+        const rows = await createAssetTransfer({ businessDate: input.businessDate, fromCategoryId: fromCategory.id, fromCategoryName: fromCategory.name, toCategoryId: toCategory.id, toCategoryName: toCategory.name, amount: input.amount, note: input.note?.trim(), createdBy: ctx.user.id });
+        await logActivity(ctx.user.id, "asset_adjustment.transfer", "asset_adjustment", rows[0]?.id, `${fromCategory.code}->${toCategory.code}:${input.amount}`);
+        return rows;
       }),
     }),
     expenseAdjustments: router({

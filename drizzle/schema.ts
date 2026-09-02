@@ -580,6 +580,57 @@ export const revenueAdjustments = mysqlTable("revenue_adjustments", {
 });
 export type RevenueAdjustment = typeof revenueAdjustments.$inferSelect;
 
+// ─── Asset Category and Fixed-Asset Register ───────────────────────────────────
+// Capital purchases (fixed assets, fixtures & furniture, waterpark
+// infrastructure) tracked as their own ledger, mirroring the expense/revenue
+// category shape — but deliberately NEVER posted to finance_entries, since a
+// capital asset is not a period cost and must never move the
+// Revenue-vs-Expense Net Result.
+export const assetCategories = mysqlTable("asset_categories", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 160 }).notNull().unique(),
+  code: varchar("code", { length: 32 }).notNull().unique(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type AssetCategory = typeof assetCategories.$inferSelect;
+
+export const assetRecords = mysqlTable("asset_records", {
+  id: int("id").autoincrement().primaryKey(),
+  businessDate: date("businessDate").notNull(),
+  categoryId: int("categoryId"),
+  categoryName: varchar("categoryName", { length: 96 }).notNull(),
+  amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
+  vendor: varchar("vendor", { length: 128 }),
+  description: varchar("description", { length: 256 }).notNull(),
+  receiptNumber: varchar("receiptNumber", { length: 64 }),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type AssetRecord = typeof assetRecords.$inferSelect;
+
+// A manual +/- correction against one asset category's running total, or a
+// transfer between two asset categories — the exact mirror of
+// expenseAdjustments/revenueAdjustments, kept as its own table so a transfer
+// can never cross from an asset category into an expense or revenue category.
+export const assetAdjustments = mysqlTable("asset_adjustments", {
+  id: int("id").autoincrement().primaryKey(),
+  businessDate: date("businessDate").notNull(),
+  categoryId: int("categoryId").notNull(),
+  categoryName: varchar("categoryName", { length: 160 }).notNull(),
+  type: mysqlEnum("type", ["add", "deduct", "transfer_out", "transfer_in"]).notNull(),
+  amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
+  relatedCategoryId: int("relatedCategoryId"),
+  relatedCategoryName: varchar("relatedCategoryName", { length: 160 }),
+  note: varchar("note", { length: 512 }),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type AssetAdjustment = typeof assetAdjustments.$inferSelect;
+
 // ─── Activity Log ─────────────────────────────────────────────────────────────
 export const activityLog = mysqlTable("activity_log", {
   id: int("id").autoincrement().primaryKey(),
