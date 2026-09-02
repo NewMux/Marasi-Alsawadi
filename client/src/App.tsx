@@ -13,6 +13,7 @@ import CustomerDirectoryPage from "./pages/CustomerDirectoryPage";
 import FinanceControlPage from "./pages/FinanceControlPage";
 import LoginPage, { ChangePasswordPage } from "./pages/LoginPage";
 import ManagementReportsPage from "./pages/ManagementReportsPage";
+import PettyCashPage from "./pages/PettyCashPage";
 import SuperAdminSettingsPage from "./pages/SuperAdminSettingsPage";
 import TicketDeskPage from "./pages/TicketDeskPage";
 import LocalOverviewPage from "./pages/local/LocalOverviewPage";
@@ -34,6 +35,7 @@ function OperationsRoutes() {
     <Route path="/customers" component={local ? LocalCustomerDirectoryPage : CustomerDirectoryPage}/>
     <Route path="/finance" component={local ? LocalFinancePage : FinanceControlPage}/>
     <Route path="/reports" component={local ? LocalFinancePage : ManagementReportsPage}/>
+    <Route path="/petty-cash" component={local ? LocalFinancePage : PettyCashPage}/>
     <Route path="/settings" component={local ? LocalFinancePage : SuperAdminSettingsRoute}/>
     <Route component={local ? LocalOverviewPage : CommandCenterPage}/>
   </Switch></DashboardLayout>;
@@ -45,6 +47,10 @@ function ProtectedApplication() {
   if (loading) return <main className="grid min-h-screen place-items-center bg-canvas"><div className="flex items-center gap-3 text-sm text-muted"><Loader2 className="animate-spin" size={18}/>Loading secure workspace…</div></main>;
   if (!isAuthenticated || !user) return <LoginPage/>;
   if (user.mustChangePassword) return <ChangePasswordPage/>;
+  // A petty cash custodian must never see any other page or nav item,
+  // regardless of what URL they land on — so this bypasses the normal
+  // route Switch entirely rather than relying on nav visibility alone.
+  if (user.role === "petty_cash") return <DashboardLayout><PettyCashPage/></DashboardLayout>;
   return <OperationsRoutes/>;
 }
 

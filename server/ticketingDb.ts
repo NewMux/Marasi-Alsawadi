@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto";
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
-  assetAdjustments, assetCategories, assetRecords, expenseAdjustments, expenseCategories, expenseRecords, guests, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
+  assetAdjustments, assetCategories, assetRecords, expenseAdjustments, expenseCategories, expenseRecords, guests, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
   serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers,
-  ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries,
+  ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries, users,
 } from "../drizzle/schema";
 import { getDb } from "./db";
 import { calculateOperationalNet, calculatePrdPurchasePricing, decideGateEntry, formatPrdTicketNumber, formatTicketNumber, type PrdDiscountTierInput, type PrdTicketLineInput } from "./ticketingRules";
@@ -408,6 +408,12 @@ export async function getExpenseCategory(id: number) {
   return rows[0];
 }
 
+export async function getExpenseCategoryByCode(code: string) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(expenseCategories).where(eq(expenseCategories.code, code)).limit(1);
+  return rows[0];
+}
+
 export async function createExpenseCategory(data: typeof expenseCategories.$inferInsert) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   await db.insert(expenseCategories).values(data);
@@ -808,4 +814,119 @@ export async function getOperationalFinancialSummary(from: string, to: string) {
   const revenue = Number(revenueRows[0]?.total ?? 0);
   const expenseTotal = Number(expenseRows[0]?.total ?? 0);
   return { revenue, expenses: expenseTotal, net: calculateOperationalNet(revenue, expenseTotal) };
+}
+
+// ─── Petty cash custodian funds ─────────────────────────────────────────────
+export async function createPettyCashFund(data: { custodianUserId: number; fixedAmount: string; createdBy: number }) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(pettyCashFunds).values(data as any);
+  const rows = await db.select().from(pettyCashFunds).orderBy(desc(pettyCashFunds.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function getPettyCashFund(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(pettyCashFunds).where(eq(pettyCashFunds.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function getPettyCashFundByCustodian(custodianUserId: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(pettyCashFunds).where(eq(pettyCashFunds.custodianUserId, custodianUserId)).limit(1);
+  return rows[0];
+}
+
+export async function updatePettyCashFundAmount(id: number, fixedAmount: string) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(pettyCashFunds).set({ fixedAmount }).where(eq(pettyCashFunds.id, id));
+  return getPettyCashFund(id);
+}
+
+export async function listPettyCashSpends(fundId: number) {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(pettyCashSpends).where(eq(pettyCashSpends.fundId, fundId)).orderBy(desc(pettyCashSpends.businessDate), desc(pettyCashSpends.id));
+}
+
+export async function getPettyCashFundBalance(fundId: number) {
+  const db = await getDb(); if (!db) return 0;
+  const fund = await getPettyCashFund(fundId);
+  if (!fund) return 0;
+  const spends = await listPettyCashSpends(fundId);
+  const totalSpent = spends.reduce((sum, entry) => sum + Number(entry.amount), 0);
+  return Number(fund.fixedAmount) - totalSpent;
+}
+
+// Every active custodian fund, joined with the custodian's account, with the
+// running balance computed (fixedAmount minus everything they've spent) —
+// backs the manager's oversight table.
+export async function listPettyCashFundsWithBalances() {
+  const db = await getDb(); if (!db) return [];
+  const rows = await db.select({ fund: pettyCashFunds, custodian: users }).from(pettyCashFunds)
+    .leftJoin(users, eq(pettyCashFunds.custodianUserId, users.id))
+    .orderBy(desc(pettyCashFunds.createdAt));
+  const spendTotals = await db.select({ fundId: pettyCashSpends.fundId, total: sql<number>`COALESCE(SUM(${pettyCashSpends.amount}),0)` })
+    .from(pettyCashSpends).groupBy(pettyCashSpends.fundId);
+  const totalsByFund = new Map(spendTotals.map((row) => [row.fundId, Number(row.total)]));
+  return rows.map((row) => {
+    const totalSpent = totalsByFund.get(row.fund.id) ?? 0;
+    return { ...row, totalSpent, balance: Number(row.fund.fixedAmount) - totalSpent };
+  });
+}
+
+// Logs a petty cash spend AND its backing expense record AND finance entry
+// in one transaction — a failure partway through (e.g. a category name that
+// no longer fits its column) must never leave a finance_entries row with no
+// matching expense_records/petty_cash_spends row behind it, since that would
+// silently inflate reported Expenses with nothing to show for it anywhere.
+export async function createPettyCashSpendWithExpense(data: {
+  fundId: number; businessDate: string; amount: string; description: string;
+  categoryId: number; categoryName: string; payee: string; createdBy: number;
+}) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  return db.transaction(async (tx) => {
+    await tx.insert(financeEntries).values({
+      date: data.businessDate, stream: "extras", type: "expense", amount: data.amount,
+      description: `Petty cash — ${data.description}`, referenceType: "petty_cash_spend", createdBy: data.createdBy,
+    } as any);
+    const financeRows = await tx.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
+    const financeEntry = financeRows[0]!;
+    await tx.insert(expenseRecords).values({
+      businessDate: data.businessDate, categoryId: data.categoryId, categoryName: data.categoryName, amount: data.amount,
+      payee: data.payee, description: data.description, department: "general", financeEntryId: financeEntry.id, createdBy: data.createdBy,
+    } as any);
+    const expenseRows = await tx.select().from(expenseRecords).orderBy(desc(expenseRecords.id)).limit(1);
+    const expenseRecord = expenseRows[0]!;
+    await tx.insert(pettyCashSpends).values({
+      fundId: data.fundId, businessDate: data.businessDate, amount: data.amount, description: data.description,
+      expenseRecordId: expenseRecord.id, createdBy: data.createdBy,
+    } as any);
+    const spendRows = await tx.select().from(pettyCashSpends).orderBy(desc(pettyCashSpends.id)).limit(1);
+    return spendRows[0]!;
+  });
+}
+
+export async function getPettyCashSpend(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(pettyCashSpends).where(eq(pettyCashSpends.id, id)).limit(1);
+  return rows[0];
+}
+
+// The mirror of createPettyCashSpendWithExpense — removes the spend and its
+// linked expense record and finance entry together, so a manager correction
+// never leaves an orphaned expense behind either.
+export async function deletePettyCashSpendWithExpense(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  return db.transaction(async (tx) => {
+    const spendRows = await tx.select().from(pettyCashSpends).where(eq(pettyCashSpends.id, id)).limit(1);
+    const spend = spendRows[0];
+    if (!spend) return null;
+    if (spend.expenseRecordId) {
+      const expenseRows = await tx.select().from(expenseRecords).where(eq(expenseRecords.id, spend.expenseRecordId)).limit(1);
+      const record = expenseRows[0];
+      await tx.delete(expenseRecords).where(eq(expenseRecords.id, spend.expenseRecordId));
+      if (record?.financeEntryId) await tx.delete(financeEntries).where(eq(financeEntries.id, record.financeEntryId));
+    }
+    await tx.delete(pettyCashSpends).where(eq(pettyCashSpends.id, id));
+    return spend;
+  });
 }

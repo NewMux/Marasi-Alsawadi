@@ -33,6 +33,8 @@ import {
   listAssetCategories, createAssetCategory, updateAssetCategory, deleteAssetCategory, getAssetCategory,
   listAssetRecords, createAssetRecord, getAssetRecord, updateAssetRecord, deleteAssetRecord,
   listAssetAdjustments, createAssetAdjustment, createAssetTransfer, getAssetCategoryBalances,
+  getExpenseCategoryByCode, createPettyCashFund, getPettyCashFund, getPettyCashFundByCustodian, updatePettyCashFundAmount,
+  listPettyCashFundsWithBalances, listPettyCashSpends, createPettyCashSpendWithExpense, getPettyCashSpend, deletePettyCashSpendWithExpense, getPettyCashFundBalance,
 } from "../ticketingDb";
 import { calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
@@ -922,13 +924,81 @@ export const platformRouter = router({
         await logActivity(ctx.user.id, "petty_cash.review", "petty_cash_request", input.id, input.status);
       }),
     }),
+    // A manager hands a fixed cash float to a dedicated `petty_cash`-role
+    // account (created here, not through admin.createUser). That account can
+    // only ever see its own fund and log spending against it — it can never
+    // change the fixed amount. Each spend also posts a real expense record
+    // under the "Petty Cash" expense category, so it reduces the
+    // Revenue-vs-Expense Net Result like any other real expense.
+    pettyCashFunds: router({
+      list: managerProcedure.query(() => listPettyCashFundsWithBalances()),
+      createCustodian: managerProcedure.input(z.object({
+        username: z.string().trim().min(3).max(64), name: z.string().trim().min(2).max(128),
+        temporaryPassword: z.string().min(12).max(256),
+        fixedAmount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
+      })).mutation(async ({ input, ctx }) => {
+        const username = input.username.toLowerCase();
+        if (await getUserByUsername(username)) throw new TRPCError({ code: "CONFLICT", message: "Username already exists" });
+        const user = await createLocalUser({ username, name: input.name, role: "petty_cash", passwordHash: await hashPassword(input.temporaryPassword), mustChangePassword: true });
+        if (!user) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Account could not be created" });
+        const fund = await createPettyCashFund({ custodianUserId: user.id, fixedAmount: input.fixedAmount, createdBy: ctx.user.id });
+        await logActivity(ctx.user.id, "petty_cash_fund.create", "petty_cash_fund", fund.id, `${username}:${input.fixedAmount}`);
+        return { fund, custodian: { id: user.id, name: user.name, username: user.username } };
+      }),
+      updateAmount: managerProcedure.input(z.object({
+        id: z.number().int().positive(), fixedAmount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
+      })).mutation(async ({ input, ctx }) => {
+        const fund = await getPettyCashFund(input.id);
+        if (!fund) throw new TRPCError({ code: "NOT_FOUND", message: "Petty cash fund was not found" });
+        const updated = await updatePettyCashFundAmount(input.id, input.fixedAmount);
+        await logActivity(ctx.user.id, "petty_cash_fund.update_amount", "petty_cash_fund", input.id, input.fixedAmount);
+        return updated;
+      }),
+      spendsFor: managerProcedure.input(z.object({ fundId: z.number().int().positive() })).query(({ input }) => listPettyCashSpends(input.fundId)),
+      mine: protectedProcedure.query(async ({ ctx }) => {
+        if (ctx.user.role !== "petty_cash") return null;
+        const fund = await getPettyCashFundByCustodian(ctx.user.id);
+        if (!fund) return null;
+        const balance = await getPettyCashFundBalance(fund.id);
+        return { fund, balance };
+      }),
+      mineSpends: protectedProcedure.query(async ({ ctx }) => {
+        if (ctx.user.role !== "petty_cash") return [];
+        const fund = await getPettyCashFundByCustodian(ctx.user.id);
+        if (!fund) return [];
+        return listPettyCashSpends(fund.id);
+      }),
+      spend: protectedProcedure.input(z.object({
+        businessDate: z.string(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
+        description: z.string().min(1).max(256),
+      })).mutation(async ({ input, ctx }) => {
+        if (ctx.user.role !== "petty_cash") throw new TRPCError({ code: "FORBIDDEN", message: "Only a petty cash custodian can log spending" });
+        const fund = await getPettyCashFundByCustodian(ctx.user.id);
+        if (!fund || !fund.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "No active petty cash fund for this account" });
+        const balance = await getPettyCashFundBalance(fund.id);
+        if (Number(input.amount) > balance) throw new TRPCError({ code: "BAD_REQUEST", message: "This would exceed the remaining petty cash balance" });
+        const category = await getExpenseCategoryByCode("PETTY_CASH");
+        if (!category) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Petty Cash expense category is missing" });
+        const spend = await createPettyCashSpendWithExpense({
+          fundId: fund.id, businessDate: input.businessDate, amount: input.amount, description: input.description,
+          categoryId: category.id, categoryName: category.name, payee: ctx.user.name || ctx.user.username || "Petty cash custodian", createdBy: ctx.user.id,
+        });
+        await logActivity(ctx.user.id, "petty_cash_spend.create", "petty_cash_spend", spend.id, input.amount);
+        return spend;
+      }),
+      deleteSpend: managerProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+        const spend = await deletePettyCashSpendWithExpense(input.id);
+        if (!spend) throw new TRPCError({ code: "NOT_FOUND", message: "Petty cash spend was not found" });
+        await logActivity(ctx.user.id, "petty_cash_spend.delete", "petty_cash_spend", input.id);
+      }),
+    }),
   }),
 
   admin: router({
     listUsers: superAdminProcedure.query(async () => (await listUsers()).map(({ passwordHash: _passwordHash, ...user }) => user)),
     createUser: superAdminProcedure.input(z.object({
       username: z.string().trim().min(3).max(64), name: z.string().trim().min(2).max(128), email: z.string().email().nullable().optional(),
-      role: z.enum(["staff", "manager", "admin", "guard", "super_admin"]), temporaryPassword: z.string().min(12).max(256),
+      role: z.enum(["staff", "manager", "admin", "guard", "super_admin", "petty_cash"]), temporaryPassword: z.string().min(12).max(256),
     })).mutation(async ({ input, ctx }) => {
       const username = input.username.toLowerCase();
       if (await getUserByUsername(username)) throw new TRPCError({ code: "CONFLICT", message: "Username already exists" });
@@ -940,7 +1010,7 @@ export const platformRouter = router({
     }),
     updateUser: superAdminProcedure.input(z.object({
       id: z.number(), name: z.string().trim().min(2).max(128).optional(), email: z.string().email().nullable().optional(),
-      role: z.enum(["staff", "manager", "admin", "guard", "super_admin"]).optional(), isActive: z.boolean().optional(),
+      role: z.enum(["staff", "manager", "admin", "guard", "super_admin", "petty_cash"]).optional(), isActive: z.boolean().optional(),
     })).mutation(async ({ input, ctx }) => {
       if (input.id === ctx.user.id && (input.isActive === false || (input.role && input.role !== "super_admin"))) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot deactivate or demote your own Super Admin account" });
@@ -961,7 +1031,7 @@ export const platformRouter = router({
         return { success: true } as const;
       }),
     updateUserRole: superAdminProcedure.input(z.object({
-      id: z.number(), role: z.enum(["staff", "manager", "admin", "guard", "super_admin"]),
+      id: z.number(), role: z.enum(["staff", "manager", "admin", "guard", "super_admin", "petty_cash"]),
     })).mutation(async ({ input, ctx }) => {
       if (input.id === ctx.user.id && input.role !== "super_admin") throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot demote your own Super Admin account" });
       await updateUserRole(input.id, input.role);

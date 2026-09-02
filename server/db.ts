@@ -41,7 +41,7 @@ export async function getUserByUsername(username: string) {
 
 export async function createLocalUser(data: {
   username: string; passwordHash: string; name: string; email?: string | null;
-  role: "staff" | "manager" | "admin" | "guard" | "super_admin";
+  role: "staff" | "manager" | "admin" | "guard" | "super_admin" | "petty_cash";
   mustChangePassword?: boolean; isActive?: boolean;
 }) {
   const db = await getDb(); if (!db) throw new Error("Database is not configured");
@@ -56,7 +56,7 @@ export async function createLocalUser(data: {
 }
 
 export async function updateLocalUser(id: number, data: Partial<{
-  name: string; email: string | null; role: "staff" | "manager" | "admin" | "guard" | "super_admin";
+  name: string; email: string | null; role: "staff" | "manager" | "admin" | "guard" | "super_admin" | "petty_cash";
   passwordHash: string; mustChangePassword: boolean; isActive: boolean; lastSignedIn: Date;
 }>) {
   const db = await getDb(); if (!db) throw new Error("Database is not configured");
@@ -494,7 +494,7 @@ export async function listUsers() {
   const db = await getDb(); if (!db) return [];
   return db.select().from(users).orderBy(users.name);
 }
-export async function updateUserRole(id: number, role: "staff" | "manager" | "admin" | "guard" | "super_admin") {
+export async function updateUserRole(id: number, role: "staff" | "manager" | "admin" | "guard" | "super_admin" | "petty_cash") {
   const db = await getDb(); if (!db) throw new Error("no db");
   await db.update(users).set({ role }).where(eq(users.id, id));
 }

@@ -40,3 +40,27 @@ describe("Super Admin configuration boundary", () => {
     await expect(caller.platform.finance.expenseCategories.list()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
   });
 });
+
+describe("Petty cash custodian boundary", () => {
+  const custodian = { id: 5, role: "petty_cash", name: "Custodian", passwordHash: null };
+
+  it("denies a petty cash custodian from manager-only fund actions", async () => {
+    const caller = callerFor(custodian);
+    await expectForbidden(caller.platform.finance.pettyCashFunds.list());
+    await expectForbidden(caller.platform.finance.pettyCashFunds.createCustodian({ username: "new", name: "New Person", temporaryPassword: "temporary-password-123", fixedAmount: "50.000" }));
+    await expectForbidden(caller.platform.finance.pettyCashFunds.updateAmount({ id: 1, fixedAmount: "999.000" }));
+  });
+
+  it("denies non-custodian roles from logging petty cash spending", async () => {
+    for (const user of [staff, manager, admin, guard]) {
+      const caller = callerFor(user);
+      await expectForbidden(caller.platform.finance.pettyCashFunds.spend({ businessDate: "2026-01-01", amount: "5.000", description: "Test" }));
+    }
+  });
+
+  it("returns null/empty for a custodian's own fund query rather than another account's data", async () => {
+    const caller = callerFor(staff);
+    await expect(caller.platform.finance.pettyCashFunds.mine()).resolves.toBeNull();
+    await expect(caller.platform.finance.pettyCashFunds.mineSpends()).resolves.toEqual([]);
+  });
+});

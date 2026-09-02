@@ -27,6 +27,8 @@ const MIGRATION_FILES = [
   "drizzle/migrations/0015_add_revenue_adjustments.sql",
   "drizzle/migrations/0016_add_ticket_purchase_refunds.sql",
   "drizzle/migrations/0017_add_assets.sql",
+  "drizzle/migrations/0018_add_petty_cash_funds.sql",
+  "drizzle/migrations/0019_widen_record_category_name_columns.sql",
 ];
 
 async function main() {

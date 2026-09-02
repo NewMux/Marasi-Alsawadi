@@ -2,7 +2,7 @@ import { isLocalMode } from "@/lib/localMode";
 import { trpc } from "@/lib/trpc";
 import { useCallback, useMemo } from "react";
 
-type Role = "staff" | "manager" | "admin" | "guard" | "super_admin";
+type Role = "staff" | "manager" | "admin" | "guard" | "super_admin" | "petty_cash";
 type LocalUser = { id: number; name: string; email: string; role: Role; mustChangePassword: boolean; isLocal: true };
 
 export function useAuth() {

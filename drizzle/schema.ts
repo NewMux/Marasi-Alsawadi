@@ -9,7 +9,7 @@ export const users = mysqlTable("users", {
   name: text("name"),
   email: varchar("email", { length: 320 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
-  role: mysqlEnum("role", ["staff", "manager", "admin", "guard", "super_admin"]).default("staff").notNull(),
+  role: mysqlEnum("role", ["staff", "manager", "admin", "guard", "super_admin", "petty_cash"]).default("staff").notNull(),
   username: varchar("username", { length: 64 }).unique(),
   passwordHash: text("passwordHash"),
   mustChangePassword: boolean("mustChangePassword").default(true).notNull(),
@@ -494,7 +494,7 @@ export const expenseRecords = mysqlTable("expense_records", {
   id: int("id").autoincrement().primaryKey(),
   businessDate: date("businessDate").notNull(),
   categoryId: int("categoryId"),
-  categoryName: varchar("categoryName", { length: 96 }).notNull(),
+  categoryName: varchar("categoryName", { length: 160 }).notNull(),
   amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
   payee: varchar("payee", { length: 128 }),
   description: varchar("description", { length: 256 }).notNull(),
@@ -528,7 +528,7 @@ export const revenueRecords = mysqlTable("revenue_records", {
   id: int("id").autoincrement().primaryKey(),
   businessDate: date("businessDate").notNull(),
   categoryId: int("categoryId"),
-  categoryName: varchar("categoryName", { length: 96 }).notNull(),
+  categoryName: varchar("categoryName", { length: 160 }).notNull(),
   amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
   source: varchar("source", { length: 128 }),
   description: varchar("description", { length: 256 }).notNull(),
@@ -601,7 +601,7 @@ export const assetRecords = mysqlTable("asset_records", {
   id: int("id").autoincrement().primaryKey(),
   businessDate: date("businessDate").notNull(),
   categoryId: int("categoryId"),
-  categoryName: varchar("categoryName", { length: 96 }).notNull(),
+  categoryName: varchar("categoryName", { length: 160 }).notNull(),
   amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
   vendor: varchar("vendor", { length: 128 }),
   description: varchar("description", { length: 256 }).notNull(),
@@ -630,6 +630,36 @@ export const assetAdjustments = mysqlTable("asset_adjustments", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 export type AssetAdjustment = typeof assetAdjustments.$inferSelect;
+
+// ─── Petty Cash Custodian Funds ─────────────────────────────────────────────
+// A manager hands a fixed cash float to one custodian (a dedicated
+// `petty_cash`-role account that can only see its own fund). The custodian
+// logs spending against it; each spend also posts a real expense record
+// under the existing "Petty Cash" expense category, so it reduces the
+// Revenue-vs-Expense Net Result like any other real expense. The custodian
+// can never change fixedAmount — only manager/admin/super_admin can.
+export const pettyCashFunds = mysqlTable("petty_cash_funds", {
+  id: int("id").autoincrement().primaryKey(),
+  custodianUserId: int("custodianUserId").notNull().unique(),
+  fixedAmount: decimal("fixedAmount", { precision: 12, scale: 3 }).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type PettyCashFund = typeof pettyCashFunds.$inferSelect;
+
+export const pettyCashSpends = mysqlTable("petty_cash_spends", {
+  id: int("id").autoincrement().primaryKey(),
+  fundId: int("fundId").notNull(),
+  businessDate: date("businessDate").notNull(),
+  amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
+  description: varchar("description", { length: 256 }).notNull(),
+  expenseRecordId: int("expenseRecordId"),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type PettyCashSpend = typeof pettyCashSpends.$inferSelect;
 
 // ─── Activity Log ─────────────────────────────────────────────────────────────
 export const activityLog = mysqlTable("activity_log", {
