@@ -132,6 +132,21 @@ export async function listPrdTicketLines(purchaseId: number) {
   return db.select().from(ticketPurchaseLines).where(eq(ticketPurchaseLines.purchaseId, purchaseId)).orderBy(ticketPurchaseLines.id);
 }
 
+export async function getPrdTicketPurchase(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(ticketPurchases).where(eq(ticketPurchases.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function refundPrdTicketPurchase(id: number, refundedBy: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const existing = await getPrdTicketPurchase(id);
+  if (!existing) throw new Error("Ticket purchase was not found");
+  if (existing.status === "refunded") throw new Error("This purchase has already been returned");
+  await db.update(ticketPurchases).set({ status: "refunded", refundedAt: new Date(), refundedBy } as any).where(eq(ticketPurchases.id, id));
+  return getPrdTicketPurchase(id);
+}
+
 export async function createServiceRate(data: typeof serviceRates.$inferInsert) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   await db.insert(serviceRates).values(data);

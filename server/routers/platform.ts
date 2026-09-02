@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
-  createAquaTicket, createDailyTask, createFinanceEntry, createGuest, createLocalUser, createPettyCashRequest, deleteFinanceEntry,
+  createAquaTicket, createDailyTask, createFinanceEntry, createGuest, createLocalUser, createPettyCashRequest, deleteFinanceEntry, deleteFinanceEntryByReference,
   createHousekeepingTask, createInventoryItem, createMaintenanceRequest,
   createLeaveRequest, createReservation, createShift, createStaffProfile, createUnit,
   createWorkbookImport, getActivityLog, getAquaAttendance, getAquaCapacity, getFinanceEntry,
@@ -25,7 +25,7 @@ import {
   listSalesTransactionLines, listSalesTransactions, listServiceRates, listTicketFees, recordTicketScan, replaceFeeAssignments,
   searchCustomers, updateExpenseCategory, updateExpenseRecord, updateServiceRate, updateTicketFee, deleteServiceRate,
   createPrdTicketPurchase, listPrdRates, listTicketDiscountTiers, createTicketDiscountTier, updateTicketDiscountTier, deleteTicketDiscountTier,
-  listPrdTicketPurchases, listPrdTicketLines, getCustomerById,
+  listPrdTicketPurchases, listPrdTicketLines, getCustomerById, refundPrdTicketPurchase,
   listExpenseAdjustments, createExpenseAdjustment, createExpenseTransfer, getExpenseCategoryBalances,
   listRevenueCategories, createRevenueCategory, updateRevenueCategory, deleteRevenueCategory, getRevenueCategory,
   listRevenueRecords, createRevenueRecord, getRevenueRecord, updateRevenueRecord, deleteRevenueRecord,
@@ -247,6 +247,12 @@ export const platformRouter = router({
       await createFinanceEntry({ date: input.visitDate, stream: "aqua_park", type: "revenue", amount: result.purchase.totalAmount, description: `Ticket purchase – ${customer.fullName}`, referenceId: result.purchase.id, referenceType: "prd_ticket_purchase", createdBy: ctx.user.id } as any);
       await logActivity(ctx.user.id, "prd_ticket_purchase.issue", "ticket_purchase", result.purchase.id, `${result.lines.map((line) => line.ticketNumber).join(",")}:${result.purchase.totalAmount}`);
       return { ...result, customer };
+    }),
+    purchaseRefund: protectedProcedure.input(z.object({ purchaseId: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+      const purchase = await refundPrdTicketPurchase(input.purchaseId, ctx.user.id);
+      await deleteFinanceEntryByReference("prd_ticket_purchase", input.purchaseId);
+      await logActivity(ctx.user.id, "prd_ticket_purchase.refund", "ticket_purchase", input.purchaseId, String(purchase?.totalAmount ?? ""));
+      return purchase;
     }),
     list: protectedProcedure.input(z.object({
       from: z.string().optional(), to: z.string().optional(), customerQuery: z.string().optional(),

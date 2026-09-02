@@ -395,6 +395,10 @@ export async function updateFinanceEntry(id: number, data: Partial<typeof financ
   const db = await getDb(); if (!db) throw new Error("no db");
   await db.update(financeEntries).set(data).where(eq(financeEntries.id, id));
 }
+export async function deleteFinanceEntryByReference(referenceType: string, referenceId: number) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.delete(financeEntries).where(and(eq(financeEntries.referenceType, referenceType), eq(financeEntries.referenceId, referenceId)));
+}
 export async function deleteFinanceEntry(id: number) {
   const db = await getDb(); if (!db) throw new Error("no db");
   await db.delete(financeEntries).where(eq(financeEntries.id, id));

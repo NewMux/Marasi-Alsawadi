@@ -165,6 +165,9 @@ export const ticketPurchases = mysqlTable("ticket_purchases", {
   paymentMethod: mysqlEnum("paymentMethod", ["cash", "card", "bank", "mixed"]).default("cash").notNull(),
   notes: text("notes"),
   issuedBy: int("issuedBy").notNull(),
+  status: mysqlEnum("status", ["issued", "refunded"]).default("issued").notNull(),
+  refundedAt: timestamp("refundedAt"),
+  refundedBy: int("refundedBy"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 export type TicketPurchase = typeof ticketPurchases.$inferSelect;
