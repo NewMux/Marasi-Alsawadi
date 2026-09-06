@@ -628,11 +628,15 @@ export async function createFacilityBooking(data: {
   });
 }
 
-export async function listFacilityBookings(from?: string, to?: string) {
+export async function listFacilityBookings(from?: string, to?: string, query?: string) {
   const db = await getDb(); if (!db) return [];
   const conditions: any[] = [];
   if (from) conditions.push(sql`${facilityBookings.bookingDate} >= ${from}`);
   if (to) conditions.push(sql`${facilityBookings.bookingDate} <= ${to}`);
+  if (query?.trim()) {
+    const pattern = `%${query.trim()}%`;
+    conditions.push(or(sql`LOWER(${facilityBookings.customerName}) LIKE LOWER(${pattern})`, sql`LOWER(${facilityBookings.facilityTypeName}) LIKE LOWER(${pattern})`));
+  }
   const base = db.select().from(facilityBookings).orderBy(desc(facilityBookings.bookingDate), desc(facilityBookings.id));
   return conditions.length ? base.where(and(...conditions)) : base;
 }
@@ -640,6 +644,52 @@ export async function listFacilityBookings(from?: string, to?: string) {
 export async function listFacilityBookingAddons(bookingId: number) {
   const db = await getDb(); if (!db) return [];
   return db.select().from(facilityBookingAddons).where(eq(facilityBookingAddons.bookingId, bookingId));
+}
+
+export async function getFacilityBooking(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(facilityBookings).where(eq(facilityBookings.id, id)).limit(1);
+  return rows[0];
+}
+
+// PRD Round 3, Section 5.2/5.3: staff can log an add-on service against a
+// booking created earlier ("Add-ons Only") or from that booking's own
+// details screen — either way this appends a new, separate revenue line
+// item linked to the existing booking rather than editing its original
+// facilityAmount, preserving an audit trail of what was added and when.
+// addonsAmount/totalAmount are kept as a running summary for display; the
+// original facilityAmount is never touched again after creation.
+export async function addFacilityBookingAddons(data: {
+  bookingId: number; businessDate: string; createdBy: number;
+  addons: Array<{ addonServiceId: number; addonServiceName: string; categoryId: number; categoryName: string; quantity: string; amount: string }>;
+}) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  return db.transaction(async (tx) => {
+    const bookingRows = await tx.select().from(facilityBookings).where(eq(facilityBookings.id, data.bookingId)).limit(1);
+    const booking = bookingRows[0];
+    if (!booking) throw new Error("Facility booking was not found");
+    let addonsAmountMinor = moneyToMinor(String(booking.addonsAmount));
+    for (const addon of data.addons) {
+      await tx.insert(financeEntries).values({
+        date: data.businessDate, stream: "extras", type: "revenue", amount: addon.amount,
+        description: `Facility booking add-on — ${addon.addonServiceName}`, referenceType: "facility_booking_addon", createdBy: data.createdBy,
+      } as any);
+      const financeRows = await tx.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
+      await tx.insert(revenueRecords).values({
+        businessDate: data.businessDate, categoryId: addon.categoryId, categoryName: addon.categoryName, amount: addon.amount,
+        description: `Facility booking add-on — ${addon.addonServiceName}`, financeEntryId: financeRows[0]!.id, createdBy: data.createdBy,
+      } as any);
+      await tx.insert(facilityBookingAddons).values({
+        bookingId: data.bookingId, addonServiceId: addon.addonServiceId, addonServiceName: addon.addonServiceName, quantity: addon.quantity, amount: addon.amount,
+      } as any);
+      addonsAmountMinor += moneyToMinor(addon.amount);
+    }
+    const addonsAmount = minorToMoney(addonsAmountMinor);
+    const totalAmount = minorToMoney(moneyToMinor(String(booking.facilityAmount)) + addonsAmountMinor);
+    await tx.update(facilityBookings).set({ addonsAmount, totalAmount }).where(eq(facilityBookings.id, data.bookingId));
+    const updatedRows = await tx.select().from(facilityBookings).where(eq(facilityBookings.id, data.bookingId)).limit(1);
+    return updatedRows[0]!;
+  });
 }
 
 export async function deleteExpenseCategory(id: number) {

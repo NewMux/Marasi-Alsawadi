@@ -34,6 +34,7 @@ const MIGRATION_FILES = [
   "drizzle/migrations/0022_add_petty_cash_spend_attachment.sql",
   "drizzle/migrations/0023_add_partner_entities.sql",
   "drizzle/migrations/0024_add_facility_bookings.sql",
+  "drizzle/migrations/0025_add_revenue_asset_attachments.sql",
 ];
 
 async function main() {

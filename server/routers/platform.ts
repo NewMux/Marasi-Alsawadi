@@ -28,7 +28,7 @@ import {
   listPartnerEntities, getPartnerEntity, createPartnerEntity, updatePartnerEntity, deletePartnerEntity,
   listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
   listAddonServices, getAddonService, createAddonService, updateAddonService, deleteAddonService,
-  findOrCreateRevenueCategoryForFacility, createFacilityBooking, listFacilityBookings, listFacilityBookingAddons,
+  findOrCreateRevenueCategoryForFacility, createFacilityBooking, listFacilityBookings, listFacilityBookingAddons, getFacilityBooking, addFacilityBookingAddons,
   listPrdTicketPurchases, listPrdTicketLines, getCustomerById, refundPrdTicketPurchase,
   listExpenseAdjustments, createExpenseAdjustment, createExpenseTransfer, getExpenseCategoryBalances,
   listRevenueCategories, createRevenueCategory, updateRevenueCategory, deleteRevenueCategory, getRevenueCategory,
@@ -320,9 +320,14 @@ export const platformRouter = router({
 
   facilityBookings: router({
     catalog: protectedProcedure.query(async () => ({ facilityTypes: await listFacilityTypes(false), addonServices: await listAddonServices(false) })),
-    list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional()).query(async ({ input }) => {
-      const bookings = await listFacilityBookings(input?.from, input?.to);
+    list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional(), query: z.string().optional() }).optional()).query(async ({ input }) => {
+      const bookings = await listFacilityBookings(input?.from, input?.to, input?.query);
       return Promise.all((bookings as any[]).map(async (booking) => ({ booking, addons: await listFacilityBookingAddons(booking.id) })));
+    }),
+    get: protectedProcedure.input(z.object({ id: z.number().int().positive() })).query(async ({ input }) => {
+      const booking = await getFacilityBooking(input.id);
+      if (!booking) throw new TRPCError({ code: "NOT_FOUND", message: "Facility booking was not found" });
+      return { booking, addons: await listFacilityBookingAddons(booking.id) };
     }),
     preview: protectedProcedure.input(z.object({
       facilityTypeId: z.number().int().positive(), quantity: z.number().positive(),
@@ -345,6 +350,27 @@ export const platformRouter = router({
       });
       await logActivity(ctx.user.id, "facility_booking.create", "facility_booking", booking.id, `${resolved.facility.code}:${booking.totalAmount}`);
       return { booking, addons: await listFacilityBookingAddons(booking.id) };
+    }),
+    // PRD Round 3, Section 5.2/5.3: log an add-on against a booking created
+    // earlier — from the "Add-ons Only" flow (no facility re-selected) or a
+    // booking's own details screen — without touching its original amount.
+    addAddon: protectedProcedure.input(z.object({
+      bookingId: z.number().int().positive(), businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      addons: z.array(z.object({ addonServiceId: z.number().int().positive(), quantity: z.number().positive() })).min(1),
+    })).mutation(async ({ input, ctx }) => {
+      const booking = await getFacilityBooking(input.bookingId);
+      if (!booking) throw new TRPCError({ code: "NOT_FOUND", message: "Facility booking was not found" });
+      const addons = await Promise.all(input.addons.map(async (line) => {
+        const addon = await getAddonService(line.addonServiceId);
+        if (!addon || !addon.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "One of the selected add-on services is no longer active" });
+        const quantity = addon.pricingMethod === "fixed" ? 1 : line.quantity;
+        const category = await getRevenueCategory(addon.revenueCategoryId);
+        if (!category) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "This add-on's revenue category is missing" });
+        return { addonServiceId: addon.id, addonServiceName: addon.name, categoryId: category.id, categoryName: category.name, quantity: String(quantity), amount: calculateFacilityLineAmount(String(addon.rate), quantity) };
+      }));
+      const updated = await addFacilityBookingAddons({ bookingId: booking.id, businessDate: input.businessDate, addons, createdBy: ctx.user.id });
+      await logActivity(ctx.user.id, "facility_booking.add_addon", "facility_booking", booking.id, addons.map((a) => a.addonServiceId).join(","));
+      return { booking: updated, addons: await listFacilityBookingAddons(booking.id) };
     }),
   }),
 
@@ -891,15 +917,20 @@ export const platformRouter = router({
         businessDate: z.string(), categoryId: z.number(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
         source: z.string().max(128).optional(), description: z.string().min(1),
         receiptNumber: z.string().max(64).optional(),
+        attachment: z.object({ dataBase64: z.string(), mimeType: z.string(), fileName: z.string().max(256) }).optional(),
       })).mutation(async ({ input, ctx }) => {
         const category = await getRevenueCategory(input.categoryId);
         if (!category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active revenue category" });
+        if (input.attachment && !isAllowedAttachmentMimeType(input.attachment.mimeType)) throw new TRPCError({ code: "BAD_REQUEST", message: "Attachment must be a JPEG, PNG, WEBP image, or a PDF" });
         const financeEntry = await createFinanceEntry({
           date: input.businessDate, stream: "extras", type: "revenue", amount: input.amount,
           description: input.description, referenceType: "revenue_record", createdBy: ctx.user.id,
         } as any);
+        const { attachment, ...revenueInput } = input;
+        const saved = attachment ? await saveExpenseAttachment(attachment) : null;
         const revenue = await createRevenueRecord({
-          ...input, businessDate: input.businessDate as any, categoryName: category.name,
+          ...revenueInput, businessDate: input.businessDate as any, categoryName: category.name,
+          attachmentPath: saved?.attachmentPath ?? null, attachmentOriginalName: saved?.attachmentOriginalName ?? null,
           financeEntryId: financeEntry.id, createdBy: ctx.user.id,
         } as any);
         await logActivity(ctx.user.id, "revenue.create", "revenue_record", revenue.id, `${category.code}:${input.amount}`);
@@ -961,11 +992,16 @@ export const platformRouter = router({
         businessDate: z.string(), categoryId: z.number(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
         vendor: z.string().max(128).optional(), description: z.string().min(1),
         receiptNumber: z.string().max(64).optional(),
+        attachment: z.object({ dataBase64: z.string(), mimeType: z.string(), fileName: z.string().max(256) }).optional(),
       })).mutation(async ({ input, ctx }) => {
         const category = await getAssetCategory(input.categoryId);
         if (!category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active asset category" });
+        if (input.attachment && !isAllowedAttachmentMimeType(input.attachment.mimeType)) throw new TRPCError({ code: "BAD_REQUEST", message: "Attachment must be a JPEG, PNG, WEBP image, or a PDF" });
+        const { attachment, ...assetInput } = input;
+        const saved = attachment ? await saveExpenseAttachment(attachment) : null;
         const asset = await createAssetRecord({
-          ...input, businessDate: input.businessDate as any, categoryName: category.name, createdBy: ctx.user.id,
+          ...assetInput, businessDate: input.businessDate as any, categoryName: category.name,
+          attachmentPath: saved?.attachmentPath ?? null, attachmentOriginalName: saved?.attachmentOriginalName ?? null, createdBy: ctx.user.id,
         } as any);
         await logActivity(ctx.user.id, "asset.create", "asset_record", asset.id, `${category.code}:${input.amount}`);
         return asset;
