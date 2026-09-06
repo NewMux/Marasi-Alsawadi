@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Plus, Printer, Ticket, Trash2, Undo2, UserRound, Users } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
@@ -15,13 +15,25 @@ const dateLabel = (value: unknown) => value ? new Date(value as string).toLocale
 type TicketType = "waterpark" | "companion";
 type FreeEntryCategory = "" | "under_two" | "person_of_determination" | "senior";
 const freeKeys: Record<Exclude<FreeEntryCategory, "">, TranslationKey> = { under_two: "tickets.underTwo", person_of_determination: "tickets.pod", senior: "tickets.senior" };
-type TicketLine = { id: number; rateId: string; ticketType: TicketType; freeEntryCategory: FreeEntryCategory };
 type GroupLine = { id: number; ticketType: TicketType; freeEntryCategory: FreeEntryCategory; quantity: number };
 type PurchaseMode = "individual" | "group";
 type FormState = { customerId: string; customerName: string; customerPhone: string; customerEmail: string; customerCountry: string; groupName: string; visitDate: string; paymentMethod: "cash" | "card" | "bank" | "mixed"; notes: string };
 const blankForm: FormState = { customerId: "", customerName: "", customerPhone: "", customerEmail: "", customerCountry: DEFAULT_COUNTRY, groupName: "", visitDate: today, paymentMethod: "cash", notes: "" };
-const blankLine = (id: number): TicketLine => ({ id, rateId: "", ticketType: "waterpark", freeEntryCategory: "" });
 const blankGroupLine = (id: number): GroupLine => ({ id, ticketType: "waterpark", freeEntryCategory: "", quantity: 1 });
+
+// The Individuals/Family tab shows every visitor category on one screen at
+// once (PRD round 2) instead of an "add visitor" list — a walk-in family
+// only ever needs these five, known in advance, so a fixed grid of
+// quantity fields replaces the old repeatable per-visitor line editor.
+type CategoryKey = "waterparkChargeable" | "companion" | "senior" | "personOfDetermination" | "underTwo";
+const individualCategoryRows: Array<{ key: CategoryKey; ticketType: TicketType; freeEntryCategory: FreeEntryCategory; labelKey: TranslationKey }> = [
+  { key: "waterparkChargeable", ticketType: "waterpark", freeEntryCategory: "", labelKey: "tickets.waterparkChargeableCategory" },
+  { key: "companion", ticketType: "companion", freeEntryCategory: "", labelKey: "tickets.companion" },
+  { key: "senior", ticketType: "waterpark", freeEntryCategory: "senior", labelKey: "tickets.senior" },
+  { key: "personOfDetermination", ticketType: "waterpark", freeEntryCategory: "person_of_determination", labelKey: "tickets.pod" },
+  { key: "underTwo", ticketType: "waterpark", freeEntryCategory: "under_two", labelKey: "tickets.underTwo" },
+];
+const blankCategoryQuantities: Record<CategoryKey, string> = { waterparkChargeable: "", companion: "", senior: "", personOfDetermination: "", underTwo: "" };
 
 function Step({ number, title, detail, active }: { number: string; title: string; detail: string; active?: boolean }) {
   return <div className={cx("flex items-start gap-3 rounded-2xl border p-4", active ? "border-[#bfe7ee] bg-[#eaf6f8]" : "border-divider bg-white")}><span className={cx("grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs font-semibold", active ? "bg-accent text-white" : "bg-fill text-body")}>{number}</span><div><b className="block text-xs text-ink">{title}</b><span className="mt-1 block text-[11px] leading-4 text-muted">{detail}</span></div></div>;
@@ -50,7 +62,7 @@ export default function TicketDeskPage() {
   const [ticketQuery, setTicketQuery] = useState("");
   const [form, setForm] = useState<FormState>(blankForm);
   const [mode, setMode] = useState<PurchaseMode>("individual");
-  const [lines, setLines] = useState<TicketLine[]>([blankLine(1)]);
+  const [categoryQuantities, setCategoryQuantities] = useState<Record<CategoryKey, string>>({ ...blankCategoryQuantities });
   const [groupLines, setGroupLines] = useState<GroupLine[]>([blankGroupLine(1)]);
   const [attemptedSubmit, setAttemptedSubmit] = useState(false);
   const [created, setCreated] = useState<any>(null);
@@ -67,25 +79,22 @@ export default function TicketDeskPage() {
   const resolveRateId = (ticketType: TicketType) => { const matches = ratesForType(ticketType); return matches.length ? String(matches[0].id) : ""; };
   const singleRate = (ticketType: TicketType) => { const matches = ratesForType(ticketType); return matches.length === 1 ? matches[0] : null; };
 
-  // Once rates load, silently fill in the rate for any individual line that
-  // hasn't had one chosen yet — most resorts only have one price per ticket
-  // type, so there is nothing for staff to pick (see 2.1: the "approved
-  // base price" dropdown was flagged as a redundant extra click).
-  useEffect(() => {
-    if (!rates.length) return;
-    setLines((current) => current.map((line) => line.rateId ? line : { ...line, rateId: resolveRateId(line.ticketType) }));
-  }, [rates.length]);
-
-  const validLines = lines.filter((line) => rates.some((rate) => String(rate.id) === line.rateId));
   const previewLines = mode === "individual"
-    ? lines.map((line) => ({ rateId: Number(line.rateId || 0), ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory || null })).filter((line) => line.rateId > 0)
+    ? individualCategoryRows.flatMap((row) => {
+        const rateId = Number(resolveRateId(row.ticketType) || 0);
+        const quantity = Math.max(0, Math.floor(Number(categoryQuantities[row.key]) || 0));
+        if (!rateId || !quantity) return [];
+        return Array.from({ length: quantity }, () => ({ rateId, ticketType: row.ticketType, freeEntryCategory: row.freeEntryCategory || null }));
+      })
     : groupLines.flatMap((line) => {
         const rateId = Number(resolveRateId(line.ticketType) || 0);
         const quantity = Math.max(0, Math.floor(line.quantity || 0));
         if (!rateId || !quantity) return [];
         return Array.from({ length: quantity }, () => ({ rateId, ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory || null }));
       });
-  const expectedLineCount = mode === "individual" ? lines.length : groupLines.reduce((sum, line) => sum + Math.max(0, Math.floor(line.quantity || 0)), 0);
+  const expectedLineCount = mode === "individual"
+    ? individualCategoryRows.reduce((sum, row) => sum + Math.max(0, Math.floor(Number(categoryQuantities[row.key]) || 0)), 0)
+    : groupLines.reduce((sum, line) => sum + Math.max(0, Math.floor(line.quantity || 0)), 0);
   const { data: pricing } = trpc.platform.tickets.purchasePreview.useQuery({ lines: previewLines }, { enabled: previewLines.length === expectedLineCount && expectedLineCount > 0 && expectedLineCount <= maxTicketsPerPurchase });
   const groupedPurchases = useMemo(() => {
     const map = new Map<number, any>();
@@ -94,21 +103,14 @@ export default function TicketDeskPage() {
   }, [purchaseRows]);
   const issue = trpc.platform.tickets.purchaseCreate.useMutation({
     onSuccess: (result: any) => {
-      setCreated(result); setForm((current) => ({ ...blankForm, visitDate: current.visitDate })); setLines([blankLine(1)]); setGroupLines([blankGroupLine(1)]); setAttemptedSubmit(false); setCustomerQuery("");
+      setCreated(result); setForm((current) => ({ ...blankForm, visitDate: current.visitDate })); setCategoryQuantities({ ...blankCategoryQuantities }); setGroupLines([blankGroupLine(1)]); setAttemptedSubmit(false); setCustomerQuery("");
       utils.platform.tickets.purchaseList.invalidate(); utils.platform.customers.search.invalidate(); utils.platform.finance.invalidate();
       toast.success(`${result.lines.length} ticket${result.lines.length === 1 ? "" : "s"} issued`);
     },
     onError: (error) => toast.error(error.message),
   });
   const selectCustomer = (customer: any) => { setForm((current) => ({ ...current, customerId: String(customer.id), customerName: "", customerPhone: "" })); setCustomerQuery(""); };
-  const updateLine = (id: number, patch: Partial<TicketLine>) => setLines((current) => current.map((line) => {
-    if (line.id !== id) return line;
-    const next = { ...line, ...patch };
-    if (patch.ticketType && patch.ticketType !== line.ticketType) next.rateId = resolveRateId(patch.ticketType);
-    return next;
-  }));
-  const addLine = () => setLines((current) => [...current, { ...blankLine(Math.max(...current.map((line) => line.id), 0) + 1), rateId: resolveRateId("waterpark") }]);
-  const removeLine = (id: number) => setLines((current) => current.length === 1 ? current : current.filter((line) => line.id !== id));
+  const updateCategoryQuantity = (key: CategoryKey, value: string) => setCategoryQuantities((current) => ({ ...current, [key]: value }));
   const updateGroupLine = (id: number, patch: Partial<GroupLine>) => setGroupLines((current) => current.map((line) => line.id === id ? { ...line, ...patch } : line));
   const addGroupLine = () => setGroupLines((current) => [...current, blankGroupLine(Math.max(...current.map((line) => line.id), 0) + 1)]);
   const removeGroupLine = (id: number) => setGroupLines((current) => current.length === 1 ? current : current.filter((line) => line.id !== id));
@@ -121,7 +123,7 @@ export default function TicketDeskPage() {
     setAttemptedSubmit(true);
     if (customerInvalid) return toast.error(t("tickets.selectCustomerOrWalkIn"));
     if (overCapacity) return toast.error(t("tickets.overCapacity", { max: maxTicketsPerPurchase }));
-    if (linesInvalid) return toast.error(mode === "group" ? t("tickets.everyGroupLineNeeds") : t("tickets.selectTypeAndPrice"));
+    if (linesInvalid) return toast.error(mode === "group" ? t("tickets.everyGroupLineNeeds") : t("tickets.enterAtLeastOneCategory"));
     if (!pricing) return toast.error(t("tickets.waitingOnPreview"));
     issue.mutate({
       customerId: form.customerId ? Number(form.customerId) : undefined,
@@ -176,25 +178,24 @@ export default function TicketDeskPage() {
         <Surface><div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("tickets.recentPurchases")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("tickets.recentPurchasesHint")}</p></div><StatusPill>{groupedPurchases.length} {t("tickets.purchasesCount")}</StatusPill></div><SearchField value={ticketQuery} onChange={setTicketQuery} placeholder={t("tickets.searchTickets")}/><div className="mt-4">{purchasesLoading ? <div className="p-4 text-sm text-muted">{t("tickets.loadingHistory")}</div> : groupedPurchases.length ? <TableFrame><TableHeader><div className="grid grid-cols-[1.15fr_.7fr_.55fr_auto] gap-3"><span>{t("tickets.customerTicketCol")}</span><span>{t("tickets.visitCol")}</span><span>{t("common.total")}</span><span className="text-right">{t("finance.actions")}</span></div></TableHeader>{groupedPurchases.slice(0, 8).map((entry: any) => { const refunded = entry.purchase.status === "refunded"; return <TableRow key={entry.purchase.id} className="grid-cols-[1.15fr_.7fr_.55fr_auto]"><div className="min-w-0"><div className="truncate text-sm font-medium">{entry.customer?.fullName || t("tickets.customerFallback")}</div><div className="mt-1 truncate font-mono text-[10px] text-accent">{entry.lines.map((line: any) => line.ticketNumber).join(" · ")}</div></div><div className="text-xs text-muted">{dateLabel(entry.purchase.visitDate)}</div><b className={cx("text-sm", refunded && "text-muted line-through")}>{money(entry.purchase.totalAmount)}</b><div className="flex items-center justify-end gap-1"><button onClick={() => reprintPurchase(entry)} disabled={reprintingId === entry.purchase.id} aria-label="Reprint this ticket" className="rounded-full bg-fill p-2 text-muted hover:bg-[#e8e8ed] hover:text-ink disabled:opacity-50"><Printer size={14}/></button>{refunded ? <StatusPill tone="danger">{t("tickets.returned")}</StatusPill> : <button onClick={() => returnPurchase(entry)} disabled={refundingId === entry.purchase.id} aria-label="Return this purchase" className="rounded-full bg-fill p-2 text-muted hover:bg-danger-bg hover:text-danger disabled:opacity-50"><Undo2 size={14}/></button>}</div></TableRow>; })}</TableFrame> : <EmptyState title={t("tickets.noPurchasesYet")} description={t("tickets.noPurchasesHint")}/>}</div></Surface>
       </div>
       <Surface className="h-fit">
-        <div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("tickets.visitorLines")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("tickets.visitorLinesHint")}</p></div><StatusPill tone={mode === "individual" ? (validLines.length === lines.length ? "success" : "warning") : (overCapacity ? "danger" : linesInvalid ? "warning" : "success")}>{mode === "individual" ? `${validLines.length}/${lines.length} ${t("tickets.ready")}` : overCapacity ? `${expectedLineCount} ${t("tickets.overCapacityPill", { max: maxTicketsPerPurchase })}` : `${expectedLineCount} ${t("tickets.ticketsCount")}`}</StatusPill></div>
+        <div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("tickets.visitorLines")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("tickets.visitorLinesHint")}</p></div><StatusPill tone={overCapacity ? "danger" : linesInvalid ? "warning" : "success"}>{overCapacity ? `${expectedLineCount} ${t("tickets.overCapacityPill", { max: maxTicketsPerPurchase })}` : `${expectedLineCount} ${t("tickets.ticketsCount")}`}</StatusPill></div>
         <div className="mb-4 grid grid-cols-2 gap-2 rounded-2xl bg-well p-1">
           <button onClick={() => setMode("individual")} className={cx("flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-semibold transition", mode === "individual" ? "bg-white shadow-sm text-ink" : "text-muted hover:text-ink")}><UserRound size={14}/>{t("tickets.individual")}</button>
           <button onClick={() => setMode("group")} className={cx("flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-semibold transition", mode === "group" ? "bg-white shadow-sm text-ink" : "text-muted hover:text-ink")}><Users size={14}/>{t("tickets.group")}</button>
         </div>
         {mode === "group" && <div className="mb-4"><Field label={t("tickets.groupName")}><TextField value={form.groupName} onChange={(event) => setForm({ ...form, groupName: event.target.value })} placeholder="e.g. Al Falaj School Trip"/></Field></div>}
-        {mode === "individual" ? <div className="grid gap-3">{lines.map((line, index) => {
-          const rate = singleRate(line.ticketType);
-          const lineMissingRate = attemptedSubmit && !line.rateId;
-          return <div key={line.id} className={cx("rounded-2xl border bg-well p-4", lineMissingRate ? "border-danger" : "border-divider")}>
-            <div className="mb-3 flex items-center justify-between"><b className="text-sm">{t("tickets.visitor")} {index + 1}</b><button onClick={() => removeLine(line.id)} aria-label={`Remove visitor ${index + 1}`} className="rounded-full p-2 text-muted hover:bg-danger-bg hover:text-danger"><Trash2 size={14}/></button></div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label={t("tickets.ticketType")}><SelectField value={line.ticketType} onChange={(event) => updateLine(line.id, { ticketType: event.target.value as TicketType })}><option value="waterpark">{t("tickets.waterpark")}</option><option value="companion">{t("tickets.companion")}</option></SelectField></Field>
-              {rate ? <Field label={t("tickets.price")}><div className="flex h-11 items-center rounded-xl border border-line bg-fill px-3.5 text-sm text-ink">{rate.name} · {money(rate.unitPrice)}</div></Field> : <Field label={t("tickets.approvedPriceReal")} error={lineMissingRate ? t("common.required") : undefined}><SelectField value={line.rateId} onChange={(event) => updateLine(line.id, { rateId: event.target.value })} className={lineMissingRate ? "border-danger ring-1 ring-danger/30" : undefined}><option value="">{t("tickets.choosePriceOf")} {line.ticketType === "waterpark" ? t("tickets.waterpark") : t("tickets.companion")}</option>{ratesForType(line.ticketType).map((r) => <option key={r.id} value={r.id}>{r.name} · {money(r.unitPrice)}</option>)}</SelectField></Field>}
-              <Field label={t("tickets.freeEntry")}><SelectField value={line.freeEntryCategory} onChange={(event) => updateLine(line.id, { freeEntryCategory: event.target.value as FreeEntryCategory })}><option value="">{t("tickets.chargeable")}</option><option value="under_two">{t("tickets.underTwo")}</option><option value="person_of_determination">{t("tickets.pod")}</option><option value="senior">{t("tickets.senior")}</option></SelectField></Field>
+        {mode === "individual" ? <div className="grid gap-3">{individualCategoryRows.map((row) => {
+          const rate = row.ticketType === "companion" ? singleRate("companion") : singleRate("waterpark");
+          const quantity = categoryQuantities[row.key];
+          const rowMissingRate = attemptedSubmit && Number(quantity) > 0 && !resolveRateId(row.ticketType);
+          return <div key={row.key} className={cx("flex items-center justify-between gap-4 rounded-2xl border bg-well p-4", rowMissingRate ? "border-danger" : "border-divider")}>
+            <div className="min-w-0">
+              <b className="text-sm">{t(row.labelKey)}</b>
+              <div className="mt-1 text-[11px] leading-4 text-muted">{row.freeEntryCategory ? t("tickets.freeHint") : rate ? `${rate.name} · ${money(rate.unitPrice)}` : t("tickets.noPriceConfigured")}</div>
             </div>
-            <p className="mt-3 text-[11px] leading-4 text-muted">{t("tickets.freeHint")}</p>
+            <TextField type="number" min={0} value={quantity} onChange={(event) => updateCategoryQuantity(row.key, event.target.value)} placeholder="0" className="w-20 shrink-0 text-center"/>
           </div>;
-        })}<SecondaryButton onClick={addLine}><Plus size={15} className="mr-2"/>{t("tickets.addVisitor")}</SecondaryButton></div>
+        })}</div>
         : <div className="grid gap-3">{groupLines.map((line, index) => {
           const rate = singleRate(line.ticketType);
           const lineInvalid = attemptedSubmit && (!rate || !line.quantity || line.quantity < 1);

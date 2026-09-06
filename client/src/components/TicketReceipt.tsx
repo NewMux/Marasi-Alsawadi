@@ -31,8 +31,8 @@ const toArabicIndic = (value: number) => String(value).split("").map((digit) => 
 
 const freeEntryLabels: Record<NonNullable<TicketReceiptLine["freeEntryCategory"]>, { ar: string; en: string }> = {
   under_two: { ar: "طفل أقل من سنتين", en: "Child under 2 — Free" },
-  person_of_determination: { ar: "من ذوي الهمم", en: "Person of Determination — Free" },
-  senior: { ar: "متقاعد / كبار السن", en: "Senior Citizen — Free" },
+  person_of_determination: { ar: "من ذوي الهمم", en: "Special Needs — Free" },
+  senior: { ar: "متقاعد", en: "Retiree — Free" },
 };
 const ticketTypeLabels: Record<TicketReceiptLine["ticketType"], { ar: string; en: string }> = {
   waterpark: { ar: "تذكرة رئيسية", en: "Main Ticket — Water Park" },

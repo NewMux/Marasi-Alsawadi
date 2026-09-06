@@ -29,6 +29,7 @@ const MIGRATION_FILES = [
   "drizzle/migrations/0017_add_assets.sql",
   "drizzle/migrations/0018_add_petty_cash_funds.sql",
   "drizzle/migrations/0019_widen_record_category_name_columns.sql",
+  "drizzle/migrations/0020_water_park_capex_category_rename.sql",
 ];
 
 async function main() {
