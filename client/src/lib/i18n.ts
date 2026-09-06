@@ -309,6 +309,7 @@ const dict = {
   "customers.newPurchase": { en: "New purchase", ar: "عملية جديدة" },
   "customers.newCustomer": { en: "New customer", ar: "عميل جديد" },
   "customers.allCountries": { en: "All countries", ar: "كل الدول" },
+  "customers.showAll": { en: "Show all", ar: "عرض الكل" },
   "customers.profiles": { en: "Customer profiles", ar: "ملفات العملاء" },
   "customers.matchingSearch": { en: "Matching current search", ar: "مطابقة للبحث الحالي" },
   "customers.purchaseRecords": { en: "Purchase records", ar: "سجلات الشراء" },

@@ -24,7 +24,7 @@ import {
   getServiceRate, listApplicableTicketFees, listExpenseCategories, listExpenseRecords, listFeeAssignments, listRecentTicketScans,
   listSalesTransactionLines, listSalesTransactions, listServiceRates, listTicketFees, recordTicketScan, replaceFeeAssignments,
   searchCustomers, getCustomerByPhone, updateExpenseCategory, updateExpenseRecord, updateServiceRate, updateTicketFee, deleteServiceRate,
-  createPrdTicketPurchase, listPrdRates, listTicketDiscountTiers, createTicketDiscountTier, updateTicketDiscountTier, deleteTicketDiscountTier,
+  createPrdTicketPurchase, listPrdRates, findConflictingActivePrdRate, listTicketDiscountTiers, createTicketDiscountTier, updateTicketDiscountTier, deleteTicketDiscountTier,
   listPartnerEntities, getPartnerEntity, createPartnerEntity, updatePartnerEntity, deletePartnerEntity,
   listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
   listAddonServices, getAddonService, createAddonService, updateAddonService, deleteAddonService,
@@ -181,6 +181,10 @@ export const platformRouter = router({
       unitPrice: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals"),
       description: z.string().max(1000).optional(),
     })).mutation(async ({ input, ctx }) => {
+      if (input.department === "aqua_park" && input.ticketType) {
+        const conflict = await findConflictingActivePrdRate(input.ticketType);
+        if (conflict) throw new TRPCError({ code: "BAD_REQUEST", message: `"${conflict.name}" is already the active ${input.ticketType} price — retire it first before adding another, so Ticket Desk never has two prices to choose between` });
+      }
       const rate = await createServiceRate({ ...input, code: normalizeRateCode(input.code), name: input.name.trim(), currency: "OMR", description: input.description?.trim() || null });
       await logActivity(ctx.user.id, "service_rate.create", "service_rate", rate.id, rate.code);
       return rate;
@@ -193,6 +197,15 @@ export const platformRouter = router({
       description: z.string().max(1000).nullable().optional(), isActive: z.boolean().optional(),
     })).mutation(async ({ input, ctx }) => {
       const { id, code, name, description, ...rest } = input;
+      const existing = await getServiceRate(id);
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Base price was not found" });
+      const effectiveDepartment = rest.department ?? existing.department;
+      const effectiveTicketType = rest.ticketType !== undefined ? rest.ticketType : existing.ticketType;
+      const effectiveActive = rest.isActive ?? existing.isActive;
+      if (effectiveDepartment === "aqua_park" && effectiveTicketType && effectiveActive) {
+        const conflict = await findConflictingActivePrdRate(effectiveTicketType, id);
+        if (conflict) throw new TRPCError({ code: "BAD_REQUEST", message: `"${conflict.name}" is already the active ${effectiveTicketType} price — retire it first, so Ticket Desk never has two prices to choose between` });
+      }
       const rate = await updateServiceRate(id, { ...rest, code: code ? normalizeRateCode(code) : undefined, name: name?.trim(), description: description === null ? null : description?.trim() });
       await logActivity(ctx.user.id, "service_rate.update", "service_rate", id, rate?.code);
       return rate;

@@ -36,6 +36,22 @@ export async function getServiceRate(id: number) {
   return rows[0];
 }
 
+// PRD Round 3, bug 1.1: the Ticket Desk resolves "the" Waterpark/Companion
+// rate by picking the first active row of that ticketType (see
+// resolveRateId in TicketDeskPage.tsx) — a second active rate with the same
+// ticketType silently wins if it sorts first alphabetically, which is
+// exactly how a misconfigured "Events Hall" base price (created with
+// ticketType left at its Waterpark default) hijacked every ticket's price.
+// This finds any other active conflicting rate so create/update can refuse
+// to allow a second one to coexist.
+export async function findConflictingActivePrdRate(ticketType: "waterpark" | "companion", excludeId?: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const conditions = [eq(serviceRates.department, "aqua_park"), eq(serviceRates.ticketType, ticketType), eq(serviceRates.isActive, true)];
+  if (excludeId) conditions.push(sql`${serviceRates.id} != ${excludeId}`);
+  const rows = await db.select().from(serviceRates).where(and(...conditions)).limit(1);
+  return rows[0];
+}
+
 export async function listPrdRates(includeInactive = false) {
   const db = await getDb(); if (!db) return [];
   const predicate = and(eq(serviceRates.department, "aqua_park"), or(eq(serviceRates.ticketType, "waterpark"), eq(serviceRates.ticketType, "companion")));
