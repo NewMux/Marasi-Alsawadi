@@ -1,11 +1,9 @@
 import { createPortal } from "react-dom";
 import { cx } from "@/components/MarasiUI";
+import { marasiLogoIconDataUri } from "@/assets/marasiLogoIconDataUri";
 
 // Matches the client-supplied ticket mockup exactly: a fixed bilingual
 // (Arabic + English, always both, not toggled) thermal-receipt layout.
-// The logo below is a placeholder — the client's note on the mockup says
-// the real logo will be "a simplified black & white line version"; swap
-// <LogoMark/> for the real artwork once that file is supplied.
 
 export type TicketReceiptLine = {
   ticketNumber: string;
@@ -37,7 +35,7 @@ const freeEntryLabels: Record<NonNullable<TicketReceiptLine["freeEntryCategory"]
   senior: { ar: "متقاعد / كبار السن", en: "Senior Citizen — Free" },
 };
 const ticketTypeLabels: Record<TicketReceiptLine["ticketType"], { ar: string; en: string }> = {
-  waterpark: { ar: "تذكرة رئيسية", en: "Main Ticket — Waterpark" },
+  waterpark: { ar: "تذكرة رئيسية", en: "Main Ticket — Water Park" },
   companion: { ar: "تذكرة مرافق", en: "Companion Ticket" },
 };
 
@@ -97,26 +95,13 @@ function dayMonthYear(value: unknown) {
   return `${String(date.getDate()).padStart(2, "0")}/${String(date.getMonth() + 1).padStart(2, "0")}/${date.getFullYear()}`;
 }
 
-function LogoMark() {
-  return <svg viewBox="0 0 64 64" width="30" height="30" aria-hidden="true">
-    <g fill="none" stroke="#111" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M32 40V21"/>
-      <path d="M32 23c-4-6-12-6-16-2 5 3 9 2 16 2Z"/>
-      <path d="M32 23c4-6 12-6 16-2-5 3-9 2-16 2Z"/>
-      <path d="M32 27c-3-5-9-6-13-3 4 4 8 3 13 3Z"/>
-      <path d="M32 27c3-5 9-6 13-3-4 4-8 3-13 3Z"/>
-      <path d="M6 47c4-3 8-3 12 0s8 3 12 0 8-3 12 0 8 3 12 0"/>
-    </g>
-  </svg>;
-}
-
 /** Just the `.ticket` markup, with no print-dialog visibility wrapper — reused by both the live window.print() path and the standalone print-agent HTML serializer (client/src/components/ticketReceiptHtml.ts). */
 export function TicketReceiptTicket({ data }: { data: TicketReceiptData }) {
   return <div className="ticket" dir="rtl">
-      <div className="center logo"><LogoMark/></div>
+      <div className="center logo"><img src={marasiLogoIconDataUri} alt="" width="46" height="46"/></div>
       <div className="center brand-ar">مراسي السوادي</div>
       <div className="center brand-en">MARASI ALSAWADI</div>
-      <div className="center sub">RESORT &amp; WATERPARK</div>
+      <div className="center sub">RESORT &amp; WATER PARK</div>
 
       <div className="divider"/>
 

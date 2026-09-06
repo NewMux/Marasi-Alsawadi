@@ -49,7 +49,7 @@ function defaultData(): StoreData {
   return {
     version: 1,
     rates: [
-      { id: 1, name: "Waterpark ticket", code: "WATERPARK", ticketType: "waterpark", unitPrice: "3.00", active: true },
+      { id: 1, name: "Water Park ticket", code: "WATERPARK", ticketType: "waterpark", unitPrice: "3.00", active: true },
       { id: 2, name: "Companion ticket", code: "COMPANION", ticketType: "companion", unitPrice: "2.00", active: true },
     ],
     discountTiers: [

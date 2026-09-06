@@ -254,6 +254,14 @@ export async function searchCustomers(query?: string, country?: string) {
   return filtered.orderBy(desc(guests.createdAt)).limit(200);
 }
 
+export async function getCustomerByPhone(phone: string) {
+  const db = await getDb(); if (!db) return undefined;
+  const normalized = phone.trim();
+  if (!normalized) return undefined;
+  const rows = await db.select().from(guests).where(eq(guests.phone, normalized)).limit(1);
+  return rows[0];
+}
+
 export async function getCustomerById(id: number) {
   const db = await getDb(); if (!db) return undefined;
   const rows = await db.select().from(guests).where(eq(guests.id, id)).limit(1);

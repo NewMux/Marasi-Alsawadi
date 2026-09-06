@@ -23,7 +23,7 @@ import {
   deleteExpenseRecord, deleteTicketFee, getExpenseCategory, getExpenseRecord, getOperationalFinancialSummary, getSalesTransactionByToken,
   getServiceRate, listApplicableTicketFees, listExpenseCategories, listExpenseRecords, listFeeAssignments, listRecentTicketScans,
   listSalesTransactionLines, listSalesTransactions, listServiceRates, listTicketFees, recordTicketScan, replaceFeeAssignments,
-  searchCustomers, updateExpenseCategory, updateExpenseRecord, updateServiceRate, updateTicketFee, deleteServiceRate,
+  searchCustomers, getCustomerByPhone, updateExpenseCategory, updateExpenseRecord, updateServiceRate, updateTicketFee, deleteServiceRate,
   createPrdTicketPurchase, listPrdRates, listTicketDiscountTiers, createTicketDiscountTier, updateTicketDiscountTier, deleteTicketDiscountTier,
   listPrdTicketPurchases, listPrdTicketLines, getCustomerById, refundPrdTicketPurchase,
   listExpenseAdjustments, createExpenseAdjustment, createExpenseTransfer, getExpenseCategoryBalances,
@@ -126,6 +126,7 @@ export const platformRouter = router({
   customers: router({
     search: protectedProcedure.input(z.object({ query: z.string().optional(), country: z.string().optional() }).optional())
       .query(({ input }) => searchCustomers(input?.query, input?.country)),
+    findByPhone: protectedProcedure.input(z.object({ phone: z.string() })).query(({ input }) => getCustomerByPhone(input.phone)),
     create: protectedProcedure.input(z.object({
       fullName: z.string().min(1), phone: z.string().min(3), email: z.string().email().optional().or(z.literal("")),
       nationality: z.string().optional(), notes: z.string().optional(),
