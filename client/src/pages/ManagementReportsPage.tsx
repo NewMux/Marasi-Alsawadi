@@ -10,7 +10,6 @@ const REVENUE_STREAM_KEYS: Record<string, TranslationKey> = { rooms: "reports.st
 const dateLabel = (value: unknown) => value ? new Date(value as string).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "—";
 
 const today = new Date().toISOString().slice(0, 10);
-const monthStart = `${today.slice(0, 8)}01`;
 const money = (value: unknown) => `OMR ${Number(value ?? 0).toLocaleString("en-OM", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
 function exportCsv(name: string, rows: string[][]) { const csv = rows.map((row) => row.map((cell) => `"${String(cell ?? "").replaceAll('"', '""')}"`).join(",")).join("\n"); const blob = new Blob([csv], { type: "text/csv;charset=utf-8" }); const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = name; anchor.click(); URL.revokeObjectURL(url); }
 function Stream({ title, description, tone, revenueLabel, expenseLabel, children }: { title: string; description: string; tone: "success" | "warning"; revenueLabel: string; expenseLabel: string; children: ReactNode }) { return <Surface><div className="flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{title}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{description}</p></div><StatusPill tone={tone}>{tone === "success" ? revenueLabel : expenseLabel}</StatusPill></div><div className="mt-5 divide-y divide-divider">{children}</div></Surface>; }
@@ -18,7 +17,7 @@ function Stream({ title, description, tone, revenueLabel, expenseLabel, children
 export default function ManagementReportsPage() {
   const t = useT();
   const { user } = useAuth();
-  const [from, setFrom] = useState(monthStart); const [to, setTo] = useState(today); const input = { from, to };
+  const [from, setFrom] = useState(today); const [to, setTo] = useState(today); const input = { from, to };
   const [categoryReportKey, setCategoryReportKey] = useState("");
   const { data: summary = [], isLoading } = trpc.platform.finance.summary.useQuery(input);
   const { data: finance = [] } = trpc.platform.finance.list.useQuery(input);

@@ -5,6 +5,7 @@ import { trpc } from "@/lib/trpc";
 import { EmptyState, Field, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, cx } from "@/components/MarasiUI";
 import { TicketReceipt, type TicketReceiptData } from "@/components/TicketReceipt";
 import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { printViaAgent } from "@/lib/printAgent";
 import { COUNTRIES, DEFAULT_COUNTRY } from "@/lib/countries";
 import { useT, type TranslationKey } from "@/lib/i18n";
@@ -69,6 +70,8 @@ export default function TicketDeskPage() {
   const [receiptWidth, setReceiptWidth] = useState<"80" | "58">("80");
   const [reprintingId, setReprintingId] = useState<number | null>(null);
   const [refundingId, setRefundingId] = useState<number | null>(null);
+  const [cancelingEntry, setCancelingEntry] = useState<any>(null);
+  const [cancelReason, setCancelReason] = useState("");
   const { data: catalog } = trpc.platform.tickets.prdCatalog.useQuery();
   const rates = (catalog?.rates || []) as any[];
   const maxTicketsPerPurchase = catalog?.maxTicketsPerPurchase ?? 2000;
@@ -164,9 +167,14 @@ export default function TicketDeskPage() {
     onSettled: () => setRefundingId(null),
   });
   const returnPurchase = (entry: any) => {
-    if (!window.confirm(t("tickets.confirmReturn"))) return;
-    setRefundingId(entry.purchase.id);
-    refundPurchase.mutate({ purchaseId: entry.purchase.id });
+    setCancelReason("");
+    setCancelingEntry(entry);
+  };
+  const confirmCancelPurchase = () => {
+    if (!cancelingEntry) return;
+    setRefundingId(cancelingEntry.purchase.id);
+    refundPurchase.mutate({ purchaseId: cancelingEntry.purchase.id, reason: cancelReason.trim() || undefined });
+    setCancelingEntry(null);
   };
 
   return <>
@@ -217,5 +225,12 @@ export default function TicketDeskPage() {
       </Surface>
     </div>
     {created && <TicketReceipt data={toReceiptData(created)} width={receiptWidth}/>}
+    <Dialog open={Boolean(cancelingEntry)} onOpenChange={(open) => { if (!open) setCancelingEntry(null); }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>{t("tickets.confirmReturn")}</DialogTitle></DialogHeader>
+        <Field label={t("tickets.cancelReasonLabel")}><Textarea value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} placeholder={t("tickets.cancelReasonPlaceholder")} className="min-h-[86px] rounded-xl border-line bg-well"/></Field>
+        <DialogFooter><SecondaryButton onClick={() => setCancelingEntry(null)}>{t("common.close")}</SecondaryButton><PrimaryButton onClick={confirmCancelPurchase} pending={refundingId === cancelingEntry?.purchase.id}>{t("tickets.confirmReturnAction")}</PrimaryButton></DialogFooter>
+      </DialogContent>
+    </Dialog>
   </>;
 }

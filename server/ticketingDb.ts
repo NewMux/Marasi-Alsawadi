@@ -138,12 +138,12 @@ export async function getPrdTicketPurchase(id: number) {
   return rows[0];
 }
 
-export async function refundPrdTicketPurchase(id: number, refundedBy: number) {
+export async function refundPrdTicketPurchase(id: number, refundedBy: number, refundReason?: string) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   const existing = await getPrdTicketPurchase(id);
   if (!existing) throw new Error("Ticket purchase was not found");
   if (existing.status === "refunded") throw new Error("This purchase has already been returned");
-  await db.update(ticketPurchases).set({ status: "refunded", refundedAt: new Date(), refundedBy } as any).where(eq(ticketPurchases.id, id));
+  await db.update(ticketPurchases).set({ status: "refunded", refundedAt: new Date(), refundedBy, refundReason: refundReason || null } as any).where(eq(ticketPurchases.id, id));
   return getPrdTicketPurchase(id);
 }
 

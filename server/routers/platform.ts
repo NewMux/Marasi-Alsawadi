@@ -254,8 +254,8 @@ export const platformRouter = router({
       await logActivity(ctx.user.id, "prd_ticket_purchase.issue", "ticket_purchase", result.purchase.id, `${result.lines.map((line) => line.ticketNumber).join(",")}:${result.purchase.totalAmount}`);
       return { ...result, customer };
     }),
-    purchaseRefund: protectedProcedure.input(z.object({ purchaseId: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
-      const purchase = await refundPrdTicketPurchase(input.purchaseId, ctx.user.id);
+    purchaseRefund: protectedProcedure.input(z.object({ purchaseId: z.number().int().positive(), reason: z.string().max(500).optional() })).mutation(async ({ input, ctx }) => {
+      const purchase = await refundPrdTicketPurchase(input.purchaseId, ctx.user.id, input.reason?.trim() || undefined);
       await deleteFinanceEntryByReference("prd_ticket_purchase", input.purchaseId);
       await logActivity(ctx.user.id, "prd_ticket_purchase.refund", "ticket_purchase", input.purchaseId, String(purchase?.totalAmount ?? ""));
       return purchase;
