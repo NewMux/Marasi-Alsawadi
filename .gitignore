@@ -106,6 +106,10 @@ temp/
 *.sqlite
 *.sqlite3
 
+# Uploaded expense/receipt attachments (runtime data, mounted as a
+# persistent volume in production — see docs/hetzner_coolify_deployment.md)
+uploads/
+
 # Webdev artifacts (checkpoint zips, migrations, etc.)
 .webdev/
 

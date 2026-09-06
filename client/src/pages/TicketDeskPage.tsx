@@ -49,6 +49,8 @@ function toReceiptData(created: any): TicketReceiptData {
     discountAmount: created.purchase.discountAmount,
     vatAmount: created.purchase.vatAmount,
     totalAmount: created.purchase.totalAmount,
+    partnerEntityName: created.purchase.partnerEntityName || null,
+    discountPercentage: created.purchase.discountPercentage,
     lines: created.lines.map((line: any) => ({
       ticketNumber: line.ticketNumber, ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory,
       basePrice: line.basePrice, discountAmount: line.discountAmount, vatAmount: line.vatAmount, totalAmount: line.totalAmount,
@@ -72,8 +74,10 @@ export default function TicketDeskPage() {
   const [refundingId, setRefundingId] = useState<number | null>(null);
   const [cancelingEntry, setCancelingEntry] = useState<any>(null);
   const [cancelReason, setCancelReason] = useState("");
+  const [partnerEntityId, setPartnerEntityId] = useState("");
   const { data: catalog } = trpc.platform.tickets.prdCatalog.useQuery();
   const rates = (catalog?.rates || []) as any[];
+  const partnerEntities = (catalog?.partnerEntities || []) as any[];
   const maxTicketsPerPurchase = catalog?.maxTicketsPerPurchase ?? 2000;
   const { data: customers = [], isLoading: customersLoading } = trpc.platform.customers.search.useQuery({ query: customerQuery.trim() || undefined });
   const { data: purchaseRows = [], isLoading: purchasesLoading } = trpc.platform.tickets.purchaseList.useQuery({ query: ticketQuery.trim() || undefined });
@@ -98,7 +102,7 @@ export default function TicketDeskPage() {
   const expectedLineCount = mode === "individual"
     ? individualCategoryRows.reduce((sum, row) => sum + Math.max(0, Math.floor(Number(categoryQuantities[row.key]) || 0)), 0)
     : groupLines.reduce((sum, line) => sum + Math.max(0, Math.floor(line.quantity || 0)), 0);
-  const { data: pricing } = trpc.platform.tickets.purchasePreview.useQuery({ lines: previewLines }, { enabled: previewLines.length === expectedLineCount && expectedLineCount > 0 && expectedLineCount <= maxTicketsPerPurchase });
+  const { data: pricing } = trpc.platform.tickets.purchasePreview.useQuery({ lines: previewLines, partnerEntityId: partnerEntityId ? Number(partnerEntityId) : undefined }, { enabled: previewLines.length === expectedLineCount && expectedLineCount > 0 && expectedLineCount <= maxTicketsPerPurchase });
   const groupedPurchases = useMemo(() => {
     const map = new Map<number, any>();
     (purchaseRows as any[]).forEach((row) => { const id = row.purchase.id; const current = map.get(id) || { ...row, lines: [] }; if (row.line) current.lines.push(row.line); map.set(id, current); });
@@ -106,7 +110,7 @@ export default function TicketDeskPage() {
   }, [purchaseRows]);
   const issue = trpc.platform.tickets.purchaseCreate.useMutation({
     onSuccess: (result: any) => {
-      setCreated(result); setForm((current) => ({ ...blankForm, visitDate: current.visitDate })); setCategoryQuantities({ ...blankCategoryQuantities }); setGroupLines([blankGroupLine(1)]); setAttemptedSubmit(false); setCustomerQuery("");
+      setCreated(result); setForm((current) => ({ ...blankForm, visitDate: current.visitDate })); setCategoryQuantities({ ...blankCategoryQuantities }); setGroupLines([blankGroupLine(1)]); setAttemptedSubmit(false); setCustomerQuery(""); setPartnerEntityId("");
       utils.platform.tickets.purchaseList.invalidate(); utils.platform.customers.search.invalidate(); utils.platform.finance.invalidate();
       toast.success(`${result.lines.length} ticket${result.lines.length === 1 ? "" : "s"} issued`);
     },
@@ -137,6 +141,7 @@ export default function TicketDeskPage() {
       visitDate: form.visitDate, paymentMethod: form.paymentMethod,
       notes: (mode === "group" && form.groupName.trim() ? `${t("tickets.groupNotePrefix")}: ${form.groupName.trim()}${form.notes.trim() ? " — " : ""}` : "") + form.notes.trim() || undefined,
       lines: previewLines,
+      partnerEntityId: partnerEntityId ? Number(partnerEntityId) : undefined,
     });
   };
   const printReceipt = async (width: "80" | "58") => {
@@ -218,7 +223,8 @@ export default function TicketDeskPage() {
           </div>;
         })}<SecondaryButton onClick={addGroupLine}><Plus size={15} className="mr-2"/>{t("tickets.addGroupLine")}</SecondaryButton></div>}
         <div className="mt-5 grid gap-3 sm:grid-cols-2"><Field label={t("tickets.visitDate")}><TextField type="date" value={form.visitDate} onChange={(event) => setForm({ ...form, visitDate: event.target.value })}/></Field><Field label={t("tickets.paymentMethod")}><SelectField value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value as FormState["paymentMethod"] })}><option value="cash">{t("tickets.cash")}</option><option value="card">{t("tickets.card")}</option><option value="bank">{t("tickets.bank")}</option><option value="mixed">{t("tickets.mixed")}</option></SelectField></Field></div>
-        <div className="mt-5 rounded-[22px] bg-navy p-5 text-white"><div className="flex items-start justify-between gap-3"><div><div className="text-[10px] font-semibold uppercase tracking-[.16em] text-teal-tint">{t("tickets.pricePreview")}</div><div className="mt-2 font-serif text-4xl tracking-[-.05em]">{money(pricing?.totalAmount || 0)}</div></div><StatusPill tone={pricing ? "success" : "neutral"}>{pricing ? t("tickets.readyPill") : t("tickets.completeLines")}</StatusPill></div>{pricing && <div className="mt-4 border-t border-white/15 pt-3 text-xs text-[#d6d6da]"><div className="flex justify-between py-1"><span>{t("tickets.baseSubtotal")}</span><span>{money(pricing.baseSubtotal)}</span></div><div className="flex justify-between py-1"><span>{t("tickets.groupDiscount")} ({pricing.discountPercentage}%)</span><span>−{money(pricing.discountAmount)}</span></div><div className="flex justify-between py-1"><span>{t("tickets.vatAfterDiscount")}</span><span>{money(pricing.vatAmount)}</span></div>{pricing.fees?.map((fee: any) => <div key={fee.code} className="flex justify-between py-1"><span>{fee.label}</span><span>{money(fee.amount)}</span></div>)}{mode === "individual" && <div className="mt-2 border-t border-white/15 pt-2">{pricing.lines.map((line: any, index: number) => <div key={`${line.rateId}-${index}`} className="flex justify-between py-1"><span>{line.label}{line.freeEntryCategory ? ` · ${t(freeKeys[line.freeEntryCategory as Exclude<FreeEntryCategory, "">])}` : ""}</span><span>{money(line.totalAmount)}</span></div>)}</div>}</div>}</div>
+        {partnerEntities.length > 0 && <div className="mt-3"><Field label={t("tickets.partnerEntity")} hint={t("tickets.partnerEntityHint")}><SelectField value={partnerEntityId} onChange={(event) => setPartnerEntityId(event.target.value)}><option value="">{t("tickets.noPartnerEntity")}</option>{partnerEntities.map((entity) => <option key={entity.id} value={entity.id}>{entity.name} — {Number(entity.discountPercentage).toFixed(0)}%</option>)}</SelectField></Field></div>}
+        <div className="mt-5 rounded-[22px] bg-navy p-5 text-white"><div className="flex items-start justify-between gap-3"><div><div className="text-[10px] font-semibold uppercase tracking-[.16em] text-teal-tint">{t("tickets.pricePreview")}</div><div className="mt-2 font-serif text-4xl tracking-[-.05em]">{money(pricing?.totalAmount || 0)}</div></div><StatusPill tone={pricing ? "success" : "neutral"}>{pricing ? t("tickets.readyPill") : t("tickets.completeLines")}</StatusPill></div>{pricing && <div className="mt-4 border-t border-white/15 pt-3 text-xs text-[#d6d6da]"><div className="flex justify-between py-1"><span>{t("tickets.baseSubtotal")}</span><span>{money(pricing.baseSubtotal)}</span></div><div className="flex justify-between py-1"><span>{partnerEntityId ? partnerEntities.find((entity) => String(entity.id) === partnerEntityId)?.name : t("tickets.groupDiscount")} ({pricing.discountPercentage}%)</span><span>−{money(pricing.discountAmount)}</span></div><div className="flex justify-between py-1"><span>{t("tickets.vatAfterDiscount")}</span><span>{money(pricing.vatAmount)}</span></div>{pricing.fees?.map((fee: any) => <div key={fee.code} className="flex justify-between py-1"><span>{fee.label}</span><span>{money(fee.amount)}</span></div>)}{mode === "individual" && <div className="mt-2 border-t border-white/15 pt-2">{pricing.lines.map((line: any, index: number) => <div key={`${line.rateId}-${index}`} className="flex justify-between py-1"><span>{line.label}{line.freeEntryCategory ? ` · ${t(freeKeys[line.freeEntryCategory as Exclude<FreeEntryCategory, "">])}` : ""}</span><span>{money(line.totalAmount)}</span></div>)}</div>}</div>}</div>
         <div className="mt-5"><Field label={t("tickets.note")}><Textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} placeholder={t("tickets.notePlaceholder")} className="min-h-[86px] rounded-xl border-line bg-well"/></Field></div>
         <div className="mt-5 flex flex-wrap gap-2 border-t border-divider pt-5"><PrimaryButton onClick={issuePurchase} pending={issue.isPending}>{t("tickets.confirmIssue")} <Ticket size={15} className="ml-2"/></PrimaryButton>{created && <><SecondaryButton onClick={() => printReceipt("80")}><Printer size={14} className="mr-2"/>{t("tickets.print80")}</SecondaryButton><SecondaryButton onClick={() => printReceipt("58")}><Printer size={14} className="mr-2"/>{t("tickets.print58")}</SecondaryButton></>}</div>
         {created && <div className="mt-5 rounded-2xl border border-[#cbead5] bg-[#effaf2] p-4"><StatusPill tone="success">{t("tickets.purchaseReady")}</StatusPill><div className="mt-2 font-mono text-lg font-semibold text-ink">{created.lines.length > 3 ? `#${created.lines[0].ticketNumber}–#${created.lines[created.lines.length - 1].ticketNumber} (×${created.lines.length})` : created.lines.map((line: any) => line.ticketNumber).join(" · ")}</div><p className="mt-1 text-xs leading-5 text-muted">{t("tickets.purchaseReadyHint")}</p></div>}

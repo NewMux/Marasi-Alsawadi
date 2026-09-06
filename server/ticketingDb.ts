@@ -1,12 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
-  assetAdjustments, assetCategories, assetRecords, expenseAdjustments, expenseCategories, expenseRecords, guests, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
+  addonServices, assetAdjustments, assetCategories, assetRecords, expenseAdjustments, expenseCategories, expenseRecords, facilityBookingAddons, facilityBookings, facilityTypes, guests, partnerEntities, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
   serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers,
   ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries, users,
 } from "../drizzle/schema";
 import { getDb } from "./db";
-import { calculateOperationalNet, calculatePrdPurchasePricing, decideGateEntry, formatPrdTicketNumber, formatTicketNumber, type PrdDiscountTierInput, type PrdTicketLineInput } from "./ticketingRules";
+import { calculateOperationalNet, calculatePrdPurchasePricing, decideGateEntry, formatPrdTicketNumber, formatTicketNumber, minorToMoney, moneyToMinor, type PrdDiscountTierInput, type PrdTicketLineInput } from "./ticketingRules";
 
 export type SalesTransactionDraft = {
   customerId: number;
@@ -83,9 +83,11 @@ export async function createPrdTicketPurchase(data: {
   paymentMethod: "cash" | "card" | "bank" | "mixed";
   notes?: string;
   issuedBy: number;
+  overrideDiscountPercentage?: string | null;
+  partnerEntity?: { id: number; name: string } | null;
 }) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
-  const pricing = calculatePrdPurchasePricing({ lines: data.lines, discountTiers: data.discountTiers, fees: data.fees });
+  const pricing = calculatePrdPurchasePricing({ lines: data.lines, discountTiers: data.discountTiers, fees: data.fees, overrideDiscountPercentage: data.overrideDiscountPercentage });
   return db.transaction(async (tx) => {
     await tx.insert(ticketNumberSequences).values({ id: 1, lastNumber: 0 }).onDuplicateKeyUpdate({ set: { id: 1 } });
     await tx.update(ticketNumberSequences).set({ lastNumber: sql`${ticketNumberSequences.lastNumber} + ${data.lines.length}` }).where(eq(ticketNumberSequences.id, 1));
@@ -97,6 +99,7 @@ export async function createPrdTicketPurchase(data: {
       discountPercentage: pricing.discountPercentage, baseSubtotal: pricing.baseSubtotal, discountAmount: pricing.discountAmount,
       vatAmount: pricing.vatAmount, feeTotal: pricing.feeTotal, totalAmount: pricing.totalAmount,
       paymentMethod: data.paymentMethod, notes: data.notes || null, issuedBy: data.issuedBy,
+      partnerEntityId: data.partnerEntity?.id ?? null, partnerEntityName: data.partnerEntity?.name ?? null,
     } as any);
     const purchaseRows = await tx.select().from(ticketPurchases).orderBy(desc(ticketPurchases.id)).limit(1);
     const purchase = purchaseRows[0]!;
@@ -433,6 +436,194 @@ export async function updateExpenseCategory(id: number, data: Partial<typeof exp
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   await db.update(expenseCategories).set(data).where(eq(expenseCategories.id, id));
   return getExpenseCategory(id);
+}
+
+export async function listPartnerEntities(includeInactive = false) {
+  const db = await getDb(); if (!db) return [];
+  const base = db.select().from(partnerEntities).orderBy(partnerEntities.name);
+  return includeInactive ? base : base.where(eq(partnerEntities.isActive, true));
+}
+
+export async function getPartnerEntity(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(partnerEntities).where(eq(partnerEntities.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function createPartnerEntity(data: typeof partnerEntities.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(partnerEntities).values(data);
+  const rows = await db.select().from(partnerEntities).orderBy(desc(partnerEntities.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function updatePartnerEntity(id: number, data: Partial<typeof partnerEntities.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(partnerEntities).set(data).where(eq(partnerEntities.id, id));
+  return getPartnerEntity(id);
+}
+
+export async function deletePartnerEntity(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const linked = await db.select({ id: ticketPurchases.id }).from(ticketPurchases).where(eq(ticketPurchases.partnerEntityId, id)).limit(1);
+  if (linked.length) {
+    await db.update(partnerEntities).set({ isActive: false }).where(eq(partnerEntities.id, id));
+    return { deactivated: true };
+  }
+  await db.delete(partnerEntities).where(eq(partnerEntities.id, id));
+  return { deactivated: false };
+}
+
+export async function getRevenueCategoryByName(name: string) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(revenueCategories).where(eq(revenueCategories.name, name)).limit(1);
+  return rows[0];
+}
+
+// PRD Section 2 (Events Hall Booking): each Facility Type/Add-on Service is
+// linked to a Revenue category, reusing one with a matching name if it
+// already exists rather than always creating a duplicate.
+export async function findOrCreateRevenueCategoryForFacility(name: string, code: string, createdBy: number) {
+  const existing = await getRevenueCategoryByName(name);
+  if (existing) return existing;
+  return createRevenueCategory({ name, code, createdBy } as any);
+}
+
+export async function listFacilityTypes(includeInactive = false) {
+  const db = await getDb(); if (!db) return [];
+  const base = db.select().from(facilityTypes).orderBy(facilityTypes.name);
+  return includeInactive ? base : base.where(eq(facilityTypes.isActive, true));
+}
+
+export async function getFacilityType(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(facilityTypes).where(eq(facilityTypes.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function createFacilityType(data: typeof facilityTypes.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(facilityTypes).values(data);
+  const rows = await db.select().from(facilityTypes).orderBy(desc(facilityTypes.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function updateFacilityType(id: number, data: Partial<typeof facilityTypes.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(facilityTypes).set(data).where(eq(facilityTypes.id, id));
+  return getFacilityType(id);
+}
+
+export async function deleteFacilityType(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const linked = await db.select({ id: facilityBookings.id }).from(facilityBookings).where(eq(facilityBookings.facilityTypeId, id)).limit(1);
+  if (linked.length) {
+    await db.update(facilityTypes).set({ isActive: false }).where(eq(facilityTypes.id, id));
+    return { deactivated: true };
+  }
+  await db.delete(facilityTypes).where(eq(facilityTypes.id, id));
+  return { deactivated: false };
+}
+
+export async function listAddonServices(includeInactive = false) {
+  const db = await getDb(); if (!db) return [];
+  const base = db.select().from(addonServices).orderBy(addonServices.name);
+  return includeInactive ? base : base.where(eq(addonServices.isActive, true));
+}
+
+export async function getAddonService(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(addonServices).where(eq(addonServices.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function createAddonService(data: typeof addonServices.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(addonServices).values(data);
+  const rows = await db.select().from(addonServices).orderBy(desc(addonServices.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function updateAddonService(id: number, data: Partial<typeof addonServices.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(addonServices).set(data).where(eq(addonServices.id, id));
+  return getAddonService(id);
+}
+
+export async function deleteAddonService(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const linked = await db.select({ id: facilityBookingAddons.id }).from(facilityBookingAddons).where(eq(facilityBookingAddons.addonServiceId, id)).limit(1);
+  if (linked.length) {
+    await db.update(addonServices).set({ isActive: false }).where(eq(addonServices.id, id));
+    return { deactivated: true };
+  }
+  await db.delete(addonServices).where(eq(addonServices.id, id));
+  return { deactivated: false };
+}
+
+// Records a facility booking AND its add-on lines AND a revenue entry per
+// line (facility + each add-on) in one transaction — mirroring
+// createPettyCashSpendWithExpense's all-or-nothing pattern, since a failure
+// partway through must never leave a finance_entries row with nothing to
+// show for it, or a booking with no matching revenue.
+export async function createFacilityBooking(data: {
+  facilityTypeId: number; facilityTypeName: string; facilityCategoryId: number; facilityCategoryName: string;
+  bookingDate: string; quantity: string; facilityAmount: string;
+  addons: Array<{ addonServiceId: number; addonServiceName: string; categoryId: number; categoryName: string; quantity: string; amount: string }>;
+  customerName?: string; notes?: string; createdBy: number;
+}) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const addonsAmountMinor = data.addons.reduce((sum, addon) => sum + moneyToMinor(addon.amount), 0);
+  const facilityAmountMinor = moneyToMinor(data.facilityAmount);
+  return db.transaction(async (tx) => {
+    await tx.insert(financeEntries).values({
+      date: data.bookingDate, stream: "extras", type: "revenue", amount: data.facilityAmount,
+      description: `Facility booking — ${data.facilityTypeName}`, referenceType: "facility_booking", createdBy: data.createdBy,
+    } as any);
+    const facilityFinanceRows = await tx.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
+    await tx.insert(revenueRecords).values({
+      businessDate: data.bookingDate, categoryId: data.facilityCategoryId, categoryName: data.facilityCategoryName, amount: data.facilityAmount,
+      description: `Facility booking — ${data.facilityTypeName}`, financeEntryId: facilityFinanceRows[0]!.id, createdBy: data.createdBy,
+    } as any);
+
+    await tx.insert(facilityBookings).values({
+      facilityTypeId: data.facilityTypeId, facilityTypeName: data.facilityTypeName, bookingDate: data.bookingDate, quantity: data.quantity,
+      facilityAmount: data.facilityAmount, addonsAmount: minorToMoney(addonsAmountMinor), totalAmount: minorToMoney(facilityAmountMinor + addonsAmountMinor),
+      customerName: data.customerName || null, notes: data.notes || null, createdBy: data.createdBy,
+    } as any);
+    const bookingRows = await tx.select().from(facilityBookings).orderBy(desc(facilityBookings.id)).limit(1);
+    const booking = bookingRows[0]!;
+
+    for (const addon of data.addons) {
+      await tx.insert(financeEntries).values({
+        date: data.bookingDate, stream: "extras", type: "revenue", amount: addon.amount,
+        description: `Facility booking add-on — ${addon.addonServiceName}`, referenceType: "facility_booking_addon", createdBy: data.createdBy,
+      } as any);
+      const addonFinanceRows = await tx.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
+      await tx.insert(revenueRecords).values({
+        businessDate: data.bookingDate, categoryId: addon.categoryId, categoryName: addon.categoryName, amount: addon.amount,
+        description: `Facility booking add-on — ${addon.addonServiceName}`, financeEntryId: addonFinanceRows[0]!.id, createdBy: data.createdBy,
+      } as any);
+      await tx.insert(facilityBookingAddons).values({
+        bookingId: booking.id, addonServiceId: addon.addonServiceId, addonServiceName: addon.addonServiceName, quantity: addon.quantity, amount: addon.amount,
+      } as any);
+    }
+    return booking;
+  });
+}
+
+export async function listFacilityBookings(from?: string, to?: string) {
+  const db = await getDb(); if (!db) return [];
+  const conditions: any[] = [];
+  if (from) conditions.push(sql`${facilityBookings.bookingDate} >= ${from}`);
+  if (to) conditions.push(sql`${facilityBookings.bookingDate} <= ${to}`);
+  const base = db.select().from(facilityBookings).orderBy(desc(facilityBookings.bookingDate), desc(facilityBookings.id));
+  return conditions.length ? base.where(and(...conditions)) : base;
+}
+
+export async function listFacilityBookingAddons(bookingId: number) {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(facilityBookingAddons).where(eq(facilityBookingAddons.bookingId, bookingId));
 }
 
 export async function deleteExpenseCategory(id: number) {
@@ -889,6 +1080,7 @@ export async function listPettyCashFundsWithBalances() {
 export async function createPettyCashSpendWithExpense(data: {
   fundId: number; businessDate: string; amount: string; description: string;
   categoryId: number; categoryName: string; payee: string; createdBy: number;
+  attachmentPath?: string | null; attachmentOriginalName?: string | null;
 }) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   return db.transaction(async (tx) => {
@@ -901,12 +1093,14 @@ export async function createPettyCashSpendWithExpense(data: {
     await tx.insert(expenseRecords).values({
       businessDate: data.businessDate, categoryId: data.categoryId, categoryName: data.categoryName, amount: data.amount,
       payee: data.payee, description: data.description, department: "general", financeEntryId: financeEntry.id, createdBy: data.createdBy,
+      attachmentPath: data.attachmentPath ?? null, attachmentOriginalName: data.attachmentOriginalName ?? null,
     } as any);
     const expenseRows = await tx.select().from(expenseRecords).orderBy(desc(expenseRecords.id)).limit(1);
     const expenseRecord = expenseRows[0]!;
     await tx.insert(pettyCashSpends).values({
       fundId: data.fundId, businessDate: data.businessDate, amount: data.amount, description: data.description,
       expenseRecordId: expenseRecord.id, createdBy: data.createdBy,
+      attachmentPath: data.attachmentPath ?? null, attachmentOriginalName: data.attachmentOriginalName ?? null,
     } as any);
     const spendRows = await tx.select().from(pettyCashSpends).orderBy(desc(pettyCashSpends.id)).limit(1);
     return spendRows[0]!;

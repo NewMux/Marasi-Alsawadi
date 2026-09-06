@@ -63,4 +63,15 @@ describe("Petty cash custodian boundary", () => {
     await expect(caller.platform.finance.pettyCashFunds.mine()).resolves.toBeNull();
     await expect(caller.platform.finance.pettyCashFunds.mineSpends()).resolves.toEqual([]);
   });
+
+  // PRD Section 3: "Only the Super Admin can top up / allocate the petty
+  // cash balance" — a manager or admin (allowed to view the funds list)
+  // must not be able to create a custodian or change its fixed amount.
+  it("denies managers and admins from creating custodians or changing their fixed amount", async () => {
+    for (const user of [manager, admin]) {
+      const caller = callerFor(user);
+      await expectForbidden(caller.platform.finance.pettyCashFunds.createCustodian({ username: "new2", name: "New Person Two", temporaryPassword: "temporary-password-123", fixedAmount: "50.000" }));
+      await expectForbidden(caller.platform.finance.pettyCashFunds.updateAmount({ id: 1, fixedAmount: "999.000" }));
+    }
+  });
 });

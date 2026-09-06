@@ -31,6 +31,9 @@ const MIGRATION_FILES = [
   "drizzle/migrations/0019_widen_record_category_name_columns.sql",
   "drizzle/migrations/0020_water_park_capex_category_rename.sql",
   "drizzle/migrations/0021_add_ticket_refund_reason.sql",
+  "drizzle/migrations/0022_add_petty_cash_spend_attachment.sql",
+  "drizzle/migrations/0023_add_partner_entities.sql",
+  "drizzle/migrations/0024_add_facility_bookings.sql",
 ];
 
 async function main() {

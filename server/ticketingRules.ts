@@ -113,13 +113,19 @@ export function calculatePrdPurchasePricing(input: {
   lines: PrdTicketLineInput[];
   discountTiers: PrdDiscountTierInput[];
   fees: TicketFeeInput[];
+  // PRD Section 2 (Partner/Entity Discounts): a selected partner entity's
+  // own agreed percentage replaces the automatic group-size tier entirely
+  // for this purchase, rather than stacking on top of it.
+  overrideDiscountPercentage?: string | null;
 }) {
   if (!input.lines.length) throw new Error("Add at least one ticket line");
   const chargeableTicketCount = input.lines.filter((line) => !line.freeEntryCategory).length;
-  const tier = [...input.discountTiers]
+  const tier = input.overrideDiscountPercentage != null ? undefined : [...input.discountTiers]
     .filter((candidate) => candidate.minTickets <= chargeableTicketCount && (candidate.maxTickets === null || candidate.maxTickets >= chargeableTicketCount))
     .sort((a, b) => b.minTickets - a.minTickets || b.id - a.id)[0];
-  const discountBasisPoints = tier ? percentageToBasisPoints(String(tier.percentage)) : 0;
+  const discountBasisPoints = input.overrideDiscountPercentage != null
+    ? percentageToBasisPoints(input.overrideDiscountPercentage)
+    : tier ? percentageToBasisPoints(String(tier.percentage)) : 0;
   const discountPercentage = (discountBasisPoints / 100).toFixed(2);
   const baseSubtotalMinor = input.lines.reduce((sum, line) => sum + (line.freeEntryCategory ? 0 : moneyToMinor(String(line.rate.unitPrice))), 0);
   const discountMinorByLine = input.lines.map((line) => line.freeEntryCategory ? 0 : Math.round((moneyToMinor(String(line.rate.unitPrice)) * discountBasisPoints) / 10_000));
@@ -180,6 +186,16 @@ export const STARTING_TICKET_NUMBER = 17843;
 export const MAX_TICKETS_PER_PURCHASE = 2000;
 export function formatPrdTicketNumber(sequenceNumber: number) {
   return String(sequenceNumber);
+}
+
+// PRD Section 2 (Events Hall Booking): a facility or add-on's rate times its
+// quantity — hours, days, or people, depending on that item's own pricing
+// method. "Fixed" pricing methods pass quantity 1 from the caller; the math
+// is identical either way, only what "quantity" means to the user differs.
+export function calculateFacilityLineAmount(rate: string, quantity: number) {
+  if (!isPositiveMoney(rate)) throw new Error("Enter a positive OMR rate with up to three decimals");
+  if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Quantity must be a positive number");
+  return minorToMoney(Math.round(moneyToMinor(rate) * quantity));
 }
 
 export function calculateOperationalNet(revenue: number, expenses: number) {

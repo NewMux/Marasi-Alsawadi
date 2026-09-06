@@ -69,6 +69,24 @@ describe("ticketing business rules", () => {
     expect(pricing.lines[3].totalAmount).toBe("0.000");
   });
 
+  it("replaces the automatic group discount tier with a partner entity's override percentage", () => {
+    const pricing = calculatePrdPurchasePricing({
+      lines: [
+        { rate: { id: 1, name: "Waterpark", code: "WATERPARK", ticketType: "waterpark", unitPrice: "10.00" }, ticketType: "waterpark" },
+        { rate: { id: 1, name: "Waterpark", code: "WATERPARK", ticketType: "waterpark", unitPrice: "10.00" }, ticketType: "waterpark" },
+      ],
+      // Only 2 chargeable tickets would normally get 0% under this tier (min 3+).
+      discountTiers: [{ id: 1, minTickets: 3, maxTickets: null, percentage: "10.00" }], fees: [],
+      overrideDiscountPercentage: "25.00",
+    });
+    expect(pricing.discountPercentage).toBe("25.00");
+    expect(pricing.appliedTier).toBeNull();
+    expect(pricing.baseSubtotal).toBe("20.000");
+    expect(pricing.discountAmount).toBe("5.000");
+    expect(pricing.vatAmount).toBe("0.750");
+    expect(pricing.totalAmount).toBe("15.750");
+  });
+
   it("does not apply the discount tier when only free-entry lines exist", () => {
     const pricing = calculatePrdPurchasePricing({
       lines: [{ rate: { id: 1, name: "Waterpark", code: "WATERPARK", ticketType: "waterpark", unitPrice: "10.00" }, ticketType: "waterpark", freeEntryCategory: "senior" }],

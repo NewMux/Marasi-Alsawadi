@@ -24,6 +24,10 @@ export type TicketReceiptData = {
   discountAmount: string;
   vatAmount: string;
   totalAmount: string;
+  // PRD Section 2 (Partner/Entity Discounts): "the printed ticket should
+  // display the entity name and the discount applied, for easy review".
+  partnerEntityName?: string | null;
+  discountPercentage?: string | null;
 };
 
 const arabicIndicDigits = ["٠", "١", "٢", "٣", "٤", "٥", "٦", "٧", "٨", "٩"];
@@ -138,6 +142,7 @@ export function TicketReceiptTicket({ data }: { data: TicketReceiptData }) {
       <table><tbody>
         <tr><td className="label">المجموع قبل الضريبة / Subtotal</td><td className="value">{omr(data.baseSubtotal)}</td></tr>
         {Number(data.discountAmount) > 0 && <tr><td className="label">الخصم / Discount</td><td className="value">−{omr(data.discountAmount)}</td></tr>}
+        {data.partnerEntityName && <tr><td className="label" style={{ fontSize: 10 }}>جهة شريكة / Partner</td><td className="value" style={{ fontSize: 10 }}>{data.partnerEntityName} ({Number(data.discountPercentage || 0).toFixed(0)}%)</td></tr>}
         <tr><td className="label">إجمالي الضريبة / Total VAT (5%)</td><td className="value">{omr(data.vatAmount)}</td></tr>
       </tbody></table>
 

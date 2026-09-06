@@ -169,6 +169,8 @@ export const ticketPurchases = mysqlTable("ticket_purchases", {
   refundedAt: timestamp("refundedAt"),
   refundedBy: int("refundedBy"),
   refundReason: text("refundReason"),
+  partnerEntityId: int("partnerEntityId"),
+  partnerEntityName: varchar("partnerEntityName", { length: 160 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 export type TicketPurchase = typeof ticketPurchases.$inferSelect;
@@ -491,6 +493,20 @@ export const expenseCategories = mysqlTable("expense_categories", {
 });
 export type ExpenseCategory = typeof expenseCategories.$inferSelect;
 
+// PRD Section 2: Partner/Entity Discounts. Selecting one on a purchase
+// replaces the automatic group-size discount tier with the entity's own
+// agreed percentage (a negotiated rate, not a compounding promo).
+export const partnerEntities = mysqlTable("partner_entities", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 160 }).notNull().unique(),
+  discountPercentage: decimal("discountPercentage", { precision: 5, scale: 2 }).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type PartnerEntity = typeof partnerEntities.$inferSelect;
+
 export const expenseRecords = mysqlTable("expense_records", {
   id: int("id").autoincrement().primaryKey(),
   businessDate: date("businessDate").notNull(),
@@ -540,6 +556,65 @@ export const revenueRecords = mysqlTable("revenue_records", {
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 export type RevenueRecord = typeof revenueRecords.$inferSelect;
+
+// PRD Section 2: Events Hall Booking (Facility & Add-on System) — deliberately
+// not a full booking/calendar system. Each Facility Type and Add-on Service
+// is linked to a Revenue category so confirming a booking posts real revenue
+// entries automatically, the same way ticket sales already do, without a
+// separate financial subsystem.
+export const facilityTypes = mysqlTable("facility_types", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 160 }).notNull().unique(),
+  code: varchar("code", { length: 32 }).notNull().unique(),
+  pricingMethod: mysqlEnum("pricingMethod", ["hourly", "daily", "fixed"]).notNull(),
+  rate: decimal("rate", { precision: 12, scale: 3 }).notNull(),
+  revenueCategoryId: int("revenueCategoryId").notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type FacilityType = typeof facilityTypes.$inferSelect;
+
+export const addonServices = mysqlTable("addon_services", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 160 }).notNull().unique(),
+  code: varchar("code", { length: 32 }).notNull().unique(),
+  pricingMethod: mysqlEnum("pricingMethod", ["per_person", "fixed", "hourly"]).notNull(),
+  rate: decimal("rate", { precision: 12, scale: 3 }).notNull(),
+  revenueCategoryId: int("revenueCategoryId").notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type AddonService = typeof addonServices.$inferSelect;
+
+export const facilityBookings = mysqlTable("facility_bookings", {
+  id: int("id").autoincrement().primaryKey(),
+  facilityTypeId: int("facilityTypeId").notNull(),
+  facilityTypeName: varchar("facilityTypeName", { length: 160 }).notNull(),
+  bookingDate: date("bookingDate").notNull(),
+  quantity: decimal("quantity", { precision: 10, scale: 2 }).notNull(),
+  facilityAmount: decimal("facilityAmount", { precision: 12, scale: 3 }).notNull(),
+  addonsAmount: decimal("addonsAmount", { precision: 12, scale: 3 }).default("0").notNull(),
+  totalAmount: decimal("totalAmount", { precision: 12, scale: 3 }).notNull(),
+  customerName: varchar("customerName", { length: 160 }),
+  notes: text("notes"),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type FacilityBooking = typeof facilityBookings.$inferSelect;
+
+export const facilityBookingAddons = mysqlTable("facility_booking_addons", {
+  id: int("id").autoincrement().primaryKey(),
+  bookingId: int("bookingId").notNull(),
+  addonServiceId: int("addonServiceId").notNull(),
+  addonServiceName: varchar("addonServiceName", { length: 160 }).notNull(),
+  quantity: decimal("quantity", { precision: 10, scale: 2 }).notNull(),
+  amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
+});
+export type FacilityBookingAddon = typeof facilityBookingAddons.$inferSelect;
 
 // A manual +/- correction against one category's running total, or a
 // transfer between two categories (recorded as a linked transfer_out /
@@ -657,6 +732,8 @@ export const pettyCashSpends = mysqlTable("petty_cash_spends", {
   amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
   description: varchar("description", { length: 256 }).notNull(),
   expenseRecordId: int("expenseRecordId"),
+  attachmentPath: varchar("attachmentPath", { length: 512 }),
+  attachmentOriginalName: varchar("attachmentOriginalName", { length: 256 }),
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });

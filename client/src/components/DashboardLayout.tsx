@@ -1,6 +1,6 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { useLocation } from "wouter";
-import { BarChart3, DollarSign, Download, Home, LogOut, Search, Settings, Sparkles, Ticket, Wallet } from "lucide-react";
+import { BarChart3, Building2, DollarSign, Download, Home, LogOut, Search, Settings, Sparkles, Ticket, Wallet } from "lucide-react";
 import { cx } from "@/components/MarasiUI";
 import { LanguageToggle, useLanguage } from "@/contexts/LanguageContext";
 import { useT } from "@/lib/i18n";
@@ -21,6 +21,7 @@ const backendItems: NavItem[] = [
   { label: "Command Center", arabicLabel: "لوحة التحكم", mobileLabel: "Home", path: "/", icon: Home, roles: ["staff", "manager", "admin", "guard", "super_admin"], group: "Overview" },
   { label: "Ticket Desk", arabicLabel: "التذاكر", mobileLabel: "Tickets", path: "/tickets", icon: Ticket, roles: ["staff", "manager", "admin", "super_admin"], group: "Front office" },
   { label: "Customer Directory", arabicLabel: "العملاء", mobileLabel: "Customers", path: "/customers", icon: Search, roles: ["staff", "manager", "admin", "super_admin"], group: "Front office" },
+  { label: "Facility Bookings", arabicLabel: "حجوزات المرافق", mobileLabel: "Facilities", path: "/facility-bookings", icon: Building2, roles: ["staff", "manager", "admin", "super_admin"], group: "Front office" },
   { label: "Finance Control", arabicLabel: "المصروفات", mobileLabel: "Finance", path: "/finance", icon: DollarSign, roles: ["staff", "manager", "admin", "super_admin"], group: "Finance" },
   { label: "Revenue Report", arabicLabel: "التقرير المالي", mobileLabel: "Report", path: "/reports", icon: BarChart3, roles: ["manager", "admin", "super_admin"], group: "Finance" },
   { label: "Petty Cash", arabicLabel: "العهدة النقدية", mobileLabel: "Petty Cash", path: "/petty-cash", icon: Wallet, roles: ["petty_cash", "manager", "admin", "super_admin"], group: "Finance" },

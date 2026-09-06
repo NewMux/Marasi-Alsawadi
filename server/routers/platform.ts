@@ -25,6 +25,10 @@ import {
   listSalesTransactionLines, listSalesTransactions, listServiceRates, listTicketFees, recordTicketScan, replaceFeeAssignments,
   searchCustomers, getCustomerByPhone, updateExpenseCategory, updateExpenseRecord, updateServiceRate, updateTicketFee, deleteServiceRate,
   createPrdTicketPurchase, listPrdRates, listTicketDiscountTiers, createTicketDiscountTier, updateTicketDiscountTier, deleteTicketDiscountTier,
+  listPartnerEntities, getPartnerEntity, createPartnerEntity, updatePartnerEntity, deletePartnerEntity,
+  listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
+  listAddonServices, getAddonService, createAddonService, updateAddonService, deleteAddonService,
+  findOrCreateRevenueCategoryForFacility, createFacilityBooking, listFacilityBookings, listFacilityBookingAddons,
   listPrdTicketPurchases, listPrdTicketLines, getCustomerById, refundPrdTicketPurchase,
   listExpenseAdjustments, createExpenseAdjustment, createExpenseTransfer, getExpenseCategoryBalances,
   listRevenueCategories, createRevenueCategory, updateRevenueCategory, deleteRevenueCategory, getRevenueCategory,
@@ -36,7 +40,7 @@ import {
   getExpenseCategoryByCode, createPettyCashFund, getPettyCashFund, getPettyCashFundByCustodian, updatePettyCashFundAmount,
   listPettyCashFundsWithBalances, listPettyCashSpends, createPettyCashSpendWithExpense, getPettyCashSpend, deletePettyCashSpendWithExpense, getPettyCashFundBalance,
 } from "../ticketingDb";
-import { calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE } from "../ticketingRules";
+import { calculateFacilityLineAmount, calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
 import { publicTicketUrl, requestOrigin } from "../ticketUrl";
 import { isAllowedAttachmentMimeType, saveExpenseAttachment } from "../attachments";
@@ -71,7 +75,7 @@ const prdLineInput = z.object({
   freeEntryCategory: z.enum(["under_two", "person_of_determination", "senior"]).nullable().optional(),
 });
 
-async function resolvePrdPricing(linesInput: Array<z.infer<typeof prdLineInput>>) {
+async function resolvePrdPricing(linesInput: Array<z.infer<typeof prdLineInput>>, partnerEntityId?: number | null) {
   const rateCatalog = await listPrdRates();
   const rateById = new Map(rateCatalog.map((rate) => [rate.id, rate]));
   const lines = linesInput.map((line) => {
@@ -84,8 +88,38 @@ async function resolvePrdPricing(linesInput: Array<z.infer<typeof prdLineInput>>
   const feeMap = new Map<number, any>();
   for (const line of lines) for (const fee of await listApplicableTicketFees(line.rate.id)) feeMap.set(fee.id, { ...fee, value: String(fee.value) });
   const fees = Array.from(feeMap.values());
-  const pricing = calculatePrdPurchasePricing({ lines, discountTiers: tiers.map((tier) => ({ ...tier, percentage: String(tier.percentage), maxTickets: tier.maxTickets === null ? null : Number(tier.maxTickets) })), fees });
-  return { lines, tiers, fees, pricing };
+  let partnerEntity: { id: number; name: string } | null = null;
+  let overrideDiscountPercentage: string | null = null;
+  if (partnerEntityId) {
+    const entity = await getPartnerEntity(partnerEntityId);
+    if (!entity || !entity.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected partner entity is no longer active" });
+    partnerEntity = { id: entity.id, name: entity.name };
+    overrideDiscountPercentage = String(entity.discountPercentage);
+  }
+  const pricing = calculatePrdPurchasePricing({
+    lines, discountTiers: tiers.map((tier) => ({ ...tier, percentage: String(tier.percentage), maxTickets: tier.maxTickets === null ? null : Number(tier.maxTickets) })), fees,
+    overrideDiscountPercentage,
+  });
+  return { lines, tiers, fees, pricing, partnerEntity, overrideDiscountPercentage };
+}
+
+async function resolveFacilityBookingPricing(input: { facilityTypeId: number; quantity: number; addons: Array<{ addonServiceId: number; quantity: number }> }) {
+  const facility = await getFacilityType(input.facilityTypeId);
+  if (!facility || !facility.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected facility is no longer active" });
+  const facilityQuantity = facility.pricingMethod === "fixed" ? 1 : input.quantity;
+  const facilityAmount = calculateFacilityLineAmount(String(facility.rate), facilityQuantity);
+  const facilityCategory = await getRevenueCategory(facility.revenueCategoryId);
+  if (!facilityCategory) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "This facility's revenue category is missing" });
+  const addons = await Promise.all(input.addons.map(async (line) => {
+    const addon = await getAddonService(line.addonServiceId);
+    if (!addon || !addon.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "One of the selected add-on services is no longer active" });
+    const addonQuantity = addon.pricingMethod === "fixed" ? 1 : line.quantity;
+    const category = await getRevenueCategory(addon.revenueCategoryId);
+    if (!category) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "This add-on's revenue category is missing" });
+    return { addonServiceId: addon.id, addonServiceName: addon.name, categoryId: category.id, categoryName: category.name, quantity: String(addonQuantity), amount: calculateFacilityLineAmount(String(addon.rate), addonQuantity) };
+  }));
+  const addonsAmount = addons.reduce((sum, addon) => sum + Number(addon.amount), 0);
+  return { facility, facilityCategory, facilityQuantity, facilityAmount, addons, addonsAmount: addonsAmount.toFixed(3), totalAmount: (Number(facilityAmount) + addonsAmount).toFixed(3) };
 }
 
 export const platformRouter = router({
@@ -215,14 +249,122 @@ export const platformRouter = router({
     }),
   }),
 
+  facilityTypes: router({
+    list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listFacilityTypes(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
+    create: superAdminProcedure.input(z.object({
+      name: z.string().trim().min(1).max(160), code: z.string().min(2).max(32),
+      pricingMethod: z.enum(["hourly", "daily", "fixed"]), rate: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals"),
+    })).mutation(async ({ input, ctx }) => {
+      const category = await findOrCreateRevenueCategoryForFacility(input.name, normalizeRateCode(input.code), ctx.user.id);
+      const facility = await createFacilityType({ name: input.name, code: normalizeRateCode(input.code), pricingMethod: input.pricingMethod, rate: input.rate, revenueCategoryId: category.id, createdBy: ctx.user.id } as any);
+      await logActivity(ctx.user.id, "facility_type.create", "facility_type", facility.id, JSON.stringify(input));
+      return facility;
+    }),
+    update: superAdminProcedure.input(z.object({
+      id: z.number().int().positive(), name: z.string().trim().min(1).max(160).optional(), code: z.string().min(2).max(32).optional(),
+      pricingMethod: z.enum(["hourly", "daily", "fixed"]).optional(), rate: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals").optional(), isActive: z.boolean().optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const { id, code, ...rest } = input;
+      const facility = await updateFacilityType(id, { ...rest, code: code ? normalizeRateCode(code) : undefined });
+      if (!facility) throw new TRPCError({ code: "NOT_FOUND", message: "Facility type was not found" });
+      await logActivity(ctx.user.id, "facility_type.update", "facility_type", id, JSON.stringify(input));
+      return facility;
+    }),
+    delete: superAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+      const result = await deleteFacilityType(input.id);
+      await logActivity(ctx.user.id, "facility_type.delete", "facility_type", input.id, result.deactivated ? "retired" : "deleted");
+      return result;
+    }),
+  }),
+
+  addonServices: router({
+    list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listAddonServices(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
+    create: superAdminProcedure.input(z.object({
+      name: z.string().trim().min(1).max(160), code: z.string().min(2).max(32),
+      pricingMethod: z.enum(["per_person", "fixed", "hourly"]), rate: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals"),
+    })).mutation(async ({ input, ctx }) => {
+      const category = await findOrCreateRevenueCategoryForFacility(input.name, normalizeRateCode(input.code), ctx.user.id);
+      const addon = await createAddonService({ name: input.name, code: normalizeRateCode(input.code), pricingMethod: input.pricingMethod, rate: input.rate, revenueCategoryId: category.id, createdBy: ctx.user.id } as any);
+      await logActivity(ctx.user.id, "addon_service.create", "addon_service", addon.id, JSON.stringify(input));
+      return addon;
+    }),
+    update: superAdminProcedure.input(z.object({
+      id: z.number().int().positive(), name: z.string().trim().min(1).max(160).optional(), code: z.string().min(2).max(32).optional(),
+      pricingMethod: z.enum(["per_person", "fixed", "hourly"]).optional(), rate: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals").optional(), isActive: z.boolean().optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const { id, code, ...rest } = input;
+      const addon = await updateAddonService(id, { ...rest, code: code ? normalizeRateCode(code) : undefined });
+      if (!addon) throw new TRPCError({ code: "NOT_FOUND", message: "Add-on service was not found" });
+      await logActivity(ctx.user.id, "addon_service.update", "addon_service", id, JSON.stringify(input));
+      return addon;
+    }),
+    delete: superAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+      const result = await deleteAddonService(input.id);
+      await logActivity(ctx.user.id, "addon_service.delete", "addon_service", input.id, result.deactivated ? "retired" : "deleted");
+      return result;
+    }),
+  }),
+
+  facilityBookings: router({
+    catalog: protectedProcedure.query(async () => ({ facilityTypes: await listFacilityTypes(false), addonServices: await listAddonServices(false) })),
+    list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional()).query(async ({ input }) => {
+      const bookings = await listFacilityBookings(input?.from, input?.to);
+      return Promise.all((bookings as any[]).map(async (booking) => ({ booking, addons: await listFacilityBookingAddons(booking.id) })));
+    }),
+    preview: protectedProcedure.input(z.object({
+      facilityTypeId: z.number().int().positive(), quantity: z.number().positive(),
+      addons: z.array(z.object({ addonServiceId: z.number().int().positive(), quantity: z.number().positive() })).default([]),
+    })).query(async ({ input }) => {
+      const resolved = await resolveFacilityBookingPricing(input);
+      return { facilityAmount: resolved.facilityAmount, addonsAmount: resolved.addonsAmount, totalAmount: resolved.totalAmount, addons: resolved.addons };
+    }),
+    create: protectedProcedure.input(z.object({
+      facilityTypeId: z.number().int().positive(), bookingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      quantity: z.number().positive(),
+      addons: z.array(z.object({ addonServiceId: z.number().int().positive(), quantity: z.number().positive() })).default([]),
+      customerName: z.string().max(160).optional(), notes: z.string().max(1000).optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const resolved = await resolveFacilityBookingPricing(input);
+      const booking = await createFacilityBooking({
+        facilityTypeId: resolved.facility.id, facilityTypeName: resolved.facility.name, facilityCategoryId: resolved.facilityCategory.id, facilityCategoryName: resolved.facilityCategory.name,
+        bookingDate: input.bookingDate, quantity: String(resolved.facilityQuantity), facilityAmount: resolved.facilityAmount, addons: resolved.addons,
+        customerName: input.customerName?.trim(), notes: input.notes?.trim(), createdBy: ctx.user.id,
+      });
+      await logActivity(ctx.user.id, "facility_booking.create", "facility_booking", booking.id, `${resolved.facility.code}:${booking.totalAmount}`);
+      return { booking, addons: await listFacilityBookingAddons(booking.id) };
+    }),
+  }),
+
   tickets: router({
     prdCatalog: protectedProcedure.query(async ({ ctx }) => ({
       rates: await listPrdRates(Boolean(ctx.user.role === "super_admin")),
       discountTiers: await listTicketDiscountTiers(Boolean(ctx.user.role === "super_admin")),
       fees: await listTicketFees(Boolean(ctx.user.role === "super_admin")),
+      partnerEntities: await listPartnerEntities(false),
       vatPercent: 5,
       maxTicketsPerPurchase: MAX_TICKETS_PER_PURCHASE,
     })),
+    partnerEntities: router({
+      list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listPartnerEntities(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
+      create: superAdminProcedure.input(z.object({ name: z.string().trim().min(1).max(160), discountPercentage: z.string().regex(/^\d+(\.\d{1,2})?$/) })).mutation(async ({ input, ctx }) => {
+        if (Number(input.discountPercentage) <= 0 || Number(input.discountPercentage) > 100) throw new TRPCError({ code: "BAD_REQUEST", message: "Discount percentage must be between 0 and 100" });
+        const entity = await createPartnerEntity({ name: input.name, discountPercentage: input.discountPercentage, createdBy: ctx.user.id } as any);
+        await logActivity(ctx.user.id, "partner_entity.create", "partner_entity", entity.id, JSON.stringify(input));
+        return entity;
+      }),
+      update: superAdminProcedure.input(z.object({ id: z.number().int().positive(), name: z.string().trim().min(1).max(160).optional(), discountPercentage: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(), isActive: z.boolean().optional() })).mutation(async ({ input, ctx }) => {
+        if (input.discountPercentage !== undefined && (Number(input.discountPercentage) <= 0 || Number(input.discountPercentage) > 100)) throw new TRPCError({ code: "BAD_REQUEST", message: "Discount percentage must be between 0 and 100" });
+        const { id, ...data } = input;
+        const entity = await updatePartnerEntity(id, data);
+        await logActivity(ctx.user.id, "partner_entity.update", "partner_entity", id, JSON.stringify(data));
+        return entity;
+      }),
+      delete: superAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+        const result = await deletePartnerEntity(input.id);
+        await logActivity(ctx.user.id, "partner_entity.delete", "partner_entity", input.id, result.deactivated ? "retired" : "deleted");
+        return result;
+      }),
+    }),
     discountTiers: router({
       list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listTicketDiscountTiers(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
       create: superAdminProcedure.input(z.object({ minTickets: z.number().int().min(1), maxTickets: z.number().int().min(1).nullable().optional(), percentage: z.string().regex(/^\d+(\.\d{1,2})?$/) })).mutation(async ({ input, ctx }) => {
@@ -238,18 +380,22 @@ export const platformRouter = router({
       }),
       delete: superAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => { const result = await deleteTicketDiscountTier(input.id); await logActivity(ctx.user.id, "ticket_discount.delete", "ticket_discount_tier", input.id); return result; }),
     }),
-    purchasePreview: protectedProcedure.input(z.object({ lines: z.array(prdLineInput).min(1).max(MAX_TICKETS_PER_PURCHASE) })).query(async ({ input }) => (await resolvePrdPricing(input.lines)).pricing),
+    purchasePreview: protectedProcedure.input(z.object({ lines: z.array(prdLineInput).min(1).max(MAX_TICKETS_PER_PURCHASE), partnerEntityId: z.number().int().positive().optional() })).query(async ({ input }) => (await resolvePrdPricing(input.lines, input.partnerEntityId)).pricing),
     purchaseList: protectedProcedure.input(z.object({ query: z.string().optional(), from: z.string().optional(), to: z.string().optional() }).optional()).query(({ input }) => listPrdTicketPurchases(input?.query, input?.from, input?.to)),
     purchaseLines: protectedProcedure.input(z.object({ purchaseId: z.number().int().positive() })).query(({ input }) => listPrdTicketLines(input.purchaseId)),
     purchaseCreate: protectedProcedure.input(z.object({
       customerId: z.number().int().positive().optional(), customerName: z.string().min(1).optional(), customerPhone: z.string().min(3).optional(),
       customerEmail: z.string().email().optional(), customerNationality: z.string().max(64).optional(), visitDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       lines: z.array(prdLineInput).min(1).max(MAX_TICKETS_PER_PURCHASE), paymentMethod: z.enum(["cash", "card", "bank", "mixed"]).default("cash"), notes: z.string().max(1000).optional(),
+      partnerEntityId: z.number().int().positive().optional(),
     }).refine((input) => Boolean(input.customerId || (input.customerName && input.customerPhone)), { message: "Select an existing customer or provide name and phone" })).mutation(async ({ input, ctx }) => {
       const customer = input.customerId ? await getCustomerById(input.customerId) : await createGuest({ fullName: input.customerName!, phone: input.customerPhone!, email: input.customerEmail, nationality: input.customerNationality });
       if (!customer) throw new TRPCError({ code: "NOT_FOUND", message: "Customer record was not found" });
-      const resolved = await resolvePrdPricing(input.lines);
-      const result = await createPrdTicketPurchase({ customerId: customer.id, visitDate: input.visitDate, lines: resolved.lines, discountTiers: resolved.tiers.map((tier) => ({ ...tier, percentage: String(tier.percentage), maxTickets: tier.maxTickets === null ? null : Number(tier.maxTickets) })), fees: resolved.fees, paymentMethod: input.paymentMethod, notes: input.notes?.trim(), issuedBy: ctx.user.id });
+      const resolved = await resolvePrdPricing(input.lines, input.partnerEntityId);
+      const result = await createPrdTicketPurchase({
+        customerId: customer.id, visitDate: input.visitDate, lines: resolved.lines, discountTiers: resolved.tiers.map((tier) => ({ ...tier, percentage: String(tier.percentage), maxTickets: tier.maxTickets === null ? null : Number(tier.maxTickets) })), fees: resolved.fees, paymentMethod: input.paymentMethod, notes: input.notes?.trim(), issuedBy: ctx.user.id,
+        overrideDiscountPercentage: resolved.overrideDiscountPercentage, partnerEntity: resolved.partnerEntity,
+      });
       await createFinanceEntry({ date: input.visitDate, stream: "aqua_park", type: "revenue", amount: result.purchase.totalAmount, description: `Ticket purchase – ${customer.fullName}`, referenceId: result.purchase.id, referenceType: "prd_ticket_purchase", createdBy: ctx.user.id } as any);
       await logActivity(ctx.user.id, "prd_ticket_purchase.issue", "ticket_purchase", result.purchase.id, `${result.lines.map((line) => line.ticketNumber).join(",")}:${result.purchase.totalAmount}`);
       return { ...result, customer };
@@ -933,7 +1079,7 @@ export const platformRouter = router({
     // Revenue-vs-Expense Net Result like any other real expense.
     pettyCashFunds: router({
       list: managerProcedure.query(() => listPettyCashFundsWithBalances()),
-      createCustodian: managerProcedure.input(z.object({
+      createCustodian: superAdminProcedure.input(z.object({
         username: z.string().trim().min(3).max(64), name: z.string().trim().min(2).max(128),
         temporaryPassword: z.string().min(12).max(256),
         fixedAmount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
@@ -946,7 +1092,7 @@ export const platformRouter = router({
         await logActivity(ctx.user.id, "petty_cash_fund.create", "petty_cash_fund", fund.id, `${username}:${input.fixedAmount}`);
         return { fund, custodian: { id: user.id, name: user.name, username: user.username } };
       }),
-      updateAmount: managerProcedure.input(z.object({
+      updateAmount: superAdminProcedure.input(z.object({
         id: z.number().int().positive(), fixedAmount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
       })).mutation(async ({ input, ctx }) => {
         const fund = await getPettyCashFund(input.id);
@@ -972,17 +1118,21 @@ export const platformRouter = router({
       spend: protectedProcedure.input(z.object({
         businessDate: z.string(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
         description: z.string().min(1).max(256),
+        attachment: z.object({ dataBase64: z.string(), mimeType: z.string(), fileName: z.string().max(256) }).optional(),
       })).mutation(async ({ input, ctx }) => {
         if (ctx.user.role !== "petty_cash") throw new TRPCError({ code: "FORBIDDEN", message: "Only a petty cash custodian can log spending" });
         const fund = await getPettyCashFundByCustodian(ctx.user.id);
         if (!fund || !fund.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "No active petty cash fund for this account" });
         const balance = await getPettyCashFundBalance(fund.id);
         if (Number(input.amount) > balance) throw new TRPCError({ code: "BAD_REQUEST", message: "This would exceed the remaining petty cash balance" });
+        if (input.attachment && !isAllowedAttachmentMimeType(input.attachment.mimeType)) throw new TRPCError({ code: "BAD_REQUEST", message: "Attachment must be a JPEG, PNG, WEBP image, or a PDF" });
         const category = await getExpenseCategoryByCode("PETTY_CASH");
         if (!category) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Petty Cash expense category is missing" });
+        const saved = input.attachment ? await saveExpenseAttachment(input.attachment) : null;
         const spend = await createPettyCashSpendWithExpense({
           fundId: fund.id, businessDate: input.businessDate, amount: input.amount, description: input.description,
           categoryId: category.id, categoryName: category.name, payee: ctx.user.name || ctx.user.username || "Petty cash custodian", createdBy: ctx.user.id,
+          attachmentPath: saved?.attachmentPath ?? null, attachmentOriginalName: saved?.attachmentOriginalName ?? null,
         });
         await logActivity(ctx.user.id, "petty_cash_spend.create", "petty_cash_spend", spend.id, input.amount);
         return spend;
