@@ -2,12 +2,12 @@ import { useState } from "react";
 import { Ban, Pencil, Plus, Printer, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
-import { DateField, EmptyState, Field, LoadingState, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, toIsoDateString, cx } from "@/components/MarasiUI";
+import { CountryField, DateField, EmptyState, Field, LoadingState, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, toIsoDateString, cx } from "@/components/MarasiUI";
 import { FacilityReceipt, type FacilityReceiptData } from "@/components/FacilityReceipt";
 import { printFacilityReceiptViaAgent } from "@/lib/printAgent";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { applyCountryDialCode, COUNTRIES, COUNTRY_DIAL_CODES, DEFAULT_COUNTRY } from "@/lib/countries";
+import { applyCountryDialCode, COUNTRY_DIAL_CODES, DEFAULT_COUNTRY } from "@/lib/countries";
 import { useT, type TranslationKey } from "@/lib/i18n";
 
 const today = new Date().toISOString().slice(0, 10);
@@ -244,15 +244,18 @@ export default function FacilityBookingsPage() {
               <Field label={t("common.date")}><DateField value={bookingDate} onChange={setBookingDate}/></Field>
               <div className="rounded-2xl border border-divider bg-well p-4">
                 {customerId ? <div className="flex items-center justify-between gap-3"><div><span className="block text-xs font-semibold text-success">{t("tickets.savedSelected")}</span><span className="mt-1 block text-xs text-muted">{t("tickets.idPrefix")} {customerId}</span></div><SecondaryButton onClick={changeCustomer}>{t("tickets.change")}</SecondaryButton></div> : <>
-                  <Field label={t("customers.phoneNumber")} hint={t("facility.customerOptionalHint")} error={attemptedSubmit && customerInvalid && !phoneResolved ? t("common.required") : undefined}>
-                    <TextField value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} inputMode="tel" placeholder="+968 …" className={attemptedSubmit && customerInvalid && !phoneResolved ? "border-danger ring-1 ring-danger/30" : undefined}/>
-                  </Field>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label={t("common.country")}><CountryField value={customerCountry} onChange={(country) => { setCustomerPhone((current) => applyCountryDialCode(current, customerCountry, country)); setCustomerCountry(country); }}/></Field>
+                    <Field label={t("customers.phoneNumber")} error={attemptedSubmit && customerInvalid && !phoneResolved ? t("common.required") : undefined}>
+                      <TextField value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} inputMode="tel" placeholder="+968 …" className={attemptedSubmit && customerInvalid && !phoneResolved ? "border-danger ring-1 ring-danger/30" : undefined}/>
+                    </Field>
+                  </div>
+                  <p className="mt-2 text-[11px] text-subtle">{t("facility.customerOptionalHint")}</p>
                   {phoneLookupEnabled && phoneChecking && <p className="mt-2 text-xs text-muted">{t("tickets.checkingPhone")}</p>}
                   {phoneResolved && phoneMatch && <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl bg-success-bg px-4 py-3"><div className="min-w-0"><span className="block text-xs font-semibold text-success">{t("tickets.existingCustomerFound")}</span><span className="mt-1 block truncate text-xs text-muted">{phoneMatch.fullName}{phoneMatch.email ? ` · ${phoneMatch.email}` : ""}</span></div><SecondaryButton onClick={useMatchedCustomer}>{t("tickets.useThisCustomer")}</SecondaryButton></div>}
                   {isNewCustomerFlow && <div className="mt-3 grid gap-3">
                     <Field label={t("tickets.fullName")} error={attemptedSubmit && customerInvalid && !customerName.trim() ? t("common.required") : undefined}><TextField value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Customer full name" className={attemptedSubmit && customerInvalid && !customerName.trim() ? "border-danger ring-1 ring-danger/30" : undefined}/></Field>
                     <Field label={t("tickets.email")}><TextField type="email" value={customerEmail} onChange={(event) => setCustomerEmail(event.target.value)} placeholder="name@example.com"/></Field>
-                    <Field label={t("common.country")}><SelectField value={customerCountry} onChange={(event) => setCustomerCountry(event.target.value)}>{COUNTRIES.map((country) => <option key={country} value={country}>{country}</option>)}</SelectField></Field>
                   </div>}
                 </>}
               </div>

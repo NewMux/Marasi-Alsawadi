@@ -2,12 +2,12 @@ import { useMemo, useState } from "react";
 import { Plus, Printer, Ticket, Trash2, Undo2, UserRound, Users } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
-import { DateField, EmptyState, Field, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, cx } from "@/components/MarasiUI";
+import { CountryField, DateField, EmptyState, Field, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, cx } from "@/components/MarasiUI";
 import { TicketReceipt, type TicketReceiptData } from "@/components/TicketReceipt";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { printViaAgent } from "@/lib/printAgent";
-import { applyCountryDialCode, COUNTRIES, COUNTRY_DIAL_CODES, DEFAULT_COUNTRY } from "@/lib/countries";
+import { applyCountryDialCode, COUNTRY_DIAL_CODES, DEFAULT_COUNTRY } from "@/lib/countries";
 import { useT, type TranslationKey } from "@/lib/i18n";
 
 const today = new Date().toISOString().slice(0, 10);
@@ -200,9 +200,12 @@ export default function TicketDeskPage() {
         <Surface>
           <div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("tickets.customerCard")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("tickets.customerCardHint")}</p></div><UserRound size={19} className="text-accent"/></div>
           {form.customerId ? <div className="flex items-center justify-between rounded-2xl bg-success-bg px-4 py-3"><div><span className="block text-xs font-semibold text-success">{t("tickets.savedSelected")}</span><span className="mt-1 block text-xs text-muted">{t("tickets.idPrefix")} {form.customerId}</span></div><SecondaryButton onClick={changeCustomer}>{t("tickets.change")}</SecondaryButton></div> : <>
-            <Field label={t("customers.phoneNumber")} error={attemptedSubmit && customerInvalid && !phoneResolved ? t("common.required") : undefined}>
-              <TextField value={form.customerPhone} onChange={(event) => setForm({ ...form, customerPhone: event.target.value })} inputMode="tel" placeholder="+968 …" className={attemptedSubmit && customerInvalid && !phoneResolved ? "border-danger ring-1 ring-danger/30" : undefined}/>
-            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label={t("common.country")}><CountryField value={form.customerCountry} onChange={(country) => setForm((current) => ({ ...current, customerCountry: country, customerPhone: applyCountryDialCode(current.customerPhone, current.customerCountry, country) }))}/></Field>
+              <Field label={t("customers.phoneNumber")} error={attemptedSubmit && customerInvalid && !phoneResolved ? t("common.required") : undefined}>
+                <TextField value={form.customerPhone} onChange={(event) => setForm({ ...form, customerPhone: event.target.value })} inputMode="tel" placeholder="+968 …" className={attemptedSubmit && customerInvalid && !phoneResolved ? "border-danger ring-1 ring-danger/30" : undefined}/>
+              </Field>
+            </div>
             {!phoneLookupEnabled && <p className="mt-2 text-xs text-muted">{t("tickets.enterPhoneToLookup")}</p>}
             {phoneLookupEnabled && phoneChecking && <p className="mt-2 text-xs text-muted">{t("tickets.checkingPhone")}</p>}
             {phoneResolved && phoneMatch && <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl bg-success-bg px-4 py-3"><div className="min-w-0"><span className="block text-xs font-semibold text-success">{t("tickets.existingCustomerFound")}</span><span className="mt-1 block truncate text-xs text-muted">{phoneMatch.fullName}{phoneMatch.email ? ` · ${phoneMatch.email}` : ""}{phoneMatch.nationality ? ` · ${phoneMatch.nationality}` : ""}</span></div><SecondaryButton onClick={useMatchedCustomer}>{t("tickets.useThisCustomer")}</SecondaryButton></div>}
@@ -210,7 +213,6 @@ export default function TicketDeskPage() {
               <div className="flex items-center gap-2 rounded-xl bg-well px-3 py-2 text-[11px] font-semibold uppercase tracking-[.14em] text-subtle">{t("tickets.newWalkIn")}</div>
               <Field label={t("tickets.fullName")} error={attemptedSubmit && customerInvalid && !form.customerName.trim() ? t("common.required") : undefined}><TextField value={form.customerName} onChange={(event) => setForm({ ...form, customerName: event.target.value })} placeholder="Customer full name" className={attemptedSubmit && customerInvalid && !form.customerName.trim() ? "border-danger ring-1 ring-danger/30" : undefined}/></Field>
               <Field label={t("tickets.email")}><TextField type="email" value={form.customerEmail} onChange={(event) => setForm({ ...form, customerEmail: event.target.value })} placeholder="name@example.com"/></Field>
-              <Field label={t("common.country")}><SelectField value={form.customerCountry} onChange={(event) => setForm({ ...form, customerCountry: event.target.value, customerPhone: applyCountryDialCode(form.customerPhone, form.customerCountry, event.target.value) })}>{COUNTRIES.map((country) => <option key={country} value={country}>{country}</option>)}</SelectField></Field>
             </div>}
           </>}
         </Surface>

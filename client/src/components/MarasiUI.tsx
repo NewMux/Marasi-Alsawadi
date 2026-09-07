@@ -1,10 +1,12 @@
-import { CalendarIcon, Loader2, Search } from "lucide-react";
+import { CalendarIcon, Check, ChevronsUpDown, Loader2, Search } from "lucide-react";
 import { useState } from "react";
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { COUNTRIES } from "@/lib/countries";
 
 export const cx = (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(" ");
 
@@ -35,6 +37,35 @@ export function Field({ label, description, hint, error, children }: { label: st
 
 export function TextField(props: InputHTMLAttributes<HTMLInputElement>) { return <Input {...props} className={cx("h-11 rounded-xl border-line bg-well text-sm shadow-none focus:border-accent focus:ring-4 focus:ring-accent/10", props.className)} />; }
 export function SelectField(props: SelectHTMLAttributes<HTMLSelectElement>) { return <select {...props} className={cx("h-11 w-full min-w-0 rounded-xl border border-line bg-well px-3.5 text-sm text-ink outline-none transition focus:border-accent focus:ring-4 focus:ring-accent/10", props.className)} />; }
+
+// A searchable country picker (the plain <select> of 100+ countries is slow
+// to scan by eye and doesn't support typing to filter) — same trigger/panel
+// pattern as DateField, backed by cmdk for the search-as-you-type list.
+export function CountryField({ value, onChange, placeholder = "Select country", className, disabled }: { value: string; onChange: (country: string) => void; placeholder?: string; className?: string; disabled?: boolean }) {
+  const [open, setOpen] = useState(false);
+  return <Popover open={open} onOpenChange={setOpen}>
+    <PopoverTrigger asChild>
+      <button type="button" disabled={disabled} className={cx("flex h-11 w-full items-center justify-between gap-2 rounded-xl border border-line bg-well px-3.5 text-sm outline-none transition focus:border-accent focus:ring-4 focus:ring-accent/10 disabled:opacity-60", value ? "text-ink" : "text-muted", className)}>
+        <span className="truncate">{value || placeholder}</span>
+        <ChevronsUpDown size={15} className="shrink-0 text-muted"/>
+      </button>
+    </PopoverTrigger>
+    <PopoverContent className="w-[280px] p-0" align="start">
+      <Command>
+        <CommandInput placeholder="Search countries…"/>
+        <CommandList>
+          <CommandEmpty>No country found.</CommandEmpty>
+          <CommandGroup>
+            {COUNTRIES.map((country) => <CommandItem key={country} value={country} onSelect={() => { onChange(country); setOpen(false); }}>
+              <Check size={14} className={cx("mr-2 shrink-0", value === country ? "opacity-100" : "opacity-0")}/>
+              {country}
+            </CommandItem>)}
+          </CommandGroup>
+        </CommandList>
+      </Command>
+    </PopoverContent>
+  </Popover>;
+}
 
 // ISO ("YYYY-MM-DD") <-> local-date-safe Date conversions, and a DD/MM/YYYY
 // date picker that renders the same on every browser/OS regardless of the

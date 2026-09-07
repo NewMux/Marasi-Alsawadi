@@ -3,7 +3,7 @@ import { ArrowUpRight, CalendarDays, Phone, Plus, Users } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
-import { EmptyState, Field, LoadingState, MetricCard, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField } from "@/components/MarasiUI";
+import { CountryField, EmptyState, Field, LoadingState, MetricCard, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField } from "@/components/MarasiUI";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { applyCountryDialCode, COUNTRIES, COUNTRY_DIAL_CODES, DEFAULT_COUNTRY } from "@/lib/countries";
 import { useT } from "@/lib/i18n";
@@ -68,7 +68,7 @@ export default function CustomerDirectoryPage() {
           <Field label={t("customers.phoneNumber")}><TextField value={newCustomer.phone} onChange={(event) => setNewCustomer({ ...newCustomer, phone: event.target.value })} inputMode="tel" placeholder="+968 …"/></Field>
           {phoneMatch && <p className="rounded-xl bg-warning-bg px-3 py-2 text-xs text-warning">{t("customers.duplicatePhoneWarning", { name: phoneMatch.fullName })}</p>}
           <Field label={t("tickets.email")}><TextField type="email" value={newCustomer.email} onChange={(event) => setNewCustomer({ ...newCustomer, email: event.target.value })} placeholder="name@example.com"/></Field>
-          <Field label={t("common.country")}><SelectField value={newCustomer.nationality} onChange={(event) => setNewCustomer({ ...newCustomer, nationality: event.target.value, phone: applyCountryDialCode(newCustomer.phone, newCustomer.nationality, event.target.value) })}>{COUNTRIES.map((country) => <option key={country} value={country}>{country}</option>)}</SelectField></Field>
+          <Field label={t("common.country")}><CountryField value={newCustomer.nationality} onChange={(country) => setNewCustomer({ ...newCustomer, nationality: country, phone: applyCountryDialCode(newCustomer.phone, newCustomer.nationality, country) })}/></Field>
         </div>
         <DialogFooter><PrimaryButton onClick={submitNewCustomer} pending={createCustomer.isPending}>{t("customers.saveCustomer")}</PrimaryButton></DialogFooter>
       </DialogContent>
