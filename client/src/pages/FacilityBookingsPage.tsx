@@ -1,10 +1,13 @@
 import { useState } from "react";
-import { Plus, Printer, Trash2 } from "lucide-react";
+import { Ban, Pencil, Plus, Printer, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
-import { DateField, EmptyState, Field, LoadingState, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, cx } from "@/components/MarasiUI";
+import { DateField, EmptyState, Field, LoadingState, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, toIsoDateString, cx } from "@/components/MarasiUI";
 import { FacilityReceipt, type FacilityReceiptData } from "@/components/FacilityReceipt";
 import { printFacilityReceiptViaAgent } from "@/lib/printAgent";
+import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { applyCountryDialCode, COUNTRIES, COUNTRY_DIAL_CODES, DEFAULT_COUNTRY } from "@/lib/countries";
 import { useT, type TranslationKey } from "@/lib/i18n";
 
 const today = new Date().toISOString().slice(0, 10);
@@ -67,7 +70,12 @@ export default function FacilityBookingsPage() {
   const [fromTime, setFromTime] = useState("09:00");
   const [toTime, setToTime] = useState("17:00");
   const [bookingDate, setBookingDate] = useState(today);
+  const [customerId, setCustomerId] = useState("");
   const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState(`${COUNTRY_DIAL_CODES[DEFAULT_COUNTRY]} `);
+  const [customerEmail, setCustomerEmail] = useState("");
+  const [customerCountry, setCustomerCountry] = useState(DEFAULT_COUNTRY);
+  const [paymentMethod, setPaymentMethod] = useState<"cash" | "card" | "bank" | "mixed">("cash");
   const [notes, setNotes] = useState("");
   const [addonLines, setAddonLines] = useState<AddonLine[]>([]);
   const [attemptedSubmit, setAttemptedSubmit] = useState(false);
@@ -75,6 +83,24 @@ export default function FacilityBookingsPage() {
   const [existingBookingId, setExistingBookingId] = useState("");
   const [created, setCreated] = useState<FacilityReceiptData | null>(null);
   const [receiptWidth, setReceiptWidth] = useState<"80" | "58">("80");
+  const [editingBookingId, setEditingBookingId] = useState<number | null>(null);
+  const [editDate, setEditDate] = useState(today);
+  const [editQuantity, setEditQuantity] = useState("1");
+  const [cancelingBooking, setCancelingBooking] = useState<any>(null);
+  const [cancelReason, setCancelReason] = useState("");
+
+  // PRD Round 4, Section 9.3: same phone-first lookup as Ticket Desk — a
+  // booking can still be created with no customer attached (leave the phone
+  // field blank), but once staff start typing a number it's checked against
+  // the Customer Directory to prevent a duplicate record.
+  const phoneEntered = !customerId && customerPhone.trim().length > (COUNTRY_DIAL_CODES[customerCountry] || "").trim().length;
+  const phoneLookupEnabled = phoneEntered && customerPhone.trim().length >= 7;
+  const { data: phoneMatch, isFetching: phoneChecking } = trpc.platform.customers.findByPhone.useQuery({ phone: customerPhone.trim() }, { enabled: phoneLookupEnabled });
+  const phoneResolved = phoneLookupEnabled && !phoneChecking;
+  const isNewCustomerFlow = phoneResolved && !phoneMatch;
+  const customerInvalid = phoneEntered && (!phoneResolved || (isNewCustomerFlow && !customerName.trim()));
+  const useMatchedCustomer = () => { if (phoneMatch) setCustomerId(String(phoneMatch.id)); };
+  const changeCustomer = () => { setCustomerId(""); setCustomerName(""); setCustomerPhone(`${COUNTRY_DIAL_CODES[customerCountry] || COUNTRY_DIAL_CODES[DEFAULT_COUNTRY]} `); setCustomerEmail(""); setCustomerCountry(DEFAULT_COUNTRY); };
 
   const selectedFacility = facilityTypes.find((facility) => String(facility.id) === facilityTypeId);
   const quantity = selectedFacility?.pricingMethod === "daily" ? daysBetween(fromDate, toDate) : selectedFacility?.pricingMethod === "hourly" ? hoursBetween(fromTime, toTime) : 1;
@@ -106,15 +132,16 @@ export default function FacilityBookingsPage() {
   const removeAddonLine = (id: number) => setAddonLines((current) => current.filter((line) => line.id !== id));
   const resetForm = () => {
     setFacilityTypeId(""); setFromDate(today); setToDate(today); setFromTime("09:00"); setToTime("17:00");
-    setCustomerName(""); setNotes(""); setAddonLines([]); setAttemptedSubmit(false); setExistingBookingId(""); setExistingBookingQuery(""); setPartnerEntityId("");
+    setCustomerId(""); setCustomerName(""); setCustomerPhone(`${COUNTRY_DIAL_CODES[DEFAULT_COUNTRY]} `); setCustomerEmail(""); setCustomerCountry(DEFAULT_COUNTRY); setPaymentMethod("cash");
+    setNotes(""); setAddonLines([]); setAttemptedSubmit(false); setExistingBookingId(""); setExistingBookingQuery(""); setPartnerEntityId("");
   };
 
   const create = trpc.platform.facilityBookings.create.useMutation({
-    onSuccess: () => {
+    onSuccess: (data) => {
       utils.platform.facilityBookings.list.invalidate(); utils.platform.finance.invalidate(); toast.success(t("facility.bookingConfirmed"));
       if (pricing && selectedFacility) {
         setCreated({
-          facilityName: selectedFacility.name, customerName: customerName.trim(), bookingDate,
+          facilityName: selectedFacility.name, customerName: (data.customer as any)?.fullName || customerName.trim(), bookingDate,
           durationLabel: selectedFacility.pricingMethod === "daily" ? `${quantity} ${quantity === 1 ? t("facility.day") : t("facility.daysWord")}` : selectedFacility.pricingMethod === "hourly" ? `${quantity.toFixed(2)} ${t("facility.hoursWord")}` : null,
           facilityAmount: pricing.facilityAmount, addons: (pricing.addons as any[]).map((addon) => ({ name: addon.addonServiceName, quantity: addon.quantity, amount: addon.amount })),
           notes: notes.trim() || null, totalAmount: pricing.totalAmount,
@@ -129,6 +156,25 @@ export default function FacilityBookingsPage() {
     onSuccess: () => { utils.platform.facilityBookings.list.invalidate(); utils.platform.finance.invalidate(); toast.success(t("facility.addonsLogged")); resetForm(); },
     onError: (error) => toast.error(error.message),
   });
+  const updateBooking = trpc.platform.facilityBookings.update.useMutation({
+    onSuccess: () => { utils.platform.facilityBookings.list.invalidate(); utils.platform.finance.invalidate(); toast.success(t("facility.bookingUpdated")); setEditingBookingId(null); },
+    onError: (error) => toast.error(error.message),
+  });
+  const cancelBooking = trpc.platform.facilityBookings.cancel.useMutation({
+    onSuccess: () => { utils.platform.facilityBookings.list.invalidate(); utils.platform.finance.invalidate(); toast.success(t("facility.bookingCancelled")); },
+    onError: (error) => toast.error(error.message),
+  });
+  const startEdit = (booking: any) => { setEditingBookingId(booking.id); setEditDate(toIsoDateString(booking.bookingDate)); setEditQuantity(String(booking.quantity)); };
+  const saveEdit = (booking: any) => {
+    const facility = facilityTypes.find((entry) => entry.id === booking.facilityTypeId);
+    if (facility?.pricingMethod !== "fixed" && !(Number(editQuantity) > 0)) return toast.error(t("facility.enterQuantity"));
+    updateBooking.mutate({ id: booking.id, bookingDate: editDate, quantity: facility?.pricingMethod === "fixed" ? undefined : Number(editQuantity) });
+  };
+  const confirmCancelBooking = () => {
+    if (!cancelingBooking) return;
+    cancelBooking.mutate({ id: cancelingBooking.id, reason: cancelReason.trim() || undefined });
+    setCancelingBooking(null);
+  };
 
   const facilityInvalid = bookingMode === "new" && !facilityTypeId;
   const quantityInvalid = bookingMode === "new" && selectedFacility?.pricingMethod !== "fixed" && !(quantity > 0);
@@ -140,11 +186,15 @@ export default function FacilityBookingsPage() {
     if (bookingMode === "new") {
       if (facilityInvalid) return toast.error(t("facility.chooseFacility"));
       if (quantityInvalid) return toast.error(t("facility.enterQuantity"));
+      if (customerInvalid) return toast.error(t("tickets.selectCustomerOrWalkIn"));
       create.mutate({
         facilityTypeId: Number(facilityTypeId), bookingDate,
         quantity: selectedFacility?.pricingMethod === "fixed" ? 1 : quantity,
         addons: validAddonLines.map((line) => ({ addonServiceId: Number(line.addonServiceId), quantity: Number(line.quantity) })),
-        customerName: customerName.trim() || undefined, notes: notes.trim() || undefined,
+        customerId: customerId ? Number(customerId) : undefined,
+        customerName: customerName.trim() || undefined, customerPhone: phoneEntered ? customerPhone.trim() : undefined,
+        customerEmail: customerEmail.trim() || undefined, customerCountry: customerCountry || undefined,
+        paymentMethod, notes: notes.trim() || undefined,
         partnerEntityId: partnerEntityId ? Number(partnerEntityId) : undefined,
       });
     } else {
@@ -192,14 +242,28 @@ export default function FacilityBookingsPage() {
               </div>}
               {selectedFacility && selectedFacility.pricingMethod !== "fixed" && <p className="-mt-2 text-[11px] text-subtle">{selectedFacility.pricingMethod === "daily" ? `${quantity} ${quantity === 1 ? t("facility.day") : t("facility.daysWord")}` : `${quantity.toFixed(2)} ${t("facility.hoursWord")}`} · {t("facility.rateNotEditable")}</p>}
               <Field label={t("common.date")}><DateField value={bookingDate} onChange={setBookingDate}/></Field>
-              <Field label={t("facility.customerName")}><TextField value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder={t("common.optional")}/></Field>
+              <div className="rounded-2xl border border-divider bg-well p-4">
+                {customerId ? <div className="flex items-center justify-between gap-3"><div><span className="block text-xs font-semibold text-success">{t("tickets.savedSelected")}</span><span className="mt-1 block text-xs text-muted">{t("tickets.idPrefix")} {customerId}</span></div><SecondaryButton onClick={changeCustomer}>{t("tickets.change")}</SecondaryButton></div> : <>
+                  <Field label={t("customers.phoneNumber")} hint={t("facility.customerOptionalHint")} error={attemptedSubmit && customerInvalid && !phoneResolved ? t("common.required") : undefined}>
+                    <TextField value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} inputMode="tel" placeholder="+968 …" className={attemptedSubmit && customerInvalid && !phoneResolved ? "border-danger ring-1 ring-danger/30" : undefined}/>
+                  </Field>
+                  {phoneLookupEnabled && phoneChecking && <p className="mt-2 text-xs text-muted">{t("tickets.checkingPhone")}</p>}
+                  {phoneResolved && phoneMatch && <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl bg-success-bg px-4 py-3"><div className="min-w-0"><span className="block text-xs font-semibold text-success">{t("tickets.existingCustomerFound")}</span><span className="mt-1 block truncate text-xs text-muted">{phoneMatch.fullName}{phoneMatch.email ? ` · ${phoneMatch.email}` : ""}</span></div><SecondaryButton onClick={useMatchedCustomer}>{t("tickets.useThisCustomer")}</SecondaryButton></div>}
+                  {isNewCustomerFlow && <div className="mt-3 grid gap-3">
+                    <Field label={t("tickets.fullName")} error={attemptedSubmit && customerInvalid && !customerName.trim() ? t("common.required") : undefined}><TextField value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Customer full name" className={attemptedSubmit && customerInvalid && !customerName.trim() ? "border-danger ring-1 ring-danger/30" : undefined}/></Field>
+                    <Field label={t("tickets.email")}><TextField type="email" value={customerEmail} onChange={(event) => setCustomerEmail(event.target.value)} placeholder="name@example.com"/></Field>
+                    <Field label={t("common.country")}><SelectField value={customerCountry} onChange={(event) => setCustomerCountry(event.target.value)}>{COUNTRIES.map((country) => <option key={country} value={country}>{country}</option>)}</SelectField></Field>
+                  </div>}
+                </>}
+              </div>
               <Field label={t("common.description")}><TextField value={notes} onChange={(event) => setNotes(event.target.value)} placeholder={t("common.optional")}/></Field>
+              <Field label={t("tickets.paymentMethod")}><SelectField value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as typeof paymentMethod)}><option value="cash">{t("tickets.cash")}</option><option value="card">{t("tickets.card")}</option><option value="bank">{t("tickets.bank")}</option><option value="mixed">{t("tickets.mixed")}</option></SelectField></Field>
               {partnerEntities.length > 0 && <Field label={t("tickets.partnerEntity")} hint={t("facility.partnerEntityHint")}><SelectField value={partnerEntityId} onChange={(event) => setPartnerEntityId(event.target.value)}><option value="">{t("tickets.noPartnerEntity")}</option>{partnerEntities.map((entity) => <option key={entity.id} value={entity.id}>{entity.name}</option>)}</SelectField></Field>}
             </> : <>
               <Field label={t("facility.findBooking")} error={attemptedSubmit && existingBookingInvalid ? t("common.required") : undefined}>
                 <SearchField value={existingBookingQuery} onChange={(value) => { setExistingBookingQuery(value); setExistingBookingId(""); }} placeholder={t("facility.findBookingPlaceholder")}/>
               </Field>
-              {existingBookingQuery.trim() && !existingBookingId && <div className="max-h-44 overflow-y-auto rounded-2xl border border-divider bg-well">{(existingBookingResults as any[]).length ? (existingBookingResults as any[]).slice(0, 6).map((row: any) => <button key={row.booking.id} onClick={() => { setExistingBookingId(String(row.booking.id)); setExistingBookingQuery(`${row.booking.facilityTypeName} — ${row.booking.customerName || t("facility.noCustomerName")}`); }} className="flex w-full items-center justify-between gap-3 border-b border-divider px-4 py-3 text-left last:border-0 hover:bg-[#eaf6f8]"><span><b className="block text-sm">{row.booking.facilityTypeName}</b><span className="mt-1 block text-xs text-muted">{row.booking.customerName || t("facility.noCustomerName")} · {dateLabel(row.booking.bookingDate)}</span></span><span className="text-xs font-semibold text-accent">{t("tickets.select")}</span></button>) : <div className="p-4 text-xs text-muted">{t("facility.noBookingsMatch")}</div>}</div>}
+              {existingBookingQuery.trim() && !existingBookingId && <div className="max-h-44 overflow-y-auto rounded-2xl border border-divider bg-well">{(existingBookingResults as any[]).filter((row: any) => row.booking.status !== "cancelled").length ? (existingBookingResults as any[]).filter((row: any) => row.booking.status !== "cancelled").slice(0, 6).map((row: any) => <button key={row.booking.id} onClick={() => { setExistingBookingId(String(row.booking.id)); setExistingBookingQuery(`${row.booking.facilityTypeName} — ${row.booking.customerName || t("facility.noCustomerName")}`); }} className="flex w-full items-center justify-between gap-3 border-b border-divider px-4 py-3 text-left last:border-0 hover:bg-[#eaf6f8]"><span><b className="block text-sm">{row.booking.facilityTypeName}</b><span className="mt-1 block text-xs text-muted">{row.booking.customerName || t("facility.noCustomerName")} · {dateLabel(row.booking.bookingDate)}</span></span><span className="text-xs font-semibold text-accent">{t("tickets.select")}</span></button>) : <div className="p-4 text-xs text-muted">{t("facility.noBookingsMatch")}</div>}</div>}
               {selectedExistingBooking && <div className="rounded-2xl bg-success-bg px-4 py-3 text-xs text-success">{t("facility.addingTo")}: <b>{selectedExistingBooking.booking.facilityTypeName}</b> — {dateLabel(selectedExistingBooking.booking.bookingDate)} ({money(selectedExistingBooking.booking.totalAmount)} {t("facility.soFar")})</div>}
               <Field label={t("facility.addonDate")}><DateField value={bookingDate} onChange={setBookingDate}/></Field>
             </>}
@@ -208,20 +272,35 @@ export default function FacilityBookingsPage() {
         <Surface>
           <div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("facility.bookingsList")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("facility.bookingsListHint")}</p></div><StatusPill>{bookingRows.length}</StatusPill></div>
           <SearchField value={bookingListQuery} onChange={setBookingListQuery} placeholder={t("facility.findBookingPlaceholder")}/>
-          <div className="mt-4">{bookingsLoading ? <LoadingState/> : bookingRows.length ? <div className="divide-y divide-divider">{(bookingRows as any[]).slice(0, 30).map((row: any) => { const expanded = expandedBookingId === row.booking.id; return <div key={row.booking.id} className="py-3">
-            <button onClick={() => { setExpandedBookingId(expanded ? null : row.booking.id); setRowAddonServiceId(""); setRowAddonQuantity("1"); }} className="grid w-full grid-cols-[1fr_.7fr_.6fr] items-center gap-3 rounded-xl px-2 py-1.5 text-left hover:bg-fill">
-              <div className="min-w-0"><div className="truncate text-sm font-medium">{row.booking.facilityTypeName}</div><div className="mt-1 truncate text-xs text-muted">{row.booking.customerName || t("facility.noCustomerName")}</div></div>
+          <div className="mt-4">{bookingsLoading ? <LoadingState/> : bookingRows.length ? <div className="divide-y divide-divider">{(bookingRows as any[]).slice(0, 30).map((row: any) => { const expanded = expandedBookingId === row.booking.id; const cancelled = row.booking.status === "cancelled"; const editing = editingBookingId === row.booking.id; const rowFacility = facilityTypes.find((entry) => entry.id === row.booking.facilityTypeId); return <div key={row.booking.id} className="py-3">
+            <button onClick={() => { setExpandedBookingId(expanded ? null : row.booking.id); setRowAddonServiceId(""); setRowAddonQuantity("1"); setEditingBookingId(null); }} className="grid w-full grid-cols-[1fr_.7fr_.6fr] items-center gap-3 rounded-xl px-2 py-1.5 text-left hover:bg-fill">
+              <div className="min-w-0"><div className="flex items-center gap-2"><span className="truncate text-sm font-medium">{row.booking.facilityTypeName}</span>{cancelled && <StatusPill tone="danger">{t("facility.statusCancelledPill")}</StatusPill>}</div><div className="mt-1 truncate text-xs text-muted">{row.customer?.fullName || row.booking.customerName || t("facility.noCustomerName")}</div></div>
               <span className="text-xs text-muted">{dateLabel(row.booking.bookingDate)}</span>
-              <b className="text-right text-sm">{money(row.booking.totalAmount)}</b>
+              <b className={cx("text-right text-sm", cancelled && "text-muted line-through")}>{money(row.booking.totalAmount)}</b>
             </button>
             {expanded && <div className="mt-3 rounded-2xl bg-well p-4">
               <div className="grid gap-1.5 text-xs">
+                {(row.customer?.phone || row.customer?.email) && <div className="mb-1 text-muted">{[row.customer?.phone, row.customer?.email].filter(Boolean).join(" · ")}</div>}
                 <div className="flex justify-between"><span className="text-muted">{row.booking.facilityTypeName}</span><span>{money(row.booking.facilityAmount)}</span></div>
                 {(row.addons as any[]).map((addon: any) => <div key={addon.id} className="flex justify-between"><span className="text-muted">{addon.addonServiceName} ×{addon.quantity}</span><span>{money(addon.amount)}</span></div>)}
                 {row.booking.notes && <div className="mt-1 text-muted">{row.booking.notes}</div>}
                 <div className="mt-1.5 flex justify-between border-t border-divider pt-1.5 font-semibold"><span>{t("common.total")}</span><span>{money(row.booking.totalAmount)}</span></div>
+                <div className="flex justify-between text-muted"><span>{t("tickets.paymentMethod")}</span><span className="capitalize">{t(`tickets.${row.booking.paymentMethod || "cash"}` as TranslationKey)}</span></div>
+                {cancelled && row.booking.cancelReason && <div className="mt-1 text-danger">{t("facility.cancelReasonNote")}: {row.booking.cancelReason}</div>}
               </div>
-              <div className="mt-4 border-t border-divider pt-4">
+              {!cancelled && <div className="mt-4 flex flex-wrap gap-2 border-t border-divider pt-4">
+                <SecondaryButton onClick={() => (editing ? setEditingBookingId(null) : startEdit(row.booking))}><Pencil size={14} className="mr-1.5"/>{t("facility.editBooking")}</SecondaryButton>
+                <SecondaryButton onClick={() => { setCancelReason(""); setCancelingBooking(row.booking); }} className="text-danger hover:bg-danger-bg"><Ban size={14} className="mr-1.5"/>{t("facility.cancelBooking")}</SecondaryButton>
+              </div>}
+              {editing && <div className="mt-4 border-t border-divider pt-4">
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[.14em] text-subtle">{t("facility.editBooking")}</div>
+                <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+                  <DateField value={editDate} onChange={setEditDate}/>
+                  {rowFacility && rowFacility.pricingMethod !== "fixed" && <TextField type="number" min={0.5} step={rowFacility.pricingMethod === "hourly" ? "0.5" : "1"} value={editQuantity} onChange={(event) => setEditQuantity(event.target.value)} placeholder={rowFacility.pricingMethod === "daily" ? t("facility.newDurationDays") : t("facility.newDurationHours")}/>}
+                  <PrimaryButton onClick={() => saveEdit(row.booking)} pending={updateBooking.isPending}>{t("facility.saveChanges")}</PrimaryButton>
+                </div>
+              </div>}
+              {!cancelled && <div className="mt-4 border-t border-divider pt-4">
                 <div className="mb-2 text-[11px] font-semibold uppercase tracking-[.14em] text-subtle">{t("facility.addAddonLine")}</div>
                 <div className="grid gap-2 sm:grid-cols-[1.3fr_.6fr_.6fr_auto]">
                   <SelectField value={rowAddonServiceId} onChange={(event) => setRowAddonServiceId(event.target.value)}><option value="">{t("facility.chooseAddon")}</option>{addonServices.map((entry) => <option key={entry.id} value={entry.id}>{entry.name} — {money(entry.rate)}</option>)}</SelectField>
@@ -229,7 +308,7 @@ export default function FacilityBookingsPage() {
                   <DateField value={rowAddonDate} onChange={setRowAddonDate}/>
                   <SecondaryButton onClick={() => submitRowAddon(row.booking.id)}><Plus size={14} className="mr-1"/>{t("common.add")}</SecondaryButton>
                 </div>
-              </div>
+              </div>}
             </div>}
           </div>; })}</div> : <EmptyState title={t("facility.noBookingsYet")} description={t("facility.noBookingsHint")}/>}</div>
         </Surface>
@@ -263,5 +342,12 @@ export default function FacilityBookingsPage() {
       </Surface>
     </div>
     {created && <FacilityReceipt data={created} width={receiptWidth}/>}
+    <Dialog open={Boolean(cancelingBooking)} onOpenChange={(open) => { if (!open) setCancelingBooking(null); }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>{t("facility.confirmCancelBooking")}</DialogTitle></DialogHeader>
+        <Field label={t("tickets.cancelReasonLabel")}><Textarea value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} placeholder={t("tickets.cancelReasonPlaceholder")} className="min-h-[86px] rounded-xl border-line bg-well"/></Field>
+        <DialogFooter><SecondaryButton onClick={() => setCancelingBooking(null)}>{t("common.close")}</SecondaryButton><PrimaryButton onClick={confirmCancelBooking} pending={cancelBooking.isPending}>{t("facility.confirmCancelBookingAction")}</PrimaryButton></DialogFooter>
+      </DialogContent>
+    </Dialog>
   </>;
 }

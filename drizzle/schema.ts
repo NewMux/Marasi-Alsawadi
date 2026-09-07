@@ -625,7 +625,13 @@ export const facilityBookings = mysqlTable("facility_bookings", {
   facilityAmount: decimal("facilityAmount", { precision: 12, scale: 3 }).notNull(),
   addonsAmount: decimal("addonsAmount", { precision: 12, scale: 3 }).default("0").notNull(),
   totalAmount: decimal("totalAmount", { precision: 12, scale: 3 }).notNull(),
+  // PRD Round 4, Section 9.3: linked to the Customer Directory the same way
+  // ticket_purchases links to guests — customerName stays as a display
+  // snapshot (also covers the pre-Section-9 walk-in-name-only bookings still
+  // in history) so the list/receipt never need a join just to show a name.
+  customerId: int("customerId"),
   customerName: varchar("customerName", { length: 160 }),
+  paymentMethod: mysqlEnum("paymentMethod", ["cash", "card", "bank", "mixed"]).default("cash").notNull(),
   notes: text("notes"),
   // PRD Round 4, Section 5: partner discount applies to the facility line
   // only (never the add-ons) — snapshotted the same way ticket_purchases
@@ -634,6 +640,13 @@ export const facilityBookings = mysqlTable("facility_bookings", {
   partnerEntityId: int("partnerEntityId"),
   partnerEntityName: varchar("partnerEntityName", { length: 160 }),
   discountPercentage: decimal("discountPercentage", { precision: 5, scale: 2 }),
+  // PRD Round 4, Section 9.4: cancelling a booking must reverse its revenue —
+  // the booking row itself is never deleted (kept for record-keeping), only
+  // its linked finance_entries/revenue_records rows are removed.
+  status: mysqlEnum("status", ["confirmed", "cancelled"]).default("confirmed").notNull(),
+  cancelledAt: timestamp("cancelledAt"),
+  cancelledBy: int("cancelledBy"),
+  cancelReason: text("cancelReason"),
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });

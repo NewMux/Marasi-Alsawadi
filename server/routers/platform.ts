@@ -29,7 +29,7 @@ import {
   listPartnerDiscountRules, createPartnerDiscountRule, updatePartnerDiscountRule, deletePartnerDiscountRule, resolveActivePartnerDiscountRule,
   listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
   listAddonServices, getAddonService, createAddonService, updateAddonService, deleteAddonService,
-  findOrCreateRevenueCategoryForFacility, createFacilityBooking, listFacilityBookings, listFacilityBookingAddons, getFacilityBooking, addFacilityBookingAddons,
+  findOrCreateRevenueCategoryForFacility, createFacilityBooking, listFacilityBookings, listFacilityBookingAddons, getFacilityBooking, addFacilityBookingAddons, updateFacilityBookingDetails, cancelFacilityBooking,
   listPrdTicketPurchases, listPrdTicketLines, getCustomerById, refundPrdTicketPurchase,
   listExpenseAdjustments, createExpenseAdjustment, createExpenseTransfer, getExpenseCategoryBalances,
   listRevenueCategories, createRevenueCategory, updateRevenueCategory, deleteRevenueCategory, getRevenueCategory,
@@ -342,13 +342,14 @@ export const platformRouter = router({
   facilityBookings: router({
     catalog: protectedProcedure.query(async () => ({ facilityTypes: await listFacilityTypes(false), addonServices: await listAddonServices(false), partnerEntities: await listPartnerEntities(false) })),
     list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional(), query: z.string().optional() }).optional()).query(async ({ input }) => {
-      const bookings = await listFacilityBookings(input?.from, input?.to, input?.query);
-      return Promise.all((bookings as any[]).map(async (booking) => ({ booking, addons: await listFacilityBookingAddons(booking.id) })));
+      const rows = await listFacilityBookings(input?.from, input?.to, input?.query);
+      return Promise.all((rows as any[]).map(async (row) => ({ booking: row.booking, customer: row.customer, addons: await listFacilityBookingAddons(row.booking.id) })));
     }),
     get: protectedProcedure.input(z.object({ id: z.number().int().positive() })).query(async ({ input }) => {
       const booking = await getFacilityBooking(input.id);
       if (!booking) throw new TRPCError({ code: "NOT_FOUND", message: "Facility booking was not found" });
-      return { booking, addons: await listFacilityBookingAddons(booking.id) };
+      const customer = booking.customerId ? await getCustomerById(booking.customerId) : null;
+      return { booking, customer, addons: await listFacilityBookingAddons(booking.id) };
     }),
     preview: protectedProcedure.input(z.object({
       facilityTypeId: z.number().int().positive(), quantity: z.number().positive(),
@@ -362,18 +363,59 @@ export const platformRouter = router({
       facilityTypeId: z.number().int().positive(), bookingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       quantity: z.number().positive(),
       addons: z.array(z.object({ addonServiceId: z.number().int().positive(), quantity: z.number().positive() })).default([]),
-      customerName: z.string().max(160).optional(), notes: z.string().max(1000).optional(),
+      customerId: z.number().int().positive().optional(), customerName: z.string().max(160).optional(),
+      customerPhone: z.string().max(32).optional(), customerEmail: z.string().email().optional(), customerCountry: z.string().max(64).optional(),
+      paymentMethod: z.enum(["cash", "card", "bank", "mixed"]).default("cash"),
+      notes: z.string().max(1000).optional(),
       partnerEntityId: z.number().int().positive().optional(),
     })).mutation(async ({ input, ctx }) => {
       const resolved = await resolveFacilityBookingPricing(input);
+      // PRD Round 4, Section 9.3: same phone-first pattern as Ticket Desk —
+      // an existing customerId is used as-is, a name+phone with no id
+      // creates a new guest record, and neither leaves the booking with no
+      // linked customer (still allowed, e.g. an internal/no-customer hold).
+      const customer = input.customerId ? await getCustomerById(input.customerId)
+        : (input.customerName?.trim() && input.customerPhone?.trim()) ? await createGuest({ fullName: input.customerName.trim(), phone: input.customerPhone.trim(), email: input.customerEmail, nationality: input.customerCountry } as any)
+        : null;
       const booking = await createFacilityBooking({
         facilityTypeId: resolved.facility.id, facilityTypeName: resolved.facility.name, facilityCategoryId: resolved.facilityCategory.id, facilityCategoryName: resolved.facilityCategory.name,
         bookingDate: input.bookingDate, quantity: String(resolved.facilityQuantity), facilityAmount: resolved.facilityAmount, addons: resolved.addons,
-        customerName: input.customerName?.trim(), notes: input.notes?.trim(), createdBy: ctx.user.id,
+        customerId: customer?.id ?? null, customerName: customer?.fullName || input.customerName?.trim(), paymentMethod: input.paymentMethod, notes: input.notes?.trim(), createdBy: ctx.user.id,
         partnerEntity: resolved.partnerEntity && resolved.discountPercentage ? { ...resolved.partnerEntity, discountPercentage: resolved.discountPercentage } : null,
       });
       await logActivity(ctx.user.id, "facility_booking.create", "facility_booking", booking.id, `${resolved.facility.code}:${booking.totalAmount}`);
-      return { booking, addons: await listFacilityBookingAddons(booking.id) };
+      return { booking, customer, addons: await listFacilityBookingAddons(booking.id) };
+    }),
+    // PRD Round 4, Section 9.2: edit an existing confirmed booking's date
+    // and, for daily/hourly facilities, its duration — the facility, partner
+    // entity and add-ons are untouched; only the facility line's amount and
+    // date are recalculated and kept in sync with its linked revenue entry.
+    update: protectedProcedure.input(z.object({
+      id: z.number().int().positive(), bookingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), quantity: z.number().positive().optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const booking = await getFacilityBooking(input.id);
+      if (!booking) throw new TRPCError({ code: "NOT_FOUND", message: "Facility booking was not found" });
+      if (booking.status === "cancelled") throw new TRPCError({ code: "BAD_REQUEST", message: "This booking has been cancelled and can no longer be edited" });
+      const facility = await getFacilityType(booking.facilityTypeId);
+      if (!facility) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "This booking's facility is missing" });
+      const quantity = facility.pricingMethod === "fixed" ? 1 : (input.quantity ?? Number(booking.quantity));
+      if (facility.pricingMethod !== "fixed" && !(quantity > 0)) throw new TRPCError({ code: "BAD_REQUEST", message: "Enter a valid duration" });
+      const fullFacilityAmount = calculateFacilityLineAmount(String(facility.rate), quantity);
+      const { discountedAmount: facilityAmount } = applyFacilityDiscount(fullFacilityAmount, booking.discountPercentage as any);
+      const totalAmount = (Number(facilityAmount) + Number(booking.addonsAmount)).toFixed(3);
+      const updated = await updateFacilityBookingDetails(input.id, { bookingDate: input.bookingDate, quantity: String(quantity), facilityAmount, totalAmount });
+      await logActivity(ctx.user.id, "facility_booking.update", "facility_booking", input.id, `${input.bookingDate}:${totalAmount}`);
+      return { booking: updated, addons: await listFacilityBookingAddons(updated.id) };
+    }),
+    // PRD Round 4, Section 9.1/9.4: cancel a booking — its status flips to
+    // "cancelled" (kept for record-keeping) and its revenue is reversed out
+    // of finance_entries/revenue_records so it stops counting in reports.
+    cancel: protectedProcedure.input(z.object({ id: z.number().int().positive(), reason: z.string().max(500).optional() })).mutation(async ({ input, ctx }) => {
+      const updated = await cancelFacilityBooking(input.id, ctx.user.id, input.reason?.trim() || undefined).catch((error: Error) => {
+        throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
+      });
+      await logActivity(ctx.user.id, "facility_booking.cancel", "facility_booking", input.id, input.reason?.trim() || "");
+      return { booking: updated, addons: await listFacilityBookingAddons(updated.id) };
     }),
     // PRD Round 3, Section 5.2/5.3: log an add-on against a booking created
     // earlier — from the "Add-ons Only" flow (no facility re-selected) or a
@@ -384,6 +426,7 @@ export const platformRouter = router({
     })).mutation(async ({ input, ctx }) => {
       const booking = await getFacilityBooking(input.bookingId);
       if (!booking) throw new TRPCError({ code: "NOT_FOUND", message: "Facility booking was not found" });
+      if (booking.status === "cancelled") throw new TRPCError({ code: "BAD_REQUEST", message: "This booking has been cancelled and can no longer be changed" });
       const addons = await Promise.all(input.addons.map(async (line) => {
         const addon = await getAddonService(line.addonServiceId);
         if (!addon || !addon.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "One of the selected add-on services is no longer active" });

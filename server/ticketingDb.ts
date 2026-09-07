@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { and, desc, eq, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   addonServices, assetAdjustments, assetCategories, assetRecords, expenseAdjustments, expenseCategories, expenseRecords, facilityBookingAddons, facilityBookings, facilityTypes, guests, partnerEntities, partnerDiscountRules, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
   serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers,
@@ -640,16 +640,29 @@ export async function createFacilityBooking(data: {
   facilityTypeId: number; facilityTypeName: string; facilityCategoryId: number; facilityCategoryName: string;
   bookingDate: string; quantity: string; facilityAmount: string;
   addons: Array<{ addonServiceId: number; addonServiceName: string; categoryId: number; categoryName: string; quantity: string; amount: string }>;
-  customerName?: string; notes?: string; createdBy: number;
+  customerId?: number | null; customerName?: string; paymentMethod?: "cash" | "card" | "bank" | "mixed"; notes?: string; createdBy: number;
   partnerEntity?: { id: number; name: string; discountPercentage: string } | null;
 }) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   const addonsAmountMinor = data.addons.reduce((sum, addon) => sum + moneyToMinor(addon.amount), 0);
   const facilityAmountMinor = moneyToMinor(data.facilityAmount);
   return db.transaction(async (tx) => {
+    // The booking row is inserted first, before its finance entries, so the
+    // revenue/add-on finance_entries rows below can carry referenceId:
+    // booking.id — required for cancelFacilityBooking to find and reverse
+    // exactly this booking's revenue later.
+    await tx.insert(facilityBookings).values({
+      facilityTypeId: data.facilityTypeId, facilityTypeName: data.facilityTypeName, bookingDate: data.bookingDate, quantity: data.quantity,
+      facilityAmount: data.facilityAmount, addonsAmount: minorToMoney(addonsAmountMinor), totalAmount: minorToMoney(facilityAmountMinor + addonsAmountMinor),
+      customerId: data.customerId ?? null, customerName: data.customerName || null, paymentMethod: data.paymentMethod || "cash", notes: data.notes || null, createdBy: data.createdBy,
+      partnerEntityId: data.partnerEntity?.id ?? null, partnerEntityName: data.partnerEntity?.name ?? null, discountPercentage: data.partnerEntity?.discountPercentage ?? null,
+    } as any);
+    const bookingRows = await tx.select().from(facilityBookings).orderBy(desc(facilityBookings.id)).limit(1);
+    const booking = bookingRows[0]!;
+
     await tx.insert(financeEntries).values({
       date: data.bookingDate, stream: "extras", type: "revenue", amount: data.facilityAmount,
-      description: `Facility booking — ${data.facilityTypeName}`, referenceType: "facility_booking", createdBy: data.createdBy,
+      description: `Facility booking — ${data.facilityTypeName}`, referenceType: "facility_booking", referenceId: booking.id, createdBy: data.createdBy,
     } as any);
     const facilityFinanceRows = await tx.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
     await tx.insert(revenueRecords).values({
@@ -657,19 +670,10 @@ export async function createFacilityBooking(data: {
       description: `Facility booking — ${data.facilityTypeName}`, financeEntryId: facilityFinanceRows[0]!.id, createdBy: data.createdBy,
     } as any);
 
-    await tx.insert(facilityBookings).values({
-      facilityTypeId: data.facilityTypeId, facilityTypeName: data.facilityTypeName, bookingDate: data.bookingDate, quantity: data.quantity,
-      facilityAmount: data.facilityAmount, addonsAmount: minorToMoney(addonsAmountMinor), totalAmount: minorToMoney(facilityAmountMinor + addonsAmountMinor),
-      customerName: data.customerName || null, notes: data.notes || null, createdBy: data.createdBy,
-      partnerEntityId: data.partnerEntity?.id ?? null, partnerEntityName: data.partnerEntity?.name ?? null, discountPercentage: data.partnerEntity?.discountPercentage ?? null,
-    } as any);
-    const bookingRows = await tx.select().from(facilityBookings).orderBy(desc(facilityBookings.id)).limit(1);
-    const booking = bookingRows[0]!;
-
     for (const addon of data.addons) {
       await tx.insert(financeEntries).values({
         date: data.bookingDate, stream: "extras", type: "revenue", amount: addon.amount,
-        description: `Facility booking add-on — ${addon.addonServiceName}`, referenceType: "facility_booking_addon", createdBy: data.createdBy,
+        description: `Facility booking add-on — ${addon.addonServiceName}`, referenceType: "facility_booking_addon", referenceId: booking.id, createdBy: data.createdBy,
       } as any);
       const addonFinanceRows = await tx.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
       await tx.insert(revenueRecords).values({
@@ -691,9 +695,11 @@ export async function listFacilityBookings(from?: string, to?: string, query?: s
   if (to) conditions.push(sql`${facilityBookings.bookingDate} <= ${to}`);
   if (query?.trim()) {
     const pattern = `%${query.trim()}%`;
-    conditions.push(or(sql`LOWER(${facilityBookings.customerName}) LIKE LOWER(${pattern})`, sql`LOWER(${facilityBookings.facilityTypeName}) LIKE LOWER(${pattern})`));
+    conditions.push(or(sql`LOWER(${facilityBookings.customerName}) LIKE LOWER(${pattern})`, sql`LOWER(${facilityBookings.facilityTypeName}) LIKE LOWER(${pattern})`, sql`${guests.phone} LIKE ${pattern}`));
   }
-  const base = db.select().from(facilityBookings).orderBy(desc(facilityBookings.bookingDate), desc(facilityBookings.id));
+  const base = db.select({ booking: facilityBookings, customer: guests }).from(facilityBookings)
+    .leftJoin(guests, eq(facilityBookings.customerId, guests.id))
+    .orderBy(desc(facilityBookings.bookingDate), desc(facilityBookings.id));
   return conditions.length ? base.where(and(...conditions)) : base;
 }
 
@@ -706,6 +712,52 @@ export async function getFacilityBooking(id: number) {
   const db = await getDb(); if (!db) return undefined;
   const rows = await db.select().from(facilityBookings).where(eq(facilityBookings.id, id)).limit(1);
   return rows[0];
+}
+
+// PRD Round 4, Section 9.2: edit an existing (confirmed) booking's date and,
+// for daily/hourly facilities, its duration — recalculates facilityAmount
+// from the facility's current rate and re-applies the booking's own
+// (unchanged) discountPercentage snapshot, then keeps the linked
+// finance_entries/revenue_records rows in sync so reports reflect the edit.
+export async function updateFacilityBookingDetails(id: number, data: { bookingDate: string; quantity: string; facilityAmount: string; totalAmount: string }) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  return db.transaction(async (tx) => {
+    const rows = await tx.select().from(facilityBookings).where(eq(facilityBookings.id, id)).limit(1);
+    const booking = rows[0];
+    if (!booking) throw new Error("Facility booking was not found");
+    if (booking.status === "cancelled") throw new Error("This booking has been cancelled and can no longer be edited");
+    await tx.update(facilityBookings).set({ bookingDate: data.bookingDate as any, quantity: data.quantity, facilityAmount: data.facilityAmount, totalAmount: data.totalAmount }).where(eq(facilityBookings.id, id));
+    await tx.update(financeEntries).set({ date: data.bookingDate as any, amount: data.facilityAmount }).where(and(eq(financeEntries.referenceType, "facility_booking"), eq(financeEntries.referenceId, id)));
+    const financeRows = await tx.select().from(financeEntries).where(and(eq(financeEntries.referenceType, "facility_booking"), eq(financeEntries.referenceId, id))).limit(1);
+    if (financeRows[0]) await tx.update(revenueRecords).set({ businessDate: data.bookingDate as any, amount: data.facilityAmount }).where(eq(revenueRecords.financeEntryId, financeRows[0].id));
+    const updated = await tx.select().from(facilityBookings).where(eq(facilityBookings.id, id)).limit(1);
+    return updated[0]!;
+  });
+}
+
+// PRD Round 4, Section 9.1/9.4: cancelling a booking keeps the booking row
+// itself (status flips to "cancelled", never deleted — the PRD is explicit
+// that cancelled records stay for history), but reverses its revenue by
+// removing every finance_entries/revenue_records row tied back to it
+// (the facility line and every add-on logged against it), the same
+// delete-by-reference pattern refundPrdTicketPurchase uses for tickets.
+export async function cancelFacilityBooking(id: number, cancelledBy: number, reason?: string) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  return db.transaction(async (tx) => {
+    const rows = await tx.select().from(facilityBookings).where(eq(facilityBookings.id, id)).limit(1);
+    const booking = rows[0];
+    if (!booking) throw new Error("Facility booking was not found");
+    if (booking.status === "cancelled") throw new Error("This booking has already been cancelled");
+    const referenceTypes = ["facility_booking", "facility_booking_addon"];
+    const financeRows = await tx.select({ id: financeEntries.id }).from(financeEntries)
+      .where(and(inArray(financeEntries.referenceType, referenceTypes), eq(financeEntries.referenceId, id)));
+    const financeEntryIds = financeRows.map((row) => row.id);
+    if (financeEntryIds.length) await tx.delete(revenueRecords).where(inArray(revenueRecords.financeEntryId, financeEntryIds));
+    await tx.delete(financeEntries).where(and(inArray(financeEntries.referenceType, referenceTypes), eq(financeEntries.referenceId, id)));
+    await tx.update(facilityBookings).set({ status: "cancelled", cancelledAt: new Date(), cancelledBy, cancelReason: reason || null } as any).where(eq(facilityBookings.id, id));
+    const updated = await tx.select().from(facilityBookings).where(eq(facilityBookings.id, id)).limit(1);
+    return updated[0]!;
+  });
 }
 
 // PRD Round 3, Section 5.2/5.3: staff can log an add-on service against a
@@ -724,11 +776,12 @@ export async function addFacilityBookingAddons(data: {
     const bookingRows = await tx.select().from(facilityBookings).where(eq(facilityBookings.id, data.bookingId)).limit(1);
     const booking = bookingRows[0];
     if (!booking) throw new Error("Facility booking was not found");
+    if (booking.status === "cancelled") throw new Error("This booking has been cancelled and can no longer be changed");
     let addonsAmountMinor = moneyToMinor(String(booking.addonsAmount));
     for (const addon of data.addons) {
       await tx.insert(financeEntries).values({
         date: data.businessDate, stream: "extras", type: "revenue", amount: addon.amount,
-        description: `Facility booking add-on — ${addon.addonServiceName}`, referenceType: "facility_booking_addon", createdBy: data.createdBy,
+        description: `Facility booking add-on — ${addon.addonServiceName}`, referenceType: "facility_booking_addon", referenceId: data.bookingId, createdBy: data.createdBy,
       } as any);
       const financeRows = await tx.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
       await tx.insert(revenueRecords).values({
