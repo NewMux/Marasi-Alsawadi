@@ -238,6 +238,7 @@ const dict = {
   "tickets.ticketType": { en: "Ticket type", ar: "نوع التذكرة" },
   "tickets.waterpark": { en: "Water Park · uses pool", ar: "الحديقة المائية · يستخدم المسبح" },
   "tickets.companion": { en: "Companion · does not use pool", ar: "مرافق · لا يستخدم المسبح" },
+  "tickets.companionLimitHint": { en: "max 2 per family", ar: "حد أقصى 2 لكل عائلة" },
   "tickets.approvedPrice": { en: "Approved base price", ar: "السعر المعتمد" },
   "tickets.choosePrice": { en: "Choose price", ar: "اختر السعر" },
   "tickets.freeEntry": { en: "Free entry category", ar: "فئة الدخول المجاني" },

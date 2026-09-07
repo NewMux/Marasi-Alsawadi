@@ -117,7 +117,10 @@ export default function TicketDeskPage() {
     onError: (error) => toast.error(error.message),
   });
   const selectCustomer = (customer: any) => { setForm((current) => ({ ...current, customerId: String(customer.id), customerName: "", customerPhone: "" })); setCustomerQuery(""); };
-  const updateCategoryQuantity = (key: CategoryKey, value: string) => setCategoryQuantities((current) => ({ ...current, [key]: value }));
+  const updateCategoryQuantity = (key: CategoryKey, value: string) => {
+    const clamped = key === "companion" && value !== "" ? String(Math.min(2, Math.max(0, Math.floor(Number(value) || 0)))) : value;
+    setCategoryQuantities((current) => ({ ...current, [key]: clamped }));
+  };
   const updateGroupLine = (id: number, patch: Partial<GroupLine>) => setGroupLines((current) => current.map((line) => line.id === id ? { ...line, ...patch } : line));
   const addGroupLine = () => setGroupLines((current) => [...current, blankGroupLine(Math.max(...current.map((line) => line.id), 0) + 1)]);
   const removeGroupLine = (id: number) => setGroupLines((current) => current.length === 1 ? current : current.filter((line) => line.id !== id));
@@ -204,9 +207,9 @@ export default function TicketDeskPage() {
           return <div key={row.key} className={cx("flex items-center justify-between gap-4 rounded-2xl border bg-well p-4", rowMissingRate ? "border-danger" : "border-divider")}>
             <div className="min-w-0">
               <b className="text-sm">{t(row.labelKey)}</b>
-              <div className="mt-1 text-[11px] leading-4 text-muted">{row.freeEntryCategory ? t("tickets.freeHint") : rate ? `${rate.name} · ${money(rate.unitPrice)}` : t("tickets.noPriceConfigured")}</div>
+              <div className="mt-1 text-[11px] leading-4 text-muted">{row.freeEntryCategory ? t("tickets.freeHint") : rate ? `${rate.name} · ${money(rate.unitPrice)}` : t("tickets.noPriceConfigured")}{row.key === "companion" ? ` · ${t("tickets.companionLimitHint")}` : ""}</div>
             </div>
-            <TextField type="number" min={0} value={quantity} onChange={(event) => updateCategoryQuantity(row.key, event.target.value)} placeholder="0" className="w-20 shrink-0 text-center"/>
+            <TextField type="number" min={0} max={row.key === "companion" ? 2 : undefined} value={quantity} onChange={(event) => updateCategoryQuantity(row.key, event.target.value)} placeholder="0" className="w-20 shrink-0 text-center"/>
           </div>;
         })}</div>
         : <div className="grid gap-3">{groupLines.map((line, index) => {
