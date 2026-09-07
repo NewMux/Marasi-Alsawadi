@@ -9,7 +9,7 @@ import { TicketReceiptTicket, type TicketReceiptData } from "./TicketReceipt";
 // a fixed pixel width (~8px/mm, ~2.8px/pt at 203dpi) rather than through an
 // actual printer driver. Keep this visually in sync with index.css by eye
 // if that design changes.
-const STANDALONE_STYLES = `
+export const STANDALONE_RECEIPT_STYLES = `
   * { box-sizing: border-box; }
   body { margin: 0; background: #fff; }
   .ticket { width: 100%; padding: 28px 32px; font-family: "Courier New", Courier, monospace; line-height: 1.35; color: #111; background: #fff; }
@@ -34,5 +34,5 @@ const STANDALONE_STYLES = `
 /** Renders a full, standalone HTML document containing just the `.ticket` markup — used by the local print agent to screenshot the receipt. */
 export function renderTicketReceiptHtml(data: TicketReceiptData): string {
   const markup = renderToStaticMarkup(createElement(TicketReceiptTicket, { data }));
-  return `<!doctype html><html><head><meta charset="utf-8"><style>${STANDALONE_STYLES}</style></head><body>${markup}</body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><style>${STANDALONE_RECEIPT_STYLES}</style></head><body>${markup}</body></html>`;
 }

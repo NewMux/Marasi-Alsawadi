@@ -3,7 +3,7 @@ import { trpc } from "@/lib/trpc";
 import { ArrowRightLeft, CalendarDays, Download, Edit3, FileText, MinusCircle, PlusCircle, Plus, Trash2, TrendingDown, TrendingUp } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { EmptyState, Field, LoadingState, MetricCard, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, cx } from "@/components/MarasiUI";
+import { DateField, EmptyState, Field, LoadingState, MetricCard, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, cx } from "@/components/MarasiUI";
 import { csvReportHeaderRows } from "@/components/PrintableReport";
 import { useT, type TranslationKey } from "@/lib/i18n";
 
@@ -11,7 +11,8 @@ type CategoryType = "expense" | "revenue" | "asset";
 
 const today = new Date().toISOString().slice(0, 10);
 const monthStart = `${today.slice(0, 8)}01`;
-const blankTransaction = { id: "", categoryType: "expense" as CategoryType, businessDate: today, categoryId: "", amount: "", description: "", receiptNumber: "", attachmentDataBase64: "", attachmentMimeType: "", attachmentFileName: "" };
+const blankTransaction = { id: "", categoryType: "expense" as CategoryType, businessDate: today, categoryId: "", amount: "", description: "", receiptNumber: "", attachmentDataBase64: "", attachmentMimeType: "", attachmentFileName: "", vendor: "", location: "", status: "active" as "active" | "under_maintenance" | "disposed", usefulLifeYears: "" };
+const assetStatusKeys: Record<string, TranslationKey> = { active: "finance.assetStatusActive", under_maintenance: "finance.assetStatusUnderMaintenance", disposed: "finance.assetStatusDisposed" };
 const blankAdjust = { businessDate: today, categoryId: "", type: "add" as "add" | "deduct", amount: "", note: "" };
 const blankTransfer = { businessDate: today, fromCategoryId: "", toCategoryId: "", amount: "", note: "" };
 const adjustmentTypeKeys: Record<string, TranslationKey> = { add: "finance.typeAdded", deduct: "finance.typeDeducted", transfer_out: "finance.typeTransferOut", transfer_in: "finance.typeTransferIn" };
@@ -125,7 +126,8 @@ export default function FinanceControlPage() {
     } else if (transactionForm.categoryType === "revenue") {
       editing ? updateRevenue.mutate({ id: Number(transactionForm.id), ...shared }) : createRevenue.mutate({ ...shared, attachment });
     } else {
-      editing ? updateAsset.mutate({ id: Number(transactionForm.id), ...shared }) : createAsset.mutate({ ...shared, attachment });
+      const assetFields = { vendor: transactionForm.vendor.trim() || undefined, location: transactionForm.location.trim() || undefined, status: transactionForm.status, usefulLifeYears: transactionForm.usefulLifeYears ? Number(transactionForm.usefulLifeYears) : undefined };
+      editing ? updateAsset.mutate({ id: Number(transactionForm.id), ...shared, ...assetFields }) : createAsset.mutate({ ...shared, ...assetFields, attachment });
     }
   };
   const editLedgerEntry = (entry: any) => {
@@ -133,6 +135,7 @@ export default function FinanceControlPage() {
       id: String(entry.id), categoryType: transactionForm.categoryType, businessDate: toDateInputValue(entry.businessDate || entry.date),
       categoryId: String(entry.categoryId || ""), amount: String(entry.amount), description: entry.description || "",
       receiptNumber: entry.receiptNumber || "", attachmentDataBase64: "", attachmentMimeType: "", attachmentFileName: "",
+      vendor: entry.vendor || "", location: entry.location || "", status: entry.status || "active", usefulLifeYears: entry.usefulLifeYears != null ? String(entry.usefulLifeYears) : "",
     });
   };
   const deleteLedgerEntry = (entry: any) => {
@@ -155,7 +158,7 @@ export default function FinanceControlPage() {
 
   return <>
     <PageHeader eyebrow={t("finance.expenseControlEyebrow")} title={t("finance.expenseControlTitle")} description={t("finance.expenseControlDescription")} actions={<><StatusPill tone="info">{t("finance.omrLedger")}</StatusPill><SecondaryButton onClick={() => exportCsv(`marasi-expenses-${range.from}-to-${range.to}.csv`, [...csvReportHeaderRows(t("cc.reportGenerated"), t("cc.reportGeneratedBy"), user?.name || "—"), ["Date", "Category", "Description", "Amount (OMR)"], ...(expenses as any[]).map((entry) => [entry.businessDate || entry.date, entry.categoryName || entry.category, entry.description, String(entry.amount)])])}><Download size={14} className="mr-2"/>{t("finance.exportExpenses")}</SecondaryButton></>}/>
-    <Surface tone="tinted"><div className="flex flex-wrap items-end gap-4"><Field label={t("common.from")}><TextField type="date" value={range.from} onChange={(event) => setRange({ ...range, from: event.target.value })}/></Field><Field label={t("common.to")}><TextField type="date" value={range.to} onChange={(event) => setRange({ ...range, to: event.target.value })}/></Field><div className="flex items-center gap-2 pb-2 text-xs text-body"><CalendarDays size={15} className="text-accent"/>{t("finance.selectedReportPeriod")}</div><SecondaryButton onClick={() => setRange({ from: today, to: today })}>{t("finance.today")}</SecondaryButton><SecondaryButton onClick={() => setRange({ from: monthStart, to: today })}>{t("finance.thisMonth")}</SecondaryButton></div></Surface>
+    <Surface tone="tinted"><div className="flex flex-wrap items-end gap-4"><Field label={t("common.from")}><DateField value={range.from} onChange={(value) => setRange({ ...range, from: value })}/></Field><Field label={t("common.to")}><DateField value={range.to} onChange={(value) => setRange({ ...range, to: value })}/></Field><div className="flex items-center gap-2 pb-2 text-xs text-body"><CalendarDays size={15} className="text-accent"/>{t("finance.selectedReportPeriod")}</div><SecondaryButton onClick={() => setRange({ from: today, to: today })}>{t("finance.today")}</SecondaryButton><SecondaryButton onClick={() => setRange({ from: monthStart, to: today })}>{t("finance.thisMonth")}</SecondaryButton></div></Surface>
 
     <div className="mt-6 grid gap-4 md:grid-cols-3">{canViewFinancials ? <><MetricCard icon={TrendingUp} label={t("finance.revenue")} value={money(revenue)} detail={t("finance.finalTicketTotals")} tone="blue"/><MetricCard icon={TrendingDown} label={t("finance.expenses")} value={money(expenseTotal)} detail={`${expenses.length} ${expenses.length === 1 ? t("finance.categorizedRecords") : t("finance.categorizedRecordsPlural")}`} tone="amber"/><MetricCard icon={FileText} label={t("finance.netResult")} value={money(net)} detail={net >= 0 ? t("finance.revenueLessExpenses") : t("finance.reviewSpending")} tone={net >= 0 ? "green" : "red"}/></> : <Surface className="md:col-span-3"><p className="text-sm font-medium text-ink">{t("finance.expenseEntryWorkspace")}</p><p className="mt-1 text-xs leading-5 text-muted">{t("finance.revenueReportingRestricted")}</p></Surface>}</div>
 
@@ -168,8 +171,14 @@ export default function FinanceControlPage() {
           {categoryTypeSelect(transactionForm.categoryType, (categoryType) => setTransactionForm({ ...blankTransaction, categoryType }))}
           <Field label={t("common.category")}><SelectField value={transactionForm.categoryId} onChange={(event) => setTransactionForm({ ...transactionForm, categoryId: event.target.value })}><option value="">{t("finance.chooseCategory")}</option>{(categoriesForType(transactionForm.categoryType) as any[]).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</SelectField>{(categoriesLoading || revenueCategoriesLoading || assetCategoriesLoading) && <span className="text-[11px] text-subtle">{t("finance.loadingCategories")}</span>}{isSuperAdmin && <span className="text-[11px] leading-4 text-subtle">{t("finance.categoriesInSettings")}</span>}</Field>
           <Field label={t("common.amount")}><TextField inputMode="decimal" value={transactionForm.amount} onChange={(event) => setTransactionForm({ ...transactionForm, amount: event.target.value })} placeholder="0.00"/></Field>
-          <Field label={t("common.date")}><TextField type="date" value={transactionForm.businessDate} onChange={(event) => setTransactionForm({ ...transactionForm, businessDate: event.target.value })}/></Field>
+          <Field label={t("common.date")}><DateField value={transactionForm.businessDate} onChange={(value) => setTransactionForm({ ...transactionForm, businessDate: value })}/></Field>
           <Field label={t("common.description")}><TextField value={transactionForm.description} onChange={(event) => setTransactionForm({ ...transactionForm, description: event.target.value })} placeholder={t("finance.whatWasPurchased")}/></Field>
+          {transactionForm.categoryType === "asset" && <>
+            <Field label={t("finance.vendor")}><TextField value={transactionForm.vendor} onChange={(event) => setTransactionForm({ ...transactionForm, vendor: event.target.value })} placeholder={t("common.optional")}/></Field>
+            <Field label={t("finance.assetLocation")}><TextField value={transactionForm.location} onChange={(event) => setTransactionForm({ ...transactionForm, location: event.target.value })} placeholder={t("finance.assetLocationPlaceholder")}/></Field>
+            <Field label={t("finance.assetStatus")}><SelectField value={transactionForm.status} onChange={(event) => setTransactionForm({ ...transactionForm, status: event.target.value as any })}>{(["active", "under_maintenance", "disposed"] as const).map((status) => <option key={status} value={status}>{t(assetStatusKeys[status])}</option>)}</SelectField></Field>
+            <Field label={t("finance.usefulLifeYears")} hint={t("finance.usefulLifeYearsHint")}><TextField type="number" min={1} value={transactionForm.usefulLifeYears} onChange={(event) => setTransactionForm({ ...transactionForm, usefulLifeYears: event.target.value })} placeholder={t("common.optional")}/></Field>
+          </>}
           <Field label={t("finance.receiptNumber")}><TextField value={transactionForm.receiptNumber} onChange={(event) => setTransactionForm({ ...transactionForm, receiptNumber: event.target.value })}/></Field>
           {!editing && <div><Field label={t("finance.attachment")}><input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" onChange={(event) => onAttachmentSelected(event.target.files?.[0])} className="block w-full text-xs text-muted file:mr-3 file:rounded-lg file:border-0 file:bg-fill file:px-3 file:py-2 file:text-xs file:font-semibold file:text-ink hover:file:bg-[#e8e8ed]"/></Field><p className="mt-1.5 text-[11px] leading-4 text-muted">{t("finance.attachmentHint")}</p>{transactionForm.attachmentFileName && <p className="mt-1 truncate text-[11px] text-accent">{transactionForm.attachmentFileName}</p>}</div>}
         </div>

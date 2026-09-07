@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { ChevronDown, ChevronUp, Edit3, LogOut, Plus, Receipt, Trash2, UserPlus, Wallet } from "lucide-react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
-import { EmptyState, Field, LoadingState, MetricCard, PageHeader, PrimaryButton, SecondaryButton, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField } from "@/components/MarasiUI";
+import { DateField, EmptyState, Field, LoadingState, MetricCard, PageHeader, PrimaryButton, SecondaryButton, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField } from "@/components/MarasiUI";
 import { LanguageToggle } from "@/contexts/LanguageContext";
 import { useT } from "@/lib/i18n";
 import marasiLogoIcon from "@/assets/marasi-logo-icon.webp";
@@ -85,7 +85,7 @@ function CustodianView() {
       <Surface>
         <div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("pettyCash.logSpending")}</h2></div><Receipt size={19} className="text-accent"/></div>
         <div className="grid gap-4">
-          <Field label={t("pettyCash.spendDate")}><TextField type="date" value={spendForm.businessDate} onChange={(event) => setSpendForm({ ...spendForm, businessDate: event.target.value })}/></Field>
+          <Field label={t("pettyCash.spendDate")}><DateField value={spendForm.businessDate} onChange={(value) => setSpendForm({ ...spendForm, businessDate: value })}/></Field>
           <Field label={t("pettyCash.spendAmount")}><TextField inputMode="decimal" value={spendForm.amount} onChange={(event) => setSpendForm({ ...spendForm, amount: event.target.value })} placeholder="0.00"/></Field>
           <Field label={t("pettyCash.spendDescription")}><TextField value={spendForm.description} onChange={(event) => setSpendForm({ ...spendForm, description: event.target.value })}/></Field>
           <Field label={t("finance.attachment")}><input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" onChange={(event) => onAttachmentSelected(event.target.files?.[0])} className="block w-full text-xs text-muted file:mr-3 file:rounded-lg file:border-0 file:bg-fill file:px-3 file:py-2 file:text-xs file:font-semibold file:text-ink hover:file:bg-[#e8e8ed]"/></Field>

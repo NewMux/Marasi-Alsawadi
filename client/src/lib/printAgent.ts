@@ -1,5 +1,7 @@
 import { renderTicketReceiptHtml } from "@/components/ticketReceiptHtml";
 import type { TicketReceiptData } from "@/components/TicketReceipt";
+import { renderFacilityReceiptHtml } from "@/components/facilityReceiptHtml";
+import type { FacilityReceiptData } from "@/components/FacilityReceipt";
 
 // The local print agent (see /print-agent in the repo) runs on the same PC
 // as the browser and listens on localhost only — that's what lets an HTTPS
@@ -8,9 +10,8 @@ import type { TicketReceiptData } from "@/components/TicketReceipt";
 // fall back to window.print().
 const AGENT_URL = "http://127.0.0.1:7777";
 
-export async function printViaAgent(data: TicketReceiptData, options?: { cut?: boolean; openDrawer?: boolean }): Promise<boolean> {
+async function sendHtmlToAgent(html: string, options?: { cut?: boolean; openDrawer?: boolean }): Promise<boolean> {
   try {
-    const html = renderTicketReceiptHtml(data);
     const response = await fetch(`${AGENT_URL}/print`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -23,4 +24,12 @@ export async function printViaAgent(data: TicketReceiptData, options?: { cut?: b
   } catch {
     return false;
   }
+}
+
+export async function printViaAgent(data: TicketReceiptData, options?: { cut?: boolean; openDrawer?: boolean }): Promise<boolean> {
+  return sendHtmlToAgent(renderTicketReceiptHtml(data), options);
+}
+
+export async function printFacilityReceiptViaAgent(data: FacilityReceiptData, options?: { cut?: boolean; openDrawer?: boolean }): Promise<boolean> {
+  return sendHtmlToAgent(renderFacilityReceiptHtml(data), options);
 }

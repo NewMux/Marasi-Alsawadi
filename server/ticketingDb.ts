@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import {
-  addonServices, assetAdjustments, assetCategories, assetRecords, expenseAdjustments, expenseCategories, expenseRecords, facilityBookingAddons, facilityBookings, facilityTypes, guests, partnerEntities, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
+  addonServices, assetAdjustments, assetCategories, assetRecords, expenseAdjustments, expenseCategories, expenseRecords, facilityBookingAddons, facilityBookings, facilityTypes, guests, partnerEntities, partnerDiscountRules, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
   serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers,
   ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries, users,
 } from "../drizzle/schema";
@@ -99,11 +99,11 @@ export async function createPrdTicketPurchase(data: {
   paymentMethod: "cash" | "card" | "bank" | "mixed";
   notes?: string;
   issuedBy: number;
-  overrideDiscountPercentage?: string | null;
+  overrideDiscountByTicketType?: Partial<Record<"waterpark" | "companion", string>>;
   partnerEntity?: { id: number; name: string } | null;
 }) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
-  const pricing = calculatePrdPurchasePricing({ lines: data.lines, discountTiers: data.discountTiers, fees: data.fees, overrideDiscountPercentage: data.overrideDiscountPercentage });
+  const pricing = calculatePrdPurchasePricing({ lines: data.lines, discountTiers: data.discountTiers, fees: data.fees, overrideDiscountByTicketType: data.overrideDiscountByTicketType });
   return db.transaction(async (tx) => {
     await tx.insert(ticketNumberSequences).values({ id: 1, lastNumber: 0 }).onDuplicateKeyUpdate({ set: { id: 1 } });
     await tx.update(ticketNumberSequences).set({ lastNumber: sql`${ticketNumberSequences.lastNumber} + ${data.lines.length}` }).where(eq(ticketNumberSequences.id, 1));
@@ -490,6 +490,60 @@ export async function deletePartnerEntity(id: number) {
   return { deactivated: false };
 }
 
+export async function listPartnerDiscountRules(partnerEntityId?: number) {
+  const db = await getDb(); if (!db) return [];
+  const base = db.select().from(partnerDiscountRules).orderBy(desc(partnerDiscountRules.validFrom), desc(partnerDiscountRules.id));
+  return partnerEntityId ? base.where(eq(partnerDiscountRules.partnerEntityId, partnerEntityId)) : base;
+}
+
+export async function listActivePartnerDiscountRules() {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(partnerDiscountRules).where(eq(partnerDiscountRules.isActive, true));
+}
+
+export async function getPartnerDiscountRule(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(partnerDiscountRules).where(eq(partnerDiscountRules.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function createPartnerDiscountRule(data: typeof partnerDiscountRules.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(partnerDiscountRules).values(data);
+  const rows = await db.select().from(partnerDiscountRules).orderBy(desc(partnerDiscountRules.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function updatePartnerDiscountRule(id: number, data: Partial<typeof partnerDiscountRules.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(partnerDiscountRules).set(data).where(eq(partnerDiscountRules.id, id));
+  return getPartnerDiscountRule(id);
+}
+
+export async function deletePartnerDiscountRule(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.delete(partnerDiscountRules).where(eq(partnerDiscountRules.id, id));
+  return { deleted: true };
+}
+
+// PRD Round 4, Section 5: "whether TODAY's date falls within that rule's
+// Valid From/Valid Until range" — deliberately today, not the visit/booking
+// date, so the date comparison is pushed to CURDATE() at the SQL level
+// rather than compared in JS (the mysql2 driver returns DATE columns as JS
+// Date objects, not "YYYY-MM-DD" strings, which would need careful,
+// timezone-safe parsing to compare correctly).
+export async function resolveActivePartnerDiscountRule(partnerEntityId: number, appliesTo: "ticket_type" | "facility", match: { ticketType?: string; facilityTypeId?: number }) {
+  const db = await getDb(); if (!db) return undefined;
+  const conditions = [
+    eq(partnerDiscountRules.partnerEntityId, partnerEntityId), eq(partnerDiscountRules.appliesTo, appliesTo), eq(partnerDiscountRules.isActive, true),
+    sql`${partnerDiscountRules.validFrom} <= CURDATE()`, sql`${partnerDiscountRules.validUntil} >= CURDATE()`,
+  ];
+  if (appliesTo === "ticket_type" && match.ticketType) conditions.push(eq(partnerDiscountRules.ticketType, match.ticketType as any));
+  if (appliesTo === "facility" && match.facilityTypeId) conditions.push(eq(partnerDiscountRules.facilityTypeId, match.facilityTypeId));
+  const rows = await db.select().from(partnerDiscountRules).where(and(...conditions)).orderBy(desc(partnerDiscountRules.id)).limit(1);
+  return rows[0];
+}
+
 export async function getRevenueCategoryByName(name: string) {
   const db = await getDb(); if (!db) return undefined;
   const rows = await db.select().from(revenueCategories).where(eq(revenueCategories.name, name)).limit(1);
@@ -587,6 +641,7 @@ export async function createFacilityBooking(data: {
   bookingDate: string; quantity: string; facilityAmount: string;
   addons: Array<{ addonServiceId: number; addonServiceName: string; categoryId: number; categoryName: string; quantity: string; amount: string }>;
   customerName?: string; notes?: string; createdBy: number;
+  partnerEntity?: { id: number; name: string; discountPercentage: string } | null;
 }) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   const addonsAmountMinor = data.addons.reduce((sum, addon) => sum + moneyToMinor(addon.amount), 0);
@@ -606,6 +661,7 @@ export async function createFacilityBooking(data: {
       facilityTypeId: data.facilityTypeId, facilityTypeName: data.facilityTypeName, bookingDate: data.bookingDate, quantity: data.quantity,
       facilityAmount: data.facilityAmount, addonsAmount: minorToMoney(addonsAmountMinor), totalAmount: minorToMoney(facilityAmountMinor + addonsAmountMinor),
       customerName: data.customerName || null, notes: data.notes || null, createdBy: data.createdBy,
+      partnerEntityId: data.partnerEntity?.id ?? null, partnerEntityName: data.partnerEntity?.name ?? null, discountPercentage: data.partnerEntity?.discountPercentage ?? null,
     } as any);
     const bookingRows = await tx.select().from(facilityBookings).orderBy(desc(facilityBookings.id)).limit(1);
     const booking = bookingRows[0]!;

@@ -2,12 +2,12 @@ import { useMemo, useState } from "react";
 import { Plus, Printer, Ticket, Trash2, Undo2, UserRound, Users } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
-import { EmptyState, Field, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, cx } from "@/components/MarasiUI";
+import { DateField, EmptyState, Field, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, cx } from "@/components/MarasiUI";
 import { TicketReceipt, type TicketReceiptData } from "@/components/TicketReceipt";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { printViaAgent } from "@/lib/printAgent";
-import { COUNTRIES, DEFAULT_COUNTRY } from "@/lib/countries";
+import { applyCountryDialCode, COUNTRIES, COUNTRY_DIAL_CODES, DEFAULT_COUNTRY } from "@/lib/countries";
 import { useT, type TranslationKey } from "@/lib/i18n";
 
 const today = new Date().toISOString().slice(0, 10);
@@ -19,7 +19,7 @@ const freeKeys: Record<Exclude<FreeEntryCategory, "">, TranslationKey> = { under
 type GroupLine = { id: number; ticketType: TicketType; freeEntryCategory: FreeEntryCategory; quantity: number };
 type PurchaseMode = "individual" | "group";
 type FormState = { customerId: string; customerName: string; customerPhone: string; customerEmail: string; customerCountry: string; groupName: string; visitDate: string; paymentMethod: "cash" | "card" | "bank" | "mixed"; notes: string };
-const blankForm: FormState = { customerId: "", customerName: "", customerPhone: "", customerEmail: "", customerCountry: DEFAULT_COUNTRY, groupName: "", visitDate: today, paymentMethod: "cash", notes: "" };
+const blankForm: FormState = { customerId: "", customerName: "", customerPhone: `${COUNTRY_DIAL_CODES[DEFAULT_COUNTRY]} `, customerEmail: "", customerCountry: DEFAULT_COUNTRY, groupName: "", visitDate: today, paymentMethod: "cash", notes: "" };
 const blankGroupLine = (id: number): GroupLine => ({ id, ticketType: "waterpark", freeEntryCategory: "", quantity: 1 });
 
 // The Individuals/Family tab shows every visitor category on one screen at
@@ -61,7 +61,6 @@ function toReceiptData(created: any): TicketReceiptData {
 export default function TicketDeskPage() {
   const t = useT();
   const utils = trpc.useUtils();
-  const [customerQuery, setCustomerQuery] = useState("");
   const [ticketQuery, setTicketQuery] = useState("");
   const [form, setForm] = useState<FormState>(blankForm);
   const [mode, setMode] = useState<PurchaseMode>("individual");
@@ -79,8 +78,15 @@ export default function TicketDeskPage() {
   const rates = (catalog?.rates || []) as any[];
   const partnerEntities = (catalog?.partnerEntities || []) as any[];
   const maxTicketsPerPurchase = catalog?.maxTicketsPerPurchase ?? 2000;
-  const { data: customers = [], isLoading: customersLoading } = trpc.platform.customers.search.useQuery({ query: customerQuery.trim() || undefined });
   const { data: purchaseRows = [], isLoading: purchasesLoading } = trpc.platform.tickets.purchaseList.useQuery({ query: ticketQuery.trim() || undefined });
+  // PRD Round 4, Section 8: phone is a standalone field entered first — as
+  // soon as it looks complete, look it up against the Customer Directory
+  // (exact match) instead of a free-text name/phone search, so a returning
+  // customer typing the same number twice never creates a second record.
+  const phoneLookupEnabled = !form.customerId && form.customerPhone.trim().length >= 7;
+  const { data: phoneMatch, isFetching: phoneChecking } = trpc.platform.customers.findByPhone.useQuery({ phone: form.customerPhone.trim() }, { enabled: phoneLookupEnabled });
+  const phoneResolved = phoneLookupEnabled && !phoneChecking;
+  const isNewCustomerFlow = phoneResolved && !phoneMatch;
 
   const ratesForType = (ticketType: TicketType) => rates.filter((rate) => rate.ticketType === ticketType);
   const resolveRateId = (ticketType: TicketType) => { const matches = ratesForType(ticketType); return matches.length ? String(matches[0].id) : ""; };
@@ -110,13 +116,14 @@ export default function TicketDeskPage() {
   }, [purchaseRows]);
   const issue = trpc.platform.tickets.purchaseCreate.useMutation({
     onSuccess: (result: any) => {
-      setCreated(result); setForm((current) => ({ ...blankForm, visitDate: current.visitDate })); setCategoryQuantities({ ...blankCategoryQuantities }); setGroupLines([blankGroupLine(1)]); setAttemptedSubmit(false); setCustomerQuery(""); setPartnerEntityId("");
+      setCreated(result); setForm((current) => ({ ...blankForm, visitDate: current.visitDate })); setCategoryQuantities({ ...blankCategoryQuantities }); setGroupLines([blankGroupLine(1)]); setAttemptedSubmit(false); setPartnerEntityId("");
       utils.platform.tickets.purchaseList.invalidate(); utils.platform.customers.search.invalidate(); utils.platform.finance.invalidate();
       toast.success(`${result.lines.length} ticket${result.lines.length === 1 ? "" : "s"} issued`);
     },
     onError: (error) => toast.error(error.message),
   });
-  const selectCustomer = (customer: any) => { setForm((current) => ({ ...current, customerId: String(customer.id), customerName: "", customerPhone: "" })); setCustomerQuery(""); };
+  const useMatchedCustomer = () => { if (phoneMatch) setForm((current) => ({ ...current, customerId: String(phoneMatch.id) })); };
+  const changeCustomer = () => setForm((current) => ({ ...current, customerId: "", customerName: "", customerPhone: `${COUNTRY_DIAL_CODES[current.customerCountry] || COUNTRY_DIAL_CODES[DEFAULT_COUNTRY]} `, customerEmail: "", customerCountry: DEFAULT_COUNTRY }));
   const updateCategoryQuantity = (key: CategoryKey, value: string) => {
     const clamped = key === "companion" && value !== "" ? String(Math.min(2, Math.max(0, Math.floor(Number(value) || 0)))) : value;
     setCategoryQuantities((current) => ({ ...current, [key]: clamped }));
@@ -125,7 +132,7 @@ export default function TicketDeskPage() {
   const addGroupLine = () => setGroupLines((current) => [...current, blankGroupLine(Math.max(...current.map((line) => line.id), 0) + 1)]);
   const removeGroupLine = (id: number) => setGroupLines((current) => current.length === 1 ? current : current.filter((line) => line.id !== id));
 
-  const customerInvalid = !form.customerId && (!form.customerName.trim() || !form.customerPhone.trim());
+  const customerInvalid = !form.customerId && (!phoneResolved || (isNewCustomerFlow && !form.customerName.trim()));
   const linesInvalid = previewLines.length !== expectedLineCount || expectedLineCount === 0;
   const overCapacity = expectedLineCount > maxTicketsPerPurchase;
 
@@ -190,7 +197,23 @@ export default function TicketDeskPage() {
     <div className="mb-6 grid gap-3 md:grid-cols-3"><Step number="1" title={t("tickets.step1")} detail={t("tickets.step1Detail")} active={!form.customerId}/><Step number="2" title={t("tickets.step2")} detail={t("tickets.step2Detail")} active={Boolean(form.customerId || form.customerName) && !created}/><Step number="3" title={t("tickets.step3")} detail={t("tickets.step3Detail")} active={Boolean(created)}/></div>
     <div className="grid gap-6 xl:grid-cols-[.88fr_1.12fr]">
       <div className="space-y-6">
-        <Surface><div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("tickets.customerCard")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("tickets.customerCardHint")}</p></div><UserRound size={19} className="text-accent"/></div><SearchField value={customerQuery} onChange={setCustomerQuery} placeholder={t("tickets.searchPlaceholder")}/><div className="mt-3 max-h-44 overflow-y-auto rounded-2xl border border-divider bg-well">{customerQuery.trim() ? customersLoading ? <div className="p-4 text-xs text-muted">{t("tickets.searchingCustomers")}</div> : customers.length ? (customers as any[]).slice(0, 6).map((customer: any) => <button key={customer.id} onClick={() => selectCustomer(customer)} className="flex w-full items-center justify-between gap-3 border-b border-divider px-4 py-3 text-left last:border-0 hover:bg-[#eaf6f8]"><span><b className="block text-sm">{customer.fullName}</b><span className="mt-1 block text-xs text-muted">{customer.phone || t("tickets.noPhone")}</span></span><span className="text-xs font-semibold text-accent">{t("tickets.select")}</span></button>) : <div className="p-4 text-xs text-muted">{t("tickets.noProfile")}</div> : <div className="p-4 text-xs text-muted">{t("tickets.startTyping")}</div>}</div>{form.customerId ? <div className="mt-4 flex items-center justify-between rounded-2xl bg-success-bg px-4 py-3"><div><span className="block text-xs font-semibold text-success">{t("tickets.savedSelected")}</span><span className="mt-1 block text-xs text-muted">{t("tickets.idPrefix")} {form.customerId}</span></div><SecondaryButton onClick={() => setForm((current) => ({ ...current, customerId: "" }))}>{t("tickets.change")}</SecondaryButton></div> : <div className="mt-5 grid gap-4"><div className="text-[10px] font-semibold uppercase tracking-[.14em] text-subtle">{t("tickets.newWalkIn")}</div><Field label={t("tickets.fullName")} error={attemptedSubmit && customerInvalid && !form.customerName.trim() ? t("common.required") : undefined}><TextField value={form.customerName} onChange={(event) => setForm({ ...form, customerName: event.target.value })} placeholder="Customer full name" className={attemptedSubmit && customerInvalid && !form.customerName.trim() ? "border-danger ring-1 ring-danger/30" : undefined}/></Field><Field label={t("customers.phoneNumber")} error={attemptedSubmit && customerInvalid && !form.customerPhone.trim() ? t("common.required") : undefined}><TextField value={form.customerPhone} onChange={(event) => setForm({ ...form, customerPhone: event.target.value })} inputMode="tel" placeholder="+968 …" className={attemptedSubmit && customerInvalid && !form.customerPhone.trim() ? "border-danger ring-1 ring-danger/30" : undefined}/></Field><Field label={t("tickets.email")}><TextField type="email" value={form.customerEmail} onChange={(event) => setForm({ ...form, customerEmail: event.target.value })} placeholder="name@example.com"/></Field><Field label={t("common.country")}><SelectField value={form.customerCountry} onChange={(event) => setForm({ ...form, customerCountry: event.target.value })}>{COUNTRIES.map((country) => <option key={country} value={country}>{country}</option>)}</SelectField></Field></div>}</Surface>
+        <Surface>
+          <div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("tickets.customerCard")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("tickets.customerCardHint")}</p></div><UserRound size={19} className="text-accent"/></div>
+          {form.customerId ? <div className="flex items-center justify-between rounded-2xl bg-success-bg px-4 py-3"><div><span className="block text-xs font-semibold text-success">{t("tickets.savedSelected")}</span><span className="mt-1 block text-xs text-muted">{t("tickets.idPrefix")} {form.customerId}</span></div><SecondaryButton onClick={changeCustomer}>{t("tickets.change")}</SecondaryButton></div> : <>
+            <Field label={t("customers.phoneNumber")} error={attemptedSubmit && customerInvalid && !phoneResolved ? t("common.required") : undefined}>
+              <TextField value={form.customerPhone} onChange={(event) => setForm({ ...form, customerPhone: event.target.value })} inputMode="tel" placeholder="+968 …" className={attemptedSubmit && customerInvalid && !phoneResolved ? "border-danger ring-1 ring-danger/30" : undefined}/>
+            </Field>
+            {!phoneLookupEnabled && <p className="mt-2 text-xs text-muted">{t("tickets.enterPhoneToLookup")}</p>}
+            {phoneLookupEnabled && phoneChecking && <p className="mt-2 text-xs text-muted">{t("tickets.checkingPhone")}</p>}
+            {phoneResolved && phoneMatch && <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl bg-success-bg px-4 py-3"><div className="min-w-0"><span className="block text-xs font-semibold text-success">{t("tickets.existingCustomerFound")}</span><span className="mt-1 block truncate text-xs text-muted">{phoneMatch.fullName}{phoneMatch.email ? ` · ${phoneMatch.email}` : ""}{phoneMatch.nationality ? ` · ${phoneMatch.nationality}` : ""}</span></div><SecondaryButton onClick={useMatchedCustomer}>{t("tickets.useThisCustomer")}</SecondaryButton></div>}
+            {isNewCustomerFlow && <div className="mt-5 grid gap-4">
+              <div className="flex items-center gap-2 rounded-xl bg-well px-3 py-2 text-[11px] font-semibold uppercase tracking-[.14em] text-subtle">{t("tickets.newWalkIn")}</div>
+              <Field label={t("tickets.fullName")} error={attemptedSubmit && customerInvalid && !form.customerName.trim() ? t("common.required") : undefined}><TextField value={form.customerName} onChange={(event) => setForm({ ...form, customerName: event.target.value })} placeholder="Customer full name" className={attemptedSubmit && customerInvalid && !form.customerName.trim() ? "border-danger ring-1 ring-danger/30" : undefined}/></Field>
+              <Field label={t("tickets.email")}><TextField type="email" value={form.customerEmail} onChange={(event) => setForm({ ...form, customerEmail: event.target.value })} placeholder="name@example.com"/></Field>
+              <Field label={t("common.country")}><SelectField value={form.customerCountry} onChange={(event) => setForm({ ...form, customerCountry: event.target.value, customerPhone: applyCountryDialCode(form.customerPhone, form.customerCountry, event.target.value) })}>{COUNTRIES.map((country) => <option key={country} value={country}>{country}</option>)}</SelectField></Field>
+            </div>}
+          </>}
+        </Surface>
         <Surface><div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("tickets.recentPurchases")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("tickets.recentPurchasesHint")}</p></div><StatusPill>{groupedPurchases.length} {t("tickets.purchasesCount")}</StatusPill></div><SearchField value={ticketQuery} onChange={setTicketQuery} placeholder={t("tickets.searchTickets")}/><div className="mt-4">{purchasesLoading ? <div className="p-4 text-sm text-muted">{t("tickets.loadingHistory")}</div> : groupedPurchases.length ? <TableFrame><TableHeader><div className="grid grid-cols-[1.15fr_.7fr_.55fr_auto] gap-3"><span>{t("tickets.customerTicketCol")}</span><span>{t("tickets.visitCol")}</span><span>{t("common.total")}</span><span className="text-right">{t("finance.actions")}</span></div></TableHeader>{groupedPurchases.slice(0, 8).map((entry: any) => { const refunded = entry.purchase.status === "refunded"; return <TableRow key={entry.purchase.id} className="grid-cols-[1.15fr_.7fr_.55fr_auto]"><div className="min-w-0"><div className="truncate text-sm font-medium">{entry.customer?.fullName || t("tickets.customerFallback")}</div><div className="mt-1 truncate font-mono text-[10px] text-accent">{entry.lines.map((line: any) => line.ticketNumber).join(" · ")}</div></div><div className="text-xs text-muted">{dateLabel(entry.purchase.visitDate)}</div><b className={cx("text-sm", refunded && "text-muted line-through")}>{money(entry.purchase.totalAmount)}</b><div className="flex items-center justify-end gap-1"><button onClick={() => reprintPurchase(entry)} disabled={reprintingId === entry.purchase.id} aria-label="Reprint this ticket" className="rounded-full bg-fill p-2 text-muted hover:bg-[#e8e8ed] hover:text-ink disabled:opacity-50"><Printer size={14}/></button>{refunded ? <StatusPill tone="danger">{t("tickets.returned")}</StatusPill> : <button onClick={() => returnPurchase(entry)} disabled={refundingId === entry.purchase.id} aria-label="Return this purchase" className="rounded-full bg-fill p-2 text-muted hover:bg-danger-bg hover:text-danger disabled:opacity-50"><Undo2 size={14}/></button>}</div></TableRow>; })}</TableFrame> : <EmptyState title={t("tickets.noPurchasesYet")} description={t("tickets.noPurchasesHint")}/>}</div></Surface>
       </div>
       <Surface className="h-fit">
@@ -225,8 +248,8 @@ export default function TicketDeskPage() {
             {rate ? <p className="mt-3 text-[11px] leading-4 text-muted">{rate.name} · {money(rate.unitPrice)} {t("tickets.eachOf")} — {line.quantity || 0} {t("tickets.ticketsCount")} {t("tickets.ofThisType")}</p> : <p className="mt-3 text-[11px] leading-4 text-danger">{t("tickets.noPriceConfigured")}</p>}
           </div>;
         })}<SecondaryButton onClick={addGroupLine}><Plus size={15} className="mr-2"/>{t("tickets.addGroupLine")}</SecondaryButton></div>}
-        <div className="mt-5 grid gap-3 sm:grid-cols-2"><Field label={t("tickets.visitDate")}><TextField type="date" value={form.visitDate} onChange={(event) => setForm({ ...form, visitDate: event.target.value })}/></Field><Field label={t("tickets.paymentMethod")}><SelectField value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value as FormState["paymentMethod"] })}><option value="cash">{t("tickets.cash")}</option><option value="card">{t("tickets.card")}</option><option value="bank">{t("tickets.bank")}</option><option value="mixed">{t("tickets.mixed")}</option></SelectField></Field></div>
-        {partnerEntities.length > 0 && <div className="mt-3"><Field label={t("tickets.partnerEntity")} hint={t("tickets.partnerEntityHint")}><SelectField value={partnerEntityId} onChange={(event) => setPartnerEntityId(event.target.value)}><option value="">{t("tickets.noPartnerEntity")}</option>{partnerEntities.map((entity) => <option key={entity.id} value={entity.id}>{entity.name} — {Number(entity.discountPercentage).toFixed(0)}%</option>)}</SelectField></Field></div>}
+        <div className="mt-5 grid gap-3 sm:grid-cols-2"><Field label={t("tickets.visitDate")}><DateField value={form.visitDate} onChange={(value) => setForm({ ...form, visitDate: value })}/></Field><Field label={t("tickets.paymentMethod")}><SelectField value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value as FormState["paymentMethod"] })}><option value="cash">{t("tickets.cash")}</option><option value="card">{t("tickets.card")}</option><option value="bank">{t("tickets.bank")}</option><option value="mixed">{t("tickets.mixed")}</option></SelectField></Field></div>
+        {partnerEntities.length > 0 && <div className="mt-3"><Field label={t("tickets.partnerEntity")} hint={t("tickets.partnerEntityHint")}><SelectField value={partnerEntityId} onChange={(event) => setPartnerEntityId(event.target.value)}><option value="">{t("tickets.noPartnerEntity")}</option>{partnerEntities.map((entity) => <option key={entity.id} value={entity.id}>{entity.name}</option>)}</SelectField></Field></div>}
         <div className="mt-5 rounded-[22px] bg-navy p-5 text-white"><div className="flex items-start justify-between gap-3"><div><div className="text-[10px] font-semibold uppercase tracking-[.16em] text-teal-tint">{t("tickets.pricePreview")}</div><div className="mt-2 font-serif text-4xl tracking-[-.05em]">{money(pricing?.totalAmount || 0)}</div></div><StatusPill tone={pricing ? "success" : "neutral"}>{pricing ? t("tickets.readyPill") : t("tickets.completeLines")}</StatusPill></div>{pricing && <div className="mt-4 border-t border-white/15 pt-3 text-xs text-[#d6d6da]"><div className="flex justify-between py-1"><span>{t("tickets.baseSubtotal")}</span><span>{money(pricing.baseSubtotal)}</span></div><div className="flex justify-between py-1"><span>{partnerEntityId ? partnerEntities.find((entity) => String(entity.id) === partnerEntityId)?.name : t("tickets.groupDiscount")} ({pricing.discountPercentage}%)</span><span>−{money(pricing.discountAmount)}</span></div><div className="flex justify-between py-1"><span>{t("tickets.vatAfterDiscount")}</span><span>{money(pricing.vatAmount)}</span></div>{pricing.fees?.map((fee: any) => <div key={fee.code} className="flex justify-between py-1"><span>{fee.label}</span><span>{money(fee.amount)}</span></div>)}{mode === "individual" && <div className="mt-2 border-t border-white/15 pt-2">{pricing.lines.map((line: any, index: number) => <div key={`${line.rateId}-${index}`} className="flex justify-between py-1"><span>{line.label}{line.freeEntryCategory ? ` · ${t(freeKeys[line.freeEntryCategory as Exclude<FreeEntryCategory, "">])}` : ""}</span><span>{money(line.totalAmount)}</span></div>)}</div>}</div>}</div>
         <div className="mt-5"><Field label={t("tickets.note")}><Textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} placeholder={t("tickets.notePlaceholder")} className="min-h-[86px] rounded-xl border-line bg-well"/></Field></div>
         <div className="mt-5 flex flex-wrap gap-2 border-t border-divider pt-5"><PrimaryButton onClick={issuePurchase} pending={issue.isPending}>{t("tickets.confirmIssue")} <Ticket size={15} className="ml-2"/></PrimaryButton>{created && <><SecondaryButton onClick={() => printReceipt("80")}><Printer size={14} className="mr-2"/>{t("tickets.print80")}</SecondaryButton><SecondaryButton onClick={() => printReceipt("58")}><Printer size={14} className="mr-2"/>{t("tickets.print58")}</SecondaryButton></>}</div>

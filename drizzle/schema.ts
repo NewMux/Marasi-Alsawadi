@@ -493,19 +493,43 @@ export const expenseCategories = mysqlTable("expense_categories", {
 });
 export type ExpenseCategory = typeof expenseCategories.$inferSelect;
 
-// PRD Section 2: Partner/Entity Discounts. Selecting one on a purchase
-// replaces the automatic group-size discount tier with the entity's own
-// agreed percentage (a negotiated rate, not a compounding promo).
+// PRD Section 2: Partner/Entity Discounts. Selecting one on a purchase or
+// facility booking replaces the automatic group-size discount tier with the
+// entity's own agreed rate for that specific item (a negotiated rate, not a
+// compounding promo) — see partnerDiscountRules below (PRD Round 4, Section 5:
+// one entity can have a different percentage per ticket type or facility).
 export const partnerEntities = mysqlTable("partner_entities", {
   id: int("id").autoincrement().primaryKey(),
   name: varchar("name", { length: 160 }).notNull().unique(),
-  discountPercentage: decimal("discountPercentage", { precision: 5, scale: 2 }).notNull(),
   isActive: boolean("isActive").default(true).notNull(),
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 export type PartnerEntity = typeof partnerEntities.$inferSelect;
+
+// One row per (item, validity window) a partner entity gets a negotiated
+// rate on. "Applies To" scopes "Specific Item" to either a ticket type
+// (waterpark/companion) or a Facility Type — never both on the same rule.
+// Resolution (see resolvePartnerDiscountRule in platform.ts) matches on the
+// item plus whether TODAY's date (not the visit/booking date) falls inside
+// [validFrom, validUntil]; no match for an item means no discount for it.
+export const partnerDiscountRules = mysqlTable("partner_discount_rules", {
+  id: int("id").autoincrement().primaryKey(),
+  partnerEntityId: int("partnerEntityId").notNull(),
+  appliesTo: mysqlEnum("appliesTo", ["ticket_type", "facility"]).notNull(),
+  ticketType: mysqlEnum("ticketType", ["waterpark", "companion"]),
+  facilityTypeId: int("facilityTypeId"),
+  facilityTypeName: varchar("facilityTypeName", { length: 160 }),
+  discountPercentage: decimal("discountPercentage", { precision: 5, scale: 2 }).notNull(),
+  validFrom: date("validFrom").notNull(),
+  validUntil: date("validUntil").notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type PartnerDiscountRule = typeof partnerDiscountRules.$inferSelect;
 
 export const expenseRecords = mysqlTable("expense_records", {
   id: int("id").autoincrement().primaryKey(),
@@ -603,6 +627,13 @@ export const facilityBookings = mysqlTable("facility_bookings", {
   totalAmount: decimal("totalAmount", { precision: 12, scale: 3 }).notNull(),
   customerName: varchar("customerName", { length: 160 }),
   notes: text("notes"),
+  // PRD Round 4, Section 5: partner discount applies to the facility line
+  // only (never the add-ons) — snapshotted the same way ticket_purchases
+  // snapshots its partner entity, so a later rule/entity edit never
+  // reshapes an already-confirmed booking's receipt or revenue history.
+  partnerEntityId: int("partnerEntityId"),
+  partnerEntityName: varchar("partnerEntityName", { length: 160 }),
+  discountPercentage: decimal("discountPercentage", { precision: 5, scale: 2 }),
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
@@ -675,6 +706,11 @@ export const assetCategories = mysqlTable("asset_categories", {
 });
 export type AssetCategory = typeof assetCategories.$inferSelect;
 
+// PRD Round 4, Section 6: "Asset ID / Tag" is derived from `id` at read time
+// (e.g. AST-000001) rather than stored — it's already unique and sequential,
+// so a second generated identifier would just be redundant state to keep in
+// sync. Depreciation, net book value, and warranty tracking are deliberately
+// out of scope — usefulLifeYears is a plain reference number only.
 export const assetRecords = mysqlTable("asset_records", {
   id: int("id").autoincrement().primaryKey(),
   businessDate: date("businessDate").notNull(),
@@ -686,6 +722,9 @@ export const assetRecords = mysqlTable("asset_records", {
   receiptNumber: varchar("receiptNumber", { length: 64 }),
   attachmentPath: varchar("attachmentPath", { length: 512 }),
   attachmentOriginalName: varchar("attachmentOriginalName", { length: 256 }),
+  location: varchar("location", { length: 160 }),
+  status: mysqlEnum("status", ["active", "under_maintenance", "disposed"]).default("active").notNull(),
+  usefulLifeYears: int("usefulLifeYears"),
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),

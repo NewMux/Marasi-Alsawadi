@@ -26,6 +26,7 @@ import {
   searchCustomers, getCustomerByPhone, updateExpenseCategory, updateExpenseRecord, updateServiceRate, updateTicketFee, deleteServiceRate,
   createPrdTicketPurchase, listPrdRates, findConflictingActivePrdRate, listTicketDiscountTiers, createTicketDiscountTier, updateTicketDiscountTier, deleteTicketDiscountTier,
   listPartnerEntities, getPartnerEntity, createPartnerEntity, updatePartnerEntity, deletePartnerEntity,
+  listPartnerDiscountRules, createPartnerDiscountRule, updatePartnerDiscountRule, deletePartnerDiscountRule, resolveActivePartnerDiscountRule,
   listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
   listAddonServices, getAddonService, createAddonService, updateAddonService, deleteAddonService,
   findOrCreateRevenueCategoryForFacility, createFacilityBooking, listFacilityBookings, listFacilityBookingAddons, getFacilityBooking, addFacilityBookingAddons,
@@ -40,7 +41,7 @@ import {
   getExpenseCategoryByCode, createPettyCashFund, getPettyCashFund, getPettyCashFundByCustodian, updatePettyCashFundAmount,
   listPettyCashFundsWithBalances, listPettyCashSpends, createPettyCashSpendWithExpense, getPettyCashSpend, deletePettyCashSpendWithExpense, getPettyCashFundBalance,
 } from "../ticketingDb";
-import { calculateFacilityLineAmount, calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE } from "../ticketingRules";
+import { applyFacilityDiscount, calculateFacilityLineAmount, calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
 import { publicTicketUrl, requestOrigin } from "../ticketUrl";
 import { isAllowedAttachmentMimeType, saveExpenseAttachment } from "../attachments";
@@ -89,27 +90,44 @@ async function resolvePrdPricing(linesInput: Array<z.infer<typeof prdLineInput>>
   for (const line of lines) for (const fee of await listApplicableTicketFees(line.rate.id)) feeMap.set(fee.id, { ...fee, value: String(fee.value) });
   const fees = Array.from(feeMap.values());
   let partnerEntity: { id: number; name: string } | null = null;
-  let overrideDiscountPercentage: string | null = null;
+  let overrideDiscountByTicketType: Partial<Record<"waterpark" | "companion", string>> | undefined;
   if (partnerEntityId) {
     const entity = await getPartnerEntity(partnerEntityId);
     if (!entity || !entity.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected partner entity is no longer active" });
     partnerEntity = { id: entity.id, name: entity.name };
-    overrideDiscountPercentage = String(entity.discountPercentage);
+    overrideDiscountByTicketType = {};
+    for (const ticketType of Array.from(new Set(lines.map((line) => line.ticketType)))) {
+      const rule = await resolveActivePartnerDiscountRule(entity.id, "ticket_type", { ticketType });
+      if (rule) overrideDiscountByTicketType[ticketType as "waterpark" | "companion"] = String(rule.discountPercentage);
+    }
   }
   const pricing = calculatePrdPurchasePricing({
     lines, discountTiers: tiers.map((tier) => ({ ...tier, percentage: String(tier.percentage), maxTickets: tier.maxTickets === null ? null : Number(tier.maxTickets) })), fees,
-    overrideDiscountPercentage,
+    overrideDiscountByTicketType,
   });
-  return { lines, tiers, fees, pricing, partnerEntity, overrideDiscountPercentage };
+  return { lines, tiers, fees, pricing, partnerEntity, overrideDiscountByTicketType };
 }
 
-async function resolveFacilityBookingPricing(input: { facilityTypeId: number; quantity: number; addons: Array<{ addonServiceId: number; quantity: number }> }) {
+async function resolveFacilityBookingPricing(input: { facilityTypeId: number; quantity: number; addons: Array<{ addonServiceId: number; quantity: number }>; partnerEntityId?: number }) {
   const facility = await getFacilityType(input.facilityTypeId);
   if (!facility || !facility.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected facility is no longer active" });
   const facilityQuantity = facility.pricingMethod === "fixed" ? 1 : input.quantity;
-  const facilityAmount = calculateFacilityLineAmount(String(facility.rate), facilityQuantity);
+  const fullFacilityAmount = calculateFacilityLineAmount(String(facility.rate), facilityQuantity);
   const facilityCategory = await getRevenueCategory(facility.revenueCategoryId);
   if (!facilityCategory) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "This facility's revenue category is missing" });
+  // PRD Round 4, Section 5: a partner entity's discount applies only to the
+  // facility line, never to add-ons — "Applies To" only ever offers
+  // "Ticket Type" or "Facility".
+  let partnerEntity: { id: number; name: string } | null = null;
+  let discountPercentage: string | null = null;
+  if (input.partnerEntityId) {
+    const entity = await getPartnerEntity(input.partnerEntityId);
+    if (!entity || !entity.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected partner entity is no longer active" });
+    partnerEntity = { id: entity.id, name: entity.name };
+    const rule = await resolveActivePartnerDiscountRule(entity.id, "facility", { facilityTypeId: facility.id });
+    if (rule) discountPercentage = String(rule.discountPercentage);
+  }
+  const { discountedAmount: facilityAmount, discountAmount } = applyFacilityDiscount(fullFacilityAmount, discountPercentage);
   const addons = await Promise.all(input.addons.map(async (line) => {
     const addon = await getAddonService(line.addonServiceId);
     if (!addon || !addon.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "One of the selected add-on services is no longer active" });
@@ -119,7 +137,10 @@ async function resolveFacilityBookingPricing(input: { facilityTypeId: number; qu
     return { addonServiceId: addon.id, addonServiceName: addon.name, categoryId: category.id, categoryName: category.name, quantity: String(addonQuantity), amount: calculateFacilityLineAmount(String(addon.rate), addonQuantity) };
   }));
   const addonsAmount = addons.reduce((sum, addon) => sum + Number(addon.amount), 0);
-  return { facility, facilityCategory, facilityQuantity, facilityAmount, addons, addonsAmount: addonsAmount.toFixed(3), totalAmount: (Number(facilityAmount) + addonsAmount).toFixed(3) };
+  return {
+    facility, facilityCategory, facilityQuantity, facilityAmount, discountAmount, discountPercentage, partnerEntity, addons,
+    addonsAmount: addonsAmount.toFixed(3), totalAmount: (Number(facilityAmount) + addonsAmount).toFixed(3),
+  };
 }
 
 export const platformRouter = router({
@@ -319,7 +340,7 @@ export const platformRouter = router({
   }),
 
   facilityBookings: router({
-    catalog: protectedProcedure.query(async () => ({ facilityTypes: await listFacilityTypes(false), addonServices: await listAddonServices(false) })),
+    catalog: protectedProcedure.query(async () => ({ facilityTypes: await listFacilityTypes(false), addonServices: await listAddonServices(false), partnerEntities: await listPartnerEntities(false) })),
     list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional(), query: z.string().optional() }).optional()).query(async ({ input }) => {
       const bookings = await listFacilityBookings(input?.from, input?.to, input?.query);
       return Promise.all((bookings as any[]).map(async (booking) => ({ booking, addons: await listFacilityBookingAddons(booking.id) })));
@@ -332,21 +353,24 @@ export const platformRouter = router({
     preview: protectedProcedure.input(z.object({
       facilityTypeId: z.number().int().positive(), quantity: z.number().positive(),
       addons: z.array(z.object({ addonServiceId: z.number().int().positive(), quantity: z.number().positive() })).default([]),
+      partnerEntityId: z.number().int().positive().optional(),
     })).query(async ({ input }) => {
       const resolved = await resolveFacilityBookingPricing(input);
-      return { facilityAmount: resolved.facilityAmount, addonsAmount: resolved.addonsAmount, totalAmount: resolved.totalAmount, addons: resolved.addons };
+      return { facilityAmount: resolved.facilityAmount, discountAmount: resolved.discountAmount, discountPercentage: resolved.discountPercentage, partnerEntity: resolved.partnerEntity, addonsAmount: resolved.addonsAmount, totalAmount: resolved.totalAmount, addons: resolved.addons };
     }),
     create: protectedProcedure.input(z.object({
       facilityTypeId: z.number().int().positive(), bookingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       quantity: z.number().positive(),
       addons: z.array(z.object({ addonServiceId: z.number().int().positive(), quantity: z.number().positive() })).default([]),
       customerName: z.string().max(160).optional(), notes: z.string().max(1000).optional(),
+      partnerEntityId: z.number().int().positive().optional(),
     })).mutation(async ({ input, ctx }) => {
       const resolved = await resolveFacilityBookingPricing(input);
       const booking = await createFacilityBooking({
         facilityTypeId: resolved.facility.id, facilityTypeName: resolved.facility.name, facilityCategoryId: resolved.facilityCategory.id, facilityCategoryName: resolved.facilityCategory.name,
         bookingDate: input.bookingDate, quantity: String(resolved.facilityQuantity), facilityAmount: resolved.facilityAmount, addons: resolved.addons,
         customerName: input.customerName?.trim(), notes: input.notes?.trim(), createdBy: ctx.user.id,
+        partnerEntity: resolved.partnerEntity && resolved.discountPercentage ? { ...resolved.partnerEntity, discountPercentage: resolved.discountPercentage } : null,
       });
       await logActivity(ctx.user.id, "facility_booking.create", "facility_booking", booking.id, `${resolved.facility.code}:${booking.totalAmount}`);
       return { booking, addons: await listFacilityBookingAddons(booking.id) };
@@ -385,14 +409,12 @@ export const platformRouter = router({
     })),
     partnerEntities: router({
       list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listPartnerEntities(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
-      create: superAdminProcedure.input(z.object({ name: z.string().trim().min(1).max(160), discountPercentage: z.string().regex(/^\d+(\.\d{1,2})?$/) })).mutation(async ({ input, ctx }) => {
-        if (Number(input.discountPercentage) <= 0 || Number(input.discountPercentage) > 100) throw new TRPCError({ code: "BAD_REQUEST", message: "Discount percentage must be between 0 and 100" });
-        const entity = await createPartnerEntity({ name: input.name, discountPercentage: input.discountPercentage, createdBy: ctx.user.id } as any);
+      create: superAdminProcedure.input(z.object({ name: z.string().trim().min(1).max(160) })).mutation(async ({ input, ctx }) => {
+        const entity = await createPartnerEntity({ name: input.name, createdBy: ctx.user.id } as any);
         await logActivity(ctx.user.id, "partner_entity.create", "partner_entity", entity.id, JSON.stringify(input));
         return entity;
       }),
-      update: superAdminProcedure.input(z.object({ id: z.number().int().positive(), name: z.string().trim().min(1).max(160).optional(), discountPercentage: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(), isActive: z.boolean().optional() })).mutation(async ({ input, ctx }) => {
-        if (input.discountPercentage !== undefined && (Number(input.discountPercentage) <= 0 || Number(input.discountPercentage) > 100)) throw new TRPCError({ code: "BAD_REQUEST", message: "Discount percentage must be between 0 and 100" });
+      update: superAdminProcedure.input(z.object({ id: z.number().int().positive(), name: z.string().trim().min(1).max(160).optional(), isActive: z.boolean().optional() })).mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
         const entity = await updatePartnerEntity(id, data);
         await logActivity(ctx.user.id, "partner_entity.update", "partner_entity", id, JSON.stringify(data));
@@ -402,6 +424,46 @@ export const platformRouter = router({
         const result = await deletePartnerEntity(input.id);
         await logActivity(ctx.user.id, "partner_entity.delete", "partner_entity", input.id, result.deactivated ? "retired" : "deleted");
         return result;
+      }),
+      discountRules: router({
+        list: protectedProcedure.input(z.object({ partnerEntityId: z.number().int().positive().optional() }).optional()).query(({ input }) => listPartnerDiscountRules(input?.partnerEntityId)),
+        create: superAdminProcedure.input(z.object({
+          partnerEntityId: z.number().int().positive(),
+          appliesTo: z.enum(["ticket_type", "facility"]),
+          ticketType: z.enum(["waterpark", "companion"]).optional(),
+          facilityTypeId: z.number().int().positive().optional(),
+          discountPercentage: z.string().regex(/^\d+(\.\d{1,2})?$/),
+          validFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          validUntil: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        })).mutation(async ({ input, ctx }) => {
+          if (Number(input.discountPercentage) <= 0 || Number(input.discountPercentage) > 100) throw new TRPCError({ code: "BAD_REQUEST", message: "Discount percentage must be between 0 and 100" });
+          if (input.validUntil < input.validFrom) throw new TRPCError({ code: "BAD_REQUEST", message: "Valid Until must be on or after Valid From" });
+          if (input.appliesTo === "ticket_type" && !input.ticketType) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose a ticket type" });
+          if (input.appliesTo === "facility" && !input.facilityTypeId) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose a facility" });
+          let facilityTypeName: string | null = null;
+          if (input.appliesTo === "facility") {
+            const facility = await getFacilityType(input.facilityTypeId!);
+            if (!facility) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected facility was not found" });
+            facilityTypeName = facility.name;
+          }
+          const rule = await createPartnerDiscountRule({
+            partnerEntityId: input.partnerEntityId, appliesTo: input.appliesTo,
+            ticketType: input.appliesTo === "ticket_type" ? input.ticketType : null, facilityTypeId: input.appliesTo === "facility" ? input.facilityTypeId : null, facilityTypeName,
+            discountPercentage: input.discountPercentage, validFrom: input.validFrom as any, validUntil: input.validUntil as any, createdBy: ctx.user.id,
+          } as any);
+          await logActivity(ctx.user.id, "partner_discount_rule.create", "partner_discount_rule", rule.id, JSON.stringify(input));
+          return rule;
+        }),
+        update: superAdminProcedure.input(z.object({ id: z.number().int().positive(), isActive: z.boolean().optional() })).mutation(async ({ input, ctx }) => {
+          const rule = await updatePartnerDiscountRule(input.id, { isActive: input.isActive });
+          await logActivity(ctx.user.id, "partner_discount_rule.update", "partner_discount_rule", input.id, JSON.stringify(input));
+          return rule;
+        }),
+        delete: superAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+          const result = await deletePartnerDiscountRule(input.id);
+          await logActivity(ctx.user.id, "partner_discount_rule.delete", "partner_discount_rule", input.id);
+          return result;
+        }),
       }),
     }),
     discountTiers: router({
@@ -433,7 +495,7 @@ export const platformRouter = router({
       const resolved = await resolvePrdPricing(input.lines, input.partnerEntityId);
       const result = await createPrdTicketPurchase({
         customerId: customer.id, visitDate: input.visitDate, lines: resolved.lines, discountTiers: resolved.tiers.map((tier) => ({ ...tier, percentage: String(tier.percentage), maxTickets: tier.maxTickets === null ? null : Number(tier.maxTickets) })), fees: resolved.fees, paymentMethod: input.paymentMethod, notes: input.notes?.trim(), issuedBy: ctx.user.id,
-        overrideDiscountPercentage: resolved.overrideDiscountPercentage, partnerEntity: resolved.partnerEntity,
+        overrideDiscountByTicketType: resolved.overrideDiscountByTicketType, partnerEntity: resolved.partnerEntity,
       });
       await createFinanceEntry({ date: input.visitDate, stream: "aqua_park", type: "revenue", amount: result.purchase.totalAmount, description: `Ticket purchase – ${customer.fullName}`, referenceId: result.purchase.id, referenceType: "prd_ticket_purchase", createdBy: ctx.user.id } as any);
       await logActivity(ctx.user.id, "prd_ticket_purchase.issue", "ticket_purchase", result.purchase.id, `${result.lines.map((line) => line.ticketNumber).join(",")}:${result.purchase.totalAmount}`);
@@ -992,6 +1054,9 @@ export const platformRouter = router({
         businessDate: z.string(), categoryId: z.number(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
         vendor: z.string().max(128).optional(), description: z.string().min(1),
         receiptNumber: z.string().max(64).optional(),
+        location: z.string().max(160).optional(),
+        status: z.enum(["active", "under_maintenance", "disposed"]).default("active"),
+        usefulLifeYears: z.number().int().min(1).max(100).optional(),
         attachment: z.object({ dataBase64: z.string(), mimeType: z.string(), fileName: z.string().max(256) }).optional(),
       })).mutation(async ({ input, ctx }) => {
         const category = await getAssetCategory(input.categoryId);
@@ -1009,6 +1074,9 @@ export const platformRouter = router({
       update: managerProcedure.input(z.object({
         id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals").optional(),
         vendor: z.string().max(128).optional(), description: z.string().min(1).optional(), receiptNumber: z.string().max(64).optional(),
+        location: z.string().max(160).optional(),
+        status: z.enum(["active", "under_maintenance", "disposed"]).optional(),
+        usefulLifeYears: z.number().int().min(1).max(100).nullable().optional(),
       })).mutation(async ({ input, ctx }) => {
         const { id, categoryId, ...data } = input;
         const existing = await getAssetRecord(id);

@@ -1,7 +1,10 @@
-import { Loader2, Search } from "lucide-react";
+import { CalendarIcon, Loader2, Search } from "lucide-react";
+import { useState } from "react";
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Calendar } from "@/components/ui/calendar";
 
 export const cx = (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(" ");
 
@@ -32,6 +35,53 @@ export function Field({ label, description, hint, error, children }: { label: st
 
 export function TextField(props: InputHTMLAttributes<HTMLInputElement>) { return <Input {...props} className={cx("h-11 rounded-xl border-line bg-well text-sm shadow-none focus:border-accent focus:ring-4 focus:ring-accent/10", props.className)} />; }
 export function SelectField(props: SelectHTMLAttributes<HTMLSelectElement>) { return <select {...props} className={cx("h-11 w-full min-w-0 rounded-xl border border-line bg-well px-3.5 text-sm text-ink outline-none transition focus:border-accent focus:ring-4 focus:ring-accent/10", props.className)} />; }
+
+// ISO ("YYYY-MM-DD") <-> local-date-safe Date conversions, and a DD/MM/YYYY
+// date picker that renders the same on every browser/OS regardless of the
+// device's own locale — a native <input type="date"> shows MM/DD/YYYY or
+// DD/MM/YYYY purely based on OS region settings, which we can't control
+// (notably Safari/iPadOS ignores the page's lang attribute for this).
+// Accepts a plain "YYYY-MM-DD" string (client form state) or a Date object
+// (the mysql2 driver returns DATE columns as JS Date objects, not strings,
+// when a tRPC query result is rendered directly — see CommandCenterPage's
+// toIsoDate for the same driver quirk). Both are normalized through
+// toISOString() first so a Date built at UTC midnight always reads back the
+// same calendar date it was written as, regardless of the browser's own
+// timezone.
+export function toIsoDateString(value: string | Date | undefined | null): string {
+  if (!value) return "";
+  return value instanceof Date ? (Number.isNaN(value.getTime()) ? "" : value.toISOString().slice(0, 10)) : value;
+}
+export function parseIsoDateLocal(value: string | Date | undefined | null): Date | undefined {
+  const iso = toIsoDateString(value);
+  if (!iso) return undefined;
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return undefined;
+  return new Date(y, m - 1, d);
+}
+export function toIsoDateLocal(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+export function formatDateDmy(value: string | Date | undefined | null): string {
+  const date = parseIsoDateLocal(value);
+  return date ? `${String(date.getDate()).padStart(2, "0")}/${String(date.getMonth() + 1).padStart(2, "0")}/${date.getFullYear()}` : "";
+}
+
+export function DateField({ value, onChange, min, max, placeholder = "DD/MM/YYYY", className, disabled }: { value: string; onChange: (iso: string) => void; min?: string; max?: string; placeholder?: string; className?: string; disabled?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const selected = parseIsoDateLocal(value);
+  return <Popover open={open} onOpenChange={setOpen}>
+    <PopoverTrigger asChild>
+      <button type="button" disabled={disabled} className={cx("flex h-11 w-full items-center justify-between gap-2 rounded-xl border border-line bg-well px-3.5 text-sm outline-none transition focus:border-accent focus:ring-4 focus:ring-accent/10 disabled:opacity-60", selected ? "text-ink" : "text-muted", className)}>
+        <span>{selected ? formatDateDmy(value) : placeholder}</span>
+        <CalendarIcon size={15} className="shrink-0 text-muted"/>
+      </button>
+    </PopoverTrigger>
+    <PopoverContent className="w-auto p-0" align="start">
+      <Calendar mode="single" selected={selected} defaultMonth={selected} onSelect={(date) => { if (date) { onChange(toIsoDateLocal(date)); setOpen(false); } }} disabled={(date) => (min ? toIsoDateLocal(date) < min : false) || (max ? toIsoDateLocal(date) > max : false)} autoFocus/>
+    </PopoverContent>
+  </Popover>;
+}
 
 export function PrimaryButton({ children, pending, className = "", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { pending?: boolean }) { return <Button {...props} disabled={pending || props.disabled} className={cx("h-11 rounded-full bg-accent px-5 font-medium text-white shadow-[0_7px_18px_rgba(14,116,144,.2)] hover:bg-accent-hover", className)}>{pending ? <><Loader2 size={15} className="mr-2 animate-spin"/>Saving…</> : children}</Button>; }
 export function SecondaryButton({ children, className = "", ...props }: ButtonHTMLAttributes<HTMLButtonElement>) { return <Button {...props} variant="outline" className={cx("h-10 rounded-full border-line bg-white px-4 text-xs font-medium text-ink hover:bg-fill", className)}>{children}</Button>; }
