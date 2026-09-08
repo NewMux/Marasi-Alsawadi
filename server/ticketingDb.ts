@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
-  addonServices, assetAdjustments, assetCategories, assetRecords, expenseAdjustments, expenseCategories, expenseRecords, facilityBookingAddons, facilityBookings, facilityTypes, guests, partnerEntities, partnerDiscountRules, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
+  addonServices, assetAdjustments, assetCategories, assetRecords, attachments, expenseAdjustments, expenseCategories, expenseRecords, facilityBookingAddons, facilityBookings, facilityTypes, guests, partnerEntities, partnerDiscountRules, pettyCashAllocations, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
   serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers,
   ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries, users,
 } from "../drizzle/schema";
@@ -845,6 +845,38 @@ export async function deleteExpenseRecord(id: number) {
   await db.delete(expenseRecords).where(eq(expenseRecords.id, id));
 }
 
+// PRD Round 5: multiple attachments per expense/revenue/asset entry,
+// addable on both create and edit — a shared table across all three entry
+// types rather than three near-identical ones, since the shape (a file plus
+// who/when it was uploaded) never differs by entry type.
+export async function listAttachmentsForEntry(entryType: "expense" | "revenue" | "asset", entryId: number) {
+  const db = await getDb(); if (!db) return [];
+  return db.select().from(attachments).where(and(eq(attachments.entryType, entryType), eq(attachments.entryId, entryId))).orderBy(attachments.createdAt);
+}
+
+export async function listAttachmentsForEntries(entryType: "expense" | "revenue" | "asset", entryIds: number[]) {
+  const db = await getDb(); if (!db || !entryIds.length) return [];
+  return db.select().from(attachments).where(and(eq(attachments.entryType, entryType), inArray(attachments.entryId, entryIds))).orderBy(attachments.createdAt);
+}
+
+export async function createAttachment(data: { entryType: "expense" | "revenue" | "asset"; entryId: number; path: string; originalName: string; uploadedBy: number }) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(attachments).values(data as any);
+  const rows = await db.select().from(attachments).orderBy(desc(attachments.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function getAttachment(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(attachments).where(eq(attachments.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function deleteAttachment(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.delete(attachments).where(eq(attachments.id, id));
+}
+
 // ─── Revenue categories and manual revenue ledger ───────────────────────────
 export async function listRevenueCategories(includeInactive = false) {
   const db = await getDb(); if (!db) return [];
@@ -1214,6 +1246,34 @@ export async function updatePettyCashFundAmount(id: number, fixedAmount: string)
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   await db.update(pettyCashFunds).set({ fixedAmount }).where(eq(pettyCashFunds.id, id));
   return getPettyCashFund(id);
+}
+
+// PRD Round 5: every time the Admin sends/allocates money to a custodian's
+// fund, this both bumps fixedAmount (the same balance-affecting effect
+// updatePettyCashFundAmount has always had) AND leaves a discrete, timestamped
+// record of the event — amount, when, and who sent it — which
+// updatePettyCashFundAmount's raw overwrite never did.
+export async function createPettyCashAllocation(data: { fundId: number; amount: string; note?: string; createdBy: number }) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  return db.transaction(async (tx) => {
+    const fundRows = await tx.select().from(pettyCashFunds).where(eq(pettyCashFunds.id, data.fundId)).limit(1);
+    const fund = fundRows[0];
+    if (!fund) throw new Error("Petty cash fund was not found");
+    const newAmount = minorToMoney(moneyToMinor(String(fund.fixedAmount)) + moneyToMinor(data.amount));
+    await tx.update(pettyCashFunds).set({ fixedAmount: newAmount }).where(eq(pettyCashFunds.id, data.fundId));
+    await tx.insert(pettyCashAllocations).values({ fundId: data.fundId, amount: data.amount, note: data.note || null, createdBy: data.createdBy } as any);
+    const allocationRows = await tx.select().from(pettyCashAllocations).orderBy(desc(pettyCashAllocations.id)).limit(1);
+    const updatedFundRows = await tx.select().from(pettyCashFunds).where(eq(pettyCashFunds.id, data.fundId)).limit(1);
+    return { fund: updatedFundRows[0]!, allocation: allocationRows[0]! };
+  });
+}
+
+export async function listPettyCashAllocations(fundId: number) {
+  const db = await getDb(); if (!db) return [];
+  return db.select({ allocation: pettyCashAllocations, sender: users }).from(pettyCashAllocations)
+    .leftJoin(users, eq(pettyCashAllocations.createdBy, users.id))
+    .where(eq(pettyCashAllocations.fundId, fundId))
+    .orderBy(desc(pettyCashAllocations.createdAt));
 }
 
 export async function listPettyCashSpends(fundId: number) {

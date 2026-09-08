@@ -40,11 +40,13 @@ import {
   listAssetAdjustments, createAssetAdjustment, createAssetTransfer, getAssetCategoryBalances,
   getExpenseCategoryByCode, createPettyCashFund, getPettyCashFund, getPettyCashFundByCustodian, updatePettyCashFundAmount,
   listPettyCashFundsWithBalances, listPettyCashSpends, createPettyCashSpendWithExpense, getPettyCashSpend, deletePettyCashSpendWithExpense, getPettyCashFundBalance,
+  createPettyCashAllocation, listPettyCashAllocations,
+  listAttachmentsForEntry, listAttachmentsForEntries, createAttachment, getAttachment, deleteAttachment,
 } from "../ticketingDb";
 import { applyFacilityDiscount, calculateFacilityLineAmount, calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
 import { publicTicketUrl, requestOrigin } from "../ticketUrl";
-import { isAllowedAttachmentMimeType, saveExpenseAttachment } from "../attachments";
+import { deleteAttachmentFile, isAllowedAttachmentMimeType, saveExpenseAttachment } from "../attachments";
 
 const managerProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (!['manager', 'admin', 'super_admin'].includes(ctx.user.role))
@@ -141,6 +143,31 @@ async function resolveFacilityBookingPricing(input: { facilityTypeId: number; qu
     facility, facilityCategory, facilityQuantity, facilityAmount, discountAmount, discountPercentage, partnerEntity, addons,
     addonsAmount: addonsAmount.toFixed(3), totalAmount: (Number(facilityAmount) + addonsAmount).toFixed(3),
   };
+}
+
+const attachmentInputSchema = z.object({ dataBase64: z.string(), mimeType: z.string(), fileName: z.string().max(256) });
+
+// PRD Round 5, Section 1/2: any number of attachments, addable on both
+// create and edit — shared across expense/revenue/asset entries since the
+// upload/validate/store steps never differ by entry type.
+async function saveEntryAttachments(entryType: "expense" | "revenue" | "asset", entryId: number, files: Array<{ dataBase64: string; mimeType: string; fileName: string }> | undefined, uploadedBy: number) {
+  if (!files?.length) return;
+  for (const file of files) {
+    if (!isAllowedAttachmentMimeType(file.mimeType)) throw new TRPCError({ code: "BAD_REQUEST", message: "Attachments must be JPEG, PNG, WEBP images, or PDFs" });
+  }
+  for (const file of files) {
+    const saved = await saveExpenseAttachment(file);
+    await createAttachment({ entryType, entryId, path: saved.attachmentPath, originalName: saved.attachmentOriginalName, uploadedBy });
+  }
+}
+
+// Batch-embeds each row's attachments (fetched in one query, grouped in JS)
+// so ledger tables can render "View attachment" links with no per-row query.
+async function withAttachments<T extends { id: number }>(entryType: "expense" | "revenue" | "asset", rows: T[]) {
+  const rowAttachments = await listAttachmentsForEntries(entryType, rows.map((row) => row.id));
+  const byEntry = new Map<number, typeof rowAttachments>();
+  for (const attachment of rowAttachments) byEntry.set(attachment.entryId, [...(byEntry.get(attachment.entryId) ?? []), attachment]);
+  return rows.map((row) => ({ ...row, attachments: byEntry.get(row.id) ?? [] }));
 }
 
 export const platformRouter = router({
@@ -937,38 +964,37 @@ export const platformRouter = router({
     }),
     expenses: router({
       list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional(), descriptionPrefix: z.string().optional() }).optional())
-        .query(({ input }) => listExpenseRecords(input?.from, input?.to, input?.descriptionPrefix)),
+        .query(async ({ input }) => withAttachments("expense", await listExpenseRecords(input?.from, input?.to, input?.descriptionPrefix))),
       create: protectedProcedure.input(z.object({
         businessDate: z.string(), categoryId: z.number(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
         payee: z.string().optional(), description: z.string().min(1),
         receiptNumber: z.string().max(64).optional(),
-        attachment: z.object({ dataBase64: z.string(), mimeType: z.string(), fileName: z.string().max(256) }).optional(),
+        attachments: z.array(attachmentInputSchema).max(10).optional(),
         department: z.enum(["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]).default("general"),
       })).mutation(async ({ input, ctx }) => {
         const category = await getExpenseCategory(input.categoryId);
         if (!category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active expense category" });
-        if (input.attachment && !isAllowedAttachmentMimeType(input.attachment.mimeType)) throw new TRPCError({ code: "BAD_REQUEST", message: "Attachment must be a JPEG, PNG, WEBP image, or a PDF" });
         const stream = input.department === "aqua_park" || input.department === "fnb" ? input.department : "extras";
         const financeEntry = await createFinanceEntry({
           date: input.businessDate, stream, type: "expense", amount: input.amount,
           description: input.description, referenceType: "expense_record", createdBy: ctx.user.id,
         } as any);
-        const { attachment, ...expenseInput } = input;
-        const saved = attachment ? await saveExpenseAttachment(attachment) : null;
+        const { attachments: attachmentFiles, ...expenseInput } = input;
         const expense = await createExpenseRecord({
           ...expenseInput, businessDate: input.businessDate as any, categoryName: category.name,
-          attachmentPath: saved?.attachmentPath ?? null, attachmentOriginalName: saved?.attachmentOriginalName ?? null,
           financeEntryId: financeEntry.id, createdBy: ctx.user.id,
         } as any);
+        await saveEntryAttachments("expense", expense.id, attachmentFiles, ctx.user.id);
         await logActivity(ctx.user.id, "expense.create", "expense_record", expense.id, `${category.code}:${input.amount}`);
-        return expense;
+        return { ...expense, attachments: await listAttachmentsForEntry("expense", expense.id) };
       }),
       update: managerProcedure.input(z.object({
         id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals").optional(),
         payee: z.string().optional(), description: z.string().min(1).optional(), receiptNumber: z.string().max(64).optional(),
         department: z.enum(["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]).optional(),
+        attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
-        const { id, categoryId, ...data } = input;
+        const { id, categoryId, attachments: attachmentFiles, ...data } = input;
         const existing = await getExpenseRecord(id);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Expense record was not found" });
         const category = categoryId ? await getExpenseCategory(categoryId) : undefined;
@@ -982,6 +1008,7 @@ export const platformRouter = router({
             description: data.description ?? existing.description, stream,
           } as any);
         }
+        await saveEntryAttachments("expense", id, attachmentFiles, ctx.user.id);
         await logActivity(ctx.user.id, "expense.update", "expense_record", id, JSON.stringify(data));
       }),
       delete: managerProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
@@ -1017,35 +1044,34 @@ export const platformRouter = router({
     }),
     revenues: router({
       list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
-        .query(({ input }) => listRevenueRecords(input?.from, input?.to)),
+        .query(async ({ input }) => withAttachments("revenue", await listRevenueRecords(input?.from, input?.to))),
       create: protectedProcedure.input(z.object({
         businessDate: z.string(), categoryId: z.number(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
         source: z.string().max(128).optional(), description: z.string().min(1),
         receiptNumber: z.string().max(64).optional(),
-        attachment: z.object({ dataBase64: z.string(), mimeType: z.string(), fileName: z.string().max(256) }).optional(),
+        attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
         const category = await getRevenueCategory(input.categoryId);
         if (!category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active revenue category" });
-        if (input.attachment && !isAllowedAttachmentMimeType(input.attachment.mimeType)) throw new TRPCError({ code: "BAD_REQUEST", message: "Attachment must be a JPEG, PNG, WEBP image, or a PDF" });
         const financeEntry = await createFinanceEntry({
           date: input.businessDate, stream: "extras", type: "revenue", amount: input.amount,
           description: input.description, referenceType: "revenue_record", createdBy: ctx.user.id,
         } as any);
-        const { attachment, ...revenueInput } = input;
-        const saved = attachment ? await saveExpenseAttachment(attachment) : null;
+        const { attachments: attachmentFiles, ...revenueInput } = input;
         const revenue = await createRevenueRecord({
           ...revenueInput, businessDate: input.businessDate as any, categoryName: category.name,
-          attachmentPath: saved?.attachmentPath ?? null, attachmentOriginalName: saved?.attachmentOriginalName ?? null,
           financeEntryId: financeEntry.id, createdBy: ctx.user.id,
         } as any);
+        await saveEntryAttachments("revenue", revenue.id, attachmentFiles, ctx.user.id);
         await logActivity(ctx.user.id, "revenue.create", "revenue_record", revenue.id, `${category.code}:${input.amount}`);
-        return revenue;
+        return { ...revenue, attachments: await listAttachmentsForEntry("revenue", revenue.id) };
       }),
       update: managerProcedure.input(z.object({
         id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals").optional(),
         source: z.string().max(128).optional(), description: z.string().min(1).optional(), receiptNumber: z.string().max(64).optional(),
+        attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
-        const { id, categoryId, ...data } = input;
+        const { id, categoryId, attachments: attachmentFiles, ...data } = input;
         const existing = await getRevenueRecord(id);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Revenue record was not found" });
         const category = categoryId ? await getRevenueCategory(categoryId) : undefined;
@@ -1057,6 +1083,7 @@ export const platformRouter = router({
             description: data.description ?? existing.description,
           } as any);
         }
+        await saveEntryAttachments("revenue", id, attachmentFiles, ctx.user.id);
         await logActivity(ctx.user.id, "revenue.update", "revenue_record", id, JSON.stringify(data));
       }),
       delete: managerProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
@@ -1092,7 +1119,7 @@ export const platformRouter = router({
     }),
     assets: router({
       list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
-        .query(({ input }) => listAssetRecords(input?.from, input?.to)),
+        .query(async ({ input }) => withAttachments("asset", await listAssetRecords(input?.from, input?.to))),
       create: protectedProcedure.input(z.object({
         businessDate: z.string(), categoryId: z.number(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
         vendor: z.string().max(128).optional(), description: z.string().min(1),
@@ -1100,19 +1127,17 @@ export const platformRouter = router({
         location: z.string().max(160).optional(),
         status: z.enum(["active", "under_maintenance", "disposed"]).default("active"),
         usefulLifeYears: z.number().int().min(1).max(100).optional(),
-        attachment: z.object({ dataBase64: z.string(), mimeType: z.string(), fileName: z.string().max(256) }).optional(),
+        attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
         const category = await getAssetCategory(input.categoryId);
         if (!category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active asset category" });
-        if (input.attachment && !isAllowedAttachmentMimeType(input.attachment.mimeType)) throw new TRPCError({ code: "BAD_REQUEST", message: "Attachment must be a JPEG, PNG, WEBP image, or a PDF" });
-        const { attachment, ...assetInput } = input;
-        const saved = attachment ? await saveExpenseAttachment(attachment) : null;
+        const { attachments: attachmentFiles, ...assetInput } = input;
         const asset = await createAssetRecord({
-          ...assetInput, businessDate: input.businessDate as any, categoryName: category.name,
-          attachmentPath: saved?.attachmentPath ?? null, attachmentOriginalName: saved?.attachmentOriginalName ?? null, createdBy: ctx.user.id,
+          ...assetInput, businessDate: input.businessDate as any, categoryName: category.name, createdBy: ctx.user.id,
         } as any);
+        await saveEntryAttachments("asset", asset.id, attachmentFiles, ctx.user.id);
         await logActivity(ctx.user.id, "asset.create", "asset_record", asset.id, `${category.code}:${input.amount}`);
-        return asset;
+        return { ...asset, attachments: await listAttachmentsForEntry("asset", asset.id) };
       }),
       update: managerProcedure.input(z.object({
         id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals").optional(),
@@ -1120,13 +1145,15 @@ export const platformRouter = router({
         location: z.string().max(160).optional(),
         status: z.enum(["active", "under_maintenance", "disposed"]).optional(),
         usefulLifeYears: z.number().int().min(1).max(100).nullable().optional(),
+        attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
-        const { id, categoryId, ...data } = input;
+        const { id, categoryId, attachments: attachmentFiles, ...data } = input;
         const existing = await getAssetRecord(id);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Asset record was not found" });
         const category = categoryId ? await getAssetCategory(categoryId) : undefined;
         if (categoryId && !category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active asset category" });
         await updateAssetRecord(id, { ...data, ...(category ? { categoryId, categoryName: category.name } : {}) } as any);
+        await saveEntryAttachments("asset", id, attachmentFiles, ctx.user.id);
         await logActivity(ctx.user.id, "asset.update", "asset_record", id, JSON.stringify(data));
       }),
       delete: managerProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
@@ -1134,6 +1161,15 @@ export const platformRouter = router({
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Asset record was not found" });
         await deleteAssetRecord(input.id);
         await logActivity(ctx.user.id, "asset.delete", "asset_record", input.id);
+      }),
+    }),
+    attachments: router({
+      delete: managerProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+        const attachment = await getAttachment(input.id);
+        if (!attachment) throw new TRPCError({ code: "NOT_FOUND", message: "Attachment was not found" });
+        await deleteAttachment(input.id);
+        await deleteAttachmentFile(attachment.path);
+        await logActivity(ctx.user.id, "attachment.delete", "attachment", input.id, attachment.originalName);
       }),
     }),
     assetAdjustments: router({
@@ -1260,6 +1296,25 @@ export const platformRouter = router({
         const updated = await updatePettyCashFundAmount(input.id, input.fixedAmount);
         await logActivity(ctx.user.id, "petty_cash_fund.update_amount", "petty_cash_fund", input.id, input.fixedAmount);
         return updated;
+      }),
+      // PRD Round 5: a discrete, timestamped log of every top-up the Admin
+      // sends to a custodian's fund — alongside updateAmount's raw (unlogged)
+      // overwrite, which stays available for correcting a mistake.
+      allocate: superAdminProcedure.input(z.object({
+        id: z.number().int().positive(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"), note: z.string().max(256).optional(),
+      })).mutation(async ({ input, ctx }) => {
+        const fund = await getPettyCashFund(input.id);
+        if (!fund) throw new TRPCError({ code: "NOT_FOUND", message: "Petty cash fund was not found" });
+        const result = await createPettyCashAllocation({ fundId: input.id, amount: input.amount, note: input.note?.trim(), createdBy: ctx.user.id });
+        await logActivity(ctx.user.id, "petty_cash_fund.allocate", "petty_cash_fund", input.id, input.amount);
+        return result;
+      }),
+      allocationsFor: managerProcedure.input(z.object({ fundId: z.number().int().positive() })).query(({ input }) => listPettyCashAllocations(input.fundId)),
+      mineAllocations: protectedProcedure.query(async ({ ctx }) => {
+        if (ctx.user.role !== "petty_cash") return [];
+        const fund = await getPettyCashFundByCustodian(ctx.user.id);
+        if (!fund) return [];
+        return listPettyCashAllocations(fund.id);
       }),
       spendsFor: managerProcedure.input(z.object({ fundId: z.number().int().positive() })).query(({ input }) => listPettyCashSpends(input.fundId)),
       mine: protectedProcedure.query(async ({ ctx }) => {

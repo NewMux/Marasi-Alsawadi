@@ -11,7 +11,7 @@ type CategoryType = "expense" | "revenue" | "asset";
 
 const today = new Date().toISOString().slice(0, 10);
 const monthStart = `${today.slice(0, 8)}01`;
-const blankTransaction = { id: "", categoryType: "expense" as CategoryType, businessDate: today, categoryId: "", amount: "", description: "", receiptNumber: "", attachmentDataBase64: "", attachmentMimeType: "", attachmentFileName: "", vendor: "", location: "", status: "active" as "active" | "under_maintenance" | "disposed", usefulLifeYears: "" };
+const blankTransaction = { id: "", categoryType: "expense" as CategoryType, businessDate: today, categoryId: "", amount: "", description: "", receiptNumber: "", vendor: "", location: "", status: "active" as "active" | "under_maintenance" | "disposed", usefulLifeYears: "" };
 const assetStatusKeys: Record<string, TranslationKey> = { active: "finance.assetStatusActive", under_maintenance: "finance.assetStatusUnderMaintenance", disposed: "finance.assetStatusDisposed" };
 const blankAdjust = { businessDate: today, categoryId: "", type: "add" as "add" | "deduct", amount: "", note: "" };
 const blankTransfer = { businessDate: today, fromCategoryId: "", toCategoryId: "", amount: "", note: "" };
@@ -47,8 +47,22 @@ export default function FinanceControlPage() {
   const canViewFinancials = canManage;
   const isSuperAdmin = user?.role === "super_admin";
   const [range, setRange] = useState({ from: today, to: today });
+  const [showAllLedger, setShowAllLedger] = useState(false);
+  const ledgerRange = showAllLedger ? {} : range;
+  const setRangeAndNarrow = (next: { from: string; to: string }) => { setRange(next); setShowAllLedger(false); };
   const [screenTab, setScreenTab] = useState<"record" | "adjust" | "transfer">("record");
   const [transactionForm, setTransactionForm] = useState({ ...blankTransaction });
+  // PRD Round 5, Section 1/2: attachments are addable on create AND edit, and
+  // any number of them — pendingAttachments are new files not yet uploaded
+  // (sent with the create/update mutation), editingAttachments are the
+  // entry's already-saved ones (each individually removable while editing).
+  const [pendingAttachments, setPendingAttachments] = useState<{ dataBase64: string; mimeType: string; fileName: string }[]>([]);
+  const [editingAttachments, setEditingAttachments] = useState<{ id: number; path: string; originalName: string }[]>([]);
+  const resetTransactionForm = (categoryType: CategoryType = transactionForm.categoryType) => {
+    setTransactionForm({ ...blankTransaction, categoryType });
+    setPendingAttachments([]);
+    setEditingAttachments([]);
+  };
   const [adjustCategoryType, setAdjustCategoryType] = useState<CategoryType>("expense");
   const [adjustForm, setAdjustForm] = useState({ ...blankAdjust });
   const [transferForm, setTransferForm] = useState({ ...blankTransfer });
@@ -57,9 +71,9 @@ export default function FinanceControlPage() {
   const { data: categories = [], isLoading: categoriesLoading } = trpc.platform.finance.expenseCategories.list.useQuery({ includeInactive: false }, { enabled: canRecord });
   const { data: revenueCategories = [], isLoading: revenueCategoriesLoading } = trpc.platform.finance.revenueCategories.list.useQuery({ includeInactive: false }, { enabled: canRecord });
   const { data: assetCategories = [], isLoading: assetCategoriesLoading } = trpc.platform.finance.assetCategories.list.useQuery({ includeInactive: false }, { enabled: canRecord });
-  const { data: expenses = [], isLoading: expensesLoading } = trpc.platform.finance.expenses.list.useQuery(range, { enabled: canRecord });
-  const { data: revenueRecords = [], isLoading: revenueRecordsLoading } = trpc.platform.finance.revenues.list.useQuery(range, { enabled: canRecord });
-  const { data: assetRecords = [], isLoading: assetRecordsLoading } = trpc.platform.finance.assets.list.useQuery(range, { enabled: canRecord });
+  const { data: expenses = [], isLoading: expensesLoading } = trpc.platform.finance.expenses.list.useQuery(ledgerRange, { enabled: canRecord });
+  const { data: revenueRecords = [], isLoading: revenueRecordsLoading } = trpc.platform.finance.revenues.list.useQuery(ledgerRange, { enabled: canRecord });
+  const { data: assetRecords = [], isLoading: assetRecordsLoading } = trpc.platform.finance.assets.list.useQuery(ledgerRange, { enabled: canRecord });
   const { data: summary, isLoading: summaryLoading } = trpc.platform.finance.operationalSummary.useQuery(range, { enabled: canViewFinancials });
   const { data: adjustments = [], isLoading: adjustmentsLoading } = trpc.platform.finance.expenseAdjustments.list.useQuery(range, { enabled: canManage });
   const { data: balances = [], isLoading: balancesLoading } = trpc.platform.finance.expenseAdjustments.balances.useQuery(range, { enabled: canManage });
@@ -69,14 +83,14 @@ export default function FinanceControlPage() {
   const { data: assetBalances = [], isLoading: assetBalancesLoading } = trpc.platform.finance.assetAdjustments.balances.useQuery(range, { enabled: canManage });
 
   const invalidate = () => { utils.platform.finance.expenses.invalidate(); utils.platform.finance.revenues.invalidate(); utils.platform.finance.assets.invalidate(); utils.platform.finance.operationalSummary.invalidate(); utils.platform.finance.invalidate(); };
-  const createExpense = trpc.platform.finance.expenses.create.useMutation({ onSuccess: () => { invalidate(); setTransactionForm({ ...blankTransaction }); toast.success(t("finance.transactionRecorded")); }, onError: (error) => toast.error(error.message) });
-  const updateExpense = trpc.platform.finance.expenses.update.useMutation({ onSuccess: () => { invalidate(); setTransactionForm({ ...blankTransaction }); toast.success(t("finance.transactionUpdated")); }, onError: (error) => toast.error(error.message) });
+  const createExpense = trpc.platform.finance.expenses.create.useMutation({ onSuccess: () => { invalidate(); resetTransactionForm(); toast.success(t("finance.transactionRecorded")); }, onError: (error) => toast.error(error.message) });
+  const updateExpense = trpc.platform.finance.expenses.update.useMutation({ onSuccess: () => { invalidate(); resetTransactionForm(); toast.success(t("finance.transactionUpdated")); }, onError: (error) => toast.error(error.message) });
   const deleteExpense = trpc.platform.finance.expenses.delete.useMutation({ onSuccess: () => { invalidate(); toast.success(t("finance.transactionRemoved")); }, onError: (error) => toast.error(error.message) });
-  const createRevenue = trpc.platform.finance.revenues.create.useMutation({ onSuccess: () => { invalidate(); setTransactionForm({ ...blankTransaction }); toast.success(t("finance.transactionRecorded")); }, onError: (error) => toast.error(error.message) });
-  const updateRevenue = trpc.platform.finance.revenues.update.useMutation({ onSuccess: () => { invalidate(); setTransactionForm({ ...blankTransaction }); toast.success(t("finance.transactionUpdated")); }, onError: (error) => toast.error(error.message) });
+  const createRevenue = trpc.platform.finance.revenues.create.useMutation({ onSuccess: () => { invalidate(); resetTransactionForm(); toast.success(t("finance.transactionRecorded")); }, onError: (error) => toast.error(error.message) });
+  const updateRevenue = trpc.platform.finance.revenues.update.useMutation({ onSuccess: () => { invalidate(); resetTransactionForm(); toast.success(t("finance.transactionUpdated")); }, onError: (error) => toast.error(error.message) });
   const deleteRevenue = trpc.platform.finance.revenues.delete.useMutation({ onSuccess: () => { invalidate(); toast.success(t("finance.transactionRemoved")); }, onError: (error) => toast.error(error.message) });
-  const createAsset = trpc.platform.finance.assets.create.useMutation({ onSuccess: () => { invalidate(); setTransactionForm({ ...blankTransaction }); toast.success(t("finance.transactionRecorded")); }, onError: (error) => toast.error(error.message) });
-  const updateAsset = trpc.platform.finance.assets.update.useMutation({ onSuccess: () => { invalidate(); setTransactionForm({ ...blankTransaction }); toast.success(t("finance.transactionUpdated")); }, onError: (error) => toast.error(error.message) });
+  const createAsset = trpc.platform.finance.assets.create.useMutation({ onSuccess: () => { invalidate(); resetTransactionForm(); toast.success(t("finance.transactionRecorded")); }, onError: (error) => toast.error(error.message) });
+  const updateAsset = trpc.platform.finance.assets.update.useMutation({ onSuccess: () => { invalidate(); resetTransactionForm(); toast.success(t("finance.transactionUpdated")); }, onError: (error) => toast.error(error.message) });
   const deleteAsset = trpc.platform.finance.assets.delete.useMutation({ onSuccess: () => { invalidate(); toast.success(t("finance.transactionRemoved")); }, onError: (error) => toast.error(error.message) });
 
   const adjustCategory = trpc.platform.finance.expenseAdjustments.adjust.useMutation({ onSuccess: () => { utils.platform.finance.expenseAdjustments.invalidate(); setAdjustForm({ ...blankAdjust }); toast.success(t("finance.adjustmentLogged")); }, onError: (error) => toast.error(error.message) });
@@ -119,24 +133,25 @@ export default function FinanceControlPage() {
   const submitTransaction = () => {
     if (!transactionForm.businessDate || !transactionForm.categoryId || !transactionForm.amount || Number(transactionForm.amount) <= 0) return toast.error(t("finance.chooseDateCategoryAmount"));
     if (!transactionForm.description.trim()) return toast.error(t("finance.addExpenseDescription"));
-    const shared = { businessDate: transactionForm.businessDate, categoryId: Number(transactionForm.categoryId), amount: transactionForm.amount, description: transactionForm.description.trim(), receiptNumber: transactionForm.receiptNumber.trim() || undefined };
-    const attachment = transactionForm.attachmentDataBase64 ? { dataBase64: transactionForm.attachmentDataBase64, mimeType: transactionForm.attachmentMimeType, fileName: transactionForm.attachmentFileName } : undefined;
+    const shared = { businessDate: transactionForm.businessDate, categoryId: Number(transactionForm.categoryId), amount: transactionForm.amount, description: transactionForm.description.trim(), receiptNumber: transactionForm.receiptNumber.trim() || undefined, attachments: pendingAttachments.length ? pendingAttachments : undefined };
     if (transactionForm.categoryType === "expense") {
-      editing ? updateExpense.mutate({ id: Number(transactionForm.id), ...shared, department: "general" as any }) : createExpense.mutate({ ...shared, department: "general" as any, attachment });
+      editing ? updateExpense.mutate({ id: Number(transactionForm.id), ...shared, department: "general" as any }) : createExpense.mutate({ ...shared, department: "general" as any });
     } else if (transactionForm.categoryType === "revenue") {
-      editing ? updateRevenue.mutate({ id: Number(transactionForm.id), ...shared }) : createRevenue.mutate({ ...shared, attachment });
+      editing ? updateRevenue.mutate({ id: Number(transactionForm.id), ...shared }) : createRevenue.mutate({ ...shared });
     } else {
       const assetFields = { vendor: transactionForm.vendor.trim() || undefined, location: transactionForm.location.trim() || undefined, status: transactionForm.status, usefulLifeYears: transactionForm.usefulLifeYears ? Number(transactionForm.usefulLifeYears) : undefined };
-      editing ? updateAsset.mutate({ id: Number(transactionForm.id), ...shared, ...assetFields }) : createAsset.mutate({ ...shared, ...assetFields, attachment });
+      editing ? updateAsset.mutate({ id: Number(transactionForm.id), ...shared, ...assetFields }) : createAsset.mutate({ ...shared, ...assetFields });
     }
   };
   const editLedgerEntry = (entry: any) => {
     setTransactionForm({
       id: String(entry.id), categoryType: transactionForm.categoryType, businessDate: toDateInputValue(entry.businessDate || entry.date),
       categoryId: String(entry.categoryId || ""), amount: String(entry.amount), description: entry.description || "",
-      receiptNumber: entry.receiptNumber || "", attachmentDataBase64: "", attachmentMimeType: "", attachmentFileName: "",
+      receiptNumber: entry.receiptNumber || "",
       vendor: entry.vendor || "", location: entry.location || "", status: entry.status || "active", usefulLifeYears: entry.usefulLifeYears != null ? String(entry.usefulLifeYears) : "",
     });
+    setPendingAttachments([]);
+    setEditingAttachments((entry.attachments || []).map((a: any) => ({ id: a.id, path: a.path, originalName: a.originalName })));
   };
   const deleteLedgerEntry = (entry: any) => {
     if (!window.confirm(t("finance.confirmRemoveTransaction"))) return;
@@ -145,12 +160,19 @@ export default function FinanceControlPage() {
     else deleteAsset.mutate({ id: entry.id });
   };
   const savingTransaction = createExpense.isPending || updateExpense.isPending || createRevenue.isPending || updateRevenue.isPending || createAsset.isPending || updateAsset.isPending;
-  const onAttachmentSelected = async (file: File | undefined) => {
-    if (!file) return setTransactionForm((current) => ({ ...current, attachmentDataBase64: "", attachmentMimeType: "", attachmentFileName: "" }));
-    if (file.size > 5 * 1024 * 1024) return toast.error(t("finance.attachmentTooLarge"));
-    const attachment = await readFileAsAttachment(file);
-    setTransactionForm((current) => ({ ...current, attachmentDataBase64: attachment.dataBase64, attachmentMimeType: attachment.mimeType, attachmentFileName: attachment.fileName }));
+  const deleteAttachment = trpc.platform.finance.attachments.delete.useMutation({
+    onSuccess: (_data, variables) => { setEditingAttachments((current) => current.filter((entry) => entry.id !== variables.id)); invalidate(); toast.success(t("finance.attachmentRemoved")); },
+    onError: (error) => toast.error(error.message),
+  });
+  const onAttachmentsSelected = async (fileList: FileList | null) => {
+    if (!fileList?.length) return;
+    for (const file of Array.from(fileList)) {
+      if (file.size > 5 * 1024 * 1024) { toast.error(t("finance.attachmentTooLarge")); continue; }
+      const attachment = await readFileAsAttachment(file);
+      setPendingAttachments((current) => [...current, attachment]);
+    }
   };
+  const removePendingAttachment = (index: number) => setPendingAttachments((current) => current.filter((_, entryIndex) => entryIndex !== index));
 
   if (!canRecord) return <Surface><EmptyState title={t("finance.accessRequired")} description={t("finance.signInToRecord")}/> </Surface>;
 
@@ -158,7 +180,7 @@ export default function FinanceControlPage() {
 
   return <>
     <PageHeader eyebrow={t("finance.expenseControlEyebrow")} title={t("finance.expenseControlTitle")} description={t("finance.expenseControlDescription")} actions={<><StatusPill tone="info">{t("finance.omrLedger")}</StatusPill><SecondaryButton onClick={() => exportCsv(`marasi-expenses-${range.from}-to-${range.to}.csv`, [...csvReportHeaderRows(t("cc.reportGenerated"), t("cc.reportGeneratedBy"), user?.name || "—"), ["Date", "Category", "Description", "Amount (OMR)"], ...(expenses as any[]).map((entry) => [entry.businessDate || entry.date, entry.categoryName || entry.category, entry.description, String(entry.amount)])])}><Download size={14} className="mr-2"/>{t("finance.exportExpenses")}</SecondaryButton></>}/>
-    <Surface tone="tinted"><div className="flex flex-wrap items-end gap-4"><Field label={t("common.from")}><DateField value={range.from} onChange={(value) => setRange({ ...range, from: value })}/></Field><Field label={t("common.to")}><DateField value={range.to} onChange={(value) => setRange({ ...range, to: value })}/></Field><div className="flex items-center gap-2 pb-2 text-xs text-body"><CalendarDays size={15} className="text-accent"/>{t("finance.selectedReportPeriod")}</div><SecondaryButton onClick={() => setRange({ from: today, to: today })}>{t("finance.today")}</SecondaryButton><SecondaryButton onClick={() => setRange({ from: monthStart, to: today })}>{t("finance.thisMonth")}</SecondaryButton></div></Surface>
+    <Surface tone="tinted"><div className="flex flex-wrap items-end gap-4"><Field label={t("common.from")}><DateField value={range.from} onChange={(value) => setRangeAndNarrow({ ...range, from: value })}/></Field><Field label={t("common.to")}><DateField value={range.to} onChange={(value) => setRangeAndNarrow({ ...range, to: value })}/></Field><div className="flex items-center gap-2 pb-2 text-xs text-body"><CalendarDays size={15} className="text-accent"/>{t("finance.selectedReportPeriod")}{showAllLedger && <span className="text-subtle"> · {t("finance.showingAllLedger")}</span>}</div><SecondaryButton onClick={() => setRangeAndNarrow({ from: today, to: today })}>{t("finance.today")}</SecondaryButton><SecondaryButton onClick={() => setRangeAndNarrow({ from: monthStart, to: today })}>{t("finance.thisMonth")}</SecondaryButton><SecondaryButton onClick={() => setShowAllLedger(true)}>{t("common.showAll")}</SecondaryButton></div></Surface>
 
     <div className="mt-6 grid gap-4 md:grid-cols-3">{canViewFinancials ? <><MetricCard icon={TrendingUp} label={t("finance.revenue")} value={money(revenue)} detail={t("finance.finalTicketTotals")} tone="blue"/><MetricCard icon={TrendingDown} label={t("finance.expenses")} value={money(expenseTotal)} detail={`${expenses.length} ${expenses.length === 1 ? t("finance.categorizedRecords") : t("finance.categorizedRecordsPlural")}`} tone="amber"/><MetricCard icon={FileText} label={t("finance.netResult")} value={money(net)} detail={net >= 0 ? t("finance.revenueLessExpenses") : t("finance.reviewSpending")} tone={net >= 0 ? "green" : "red"}/></> : <Surface className="md:col-span-3"><p className="text-sm font-medium text-ink">{t("finance.expenseEntryWorkspace")}</p><p className="mt-1 text-xs leading-5 text-muted">{t("finance.revenueReportingRestricted")}</p></Surface>}</div>
 
@@ -168,7 +190,7 @@ export default function FinanceControlPage() {
       <Surface>
         <div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{editing ? t("finance.saveChanges") : t("finance.tabRecordTransaction")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("finance.recordTransactionHint")}</p></div></div>
         <div className="grid gap-4">
-          {categoryTypeSelect(transactionForm.categoryType, (categoryType) => setTransactionForm({ ...blankTransaction, categoryType }))}
+          {categoryTypeSelect(transactionForm.categoryType, (categoryType) => resetTransactionForm(categoryType))}
           <Field label={t("common.category")}><SelectField value={transactionForm.categoryId} onChange={(event) => setTransactionForm({ ...transactionForm, categoryId: event.target.value })}><option value="">{t("finance.chooseCategory")}</option>{(categoriesForType(transactionForm.categoryType) as any[]).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</SelectField>{(categoriesLoading || revenueCategoriesLoading || assetCategoriesLoading) && <span className="text-[11px] text-subtle">{t("finance.loadingCategories")}</span>}{isSuperAdmin && <span className="text-[11px] leading-4 text-subtle">{t("finance.categoriesInSettings")}</span>}</Field>
           <Field label={t("common.amount")}><TextField inputMode="decimal" value={transactionForm.amount} onChange={(event) => setTransactionForm({ ...transactionForm, amount: event.target.value })} placeholder="0.00"/></Field>
           <Field label={t("common.date")}><DateField value={transactionForm.businessDate} onChange={(value) => setTransactionForm({ ...transactionForm, businessDate: value })}/></Field>
@@ -180,14 +202,19 @@ export default function FinanceControlPage() {
             <Field label={t("finance.usefulLifeYears")} hint={t("finance.usefulLifeYearsHint")}><TextField type="number" min={1} value={transactionForm.usefulLifeYears} onChange={(event) => setTransactionForm({ ...transactionForm, usefulLifeYears: event.target.value })} placeholder={t("common.optional")}/></Field>
           </>}
           <Field label={t("finance.receiptNumber")}><TextField value={transactionForm.receiptNumber} onChange={(event) => setTransactionForm({ ...transactionForm, receiptNumber: event.target.value })}/></Field>
-          {!editing && <div><Field label={t("finance.attachment")}><input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" onChange={(event) => onAttachmentSelected(event.target.files?.[0])} className="block w-full text-xs text-muted file:mr-3 file:rounded-lg file:border-0 file:bg-fill file:px-3 file:py-2 file:text-xs file:font-semibold file:text-ink hover:file:bg-[#e8e8ed]"/></Field><p className="mt-1.5 text-[11px] leading-4 text-muted">{t("finance.attachmentHint")}</p>{transactionForm.attachmentFileName && <p className="mt-1 truncate text-[11px] text-accent">{transactionForm.attachmentFileName}</p>}</div>}
+          <div>
+            <Field label={t("finance.attachments")}><input type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" onChange={(event) => { onAttachmentsSelected(event.target.files); event.target.value = ""; }} className="block w-full text-xs text-muted file:mr-3 file:rounded-lg file:border-0 file:bg-fill file:px-3 file:py-2 file:text-xs file:font-semibold file:text-ink hover:file:bg-[#e8e8ed]"/></Field>
+            <p className="mt-1.5 text-[11px] leading-4 text-muted">{t("finance.attachmentHint")}</p>
+            {editingAttachments.length > 0 && <div className="mt-2 grid gap-1.5">{editingAttachments.map((entry) => <div key={entry.id} className="flex items-center justify-between gap-2 rounded-lg bg-well px-2.5 py-1.5"><a href={entry.path} target="_blank" rel="noreferrer" className="truncate text-[11px] font-medium text-accent hover:underline">{entry.originalName}</a><button type="button" aria-label="Remove attachment" onClick={() => deleteAttachment.mutate({ id: entry.id })} className="shrink-0 rounded-full p-1 text-muted hover:bg-danger-bg hover:text-danger"><Trash2 size={12}/></button></div>)}</div>}
+            {pendingAttachments.length > 0 && <div className="mt-2 grid gap-1.5">{pendingAttachments.map((entry, index) => <div key={index} className="flex items-center justify-between gap-2 rounded-lg bg-well px-2.5 py-1.5"><span className="truncate text-[11px] text-accent">{entry.fileName}</span><button type="button" aria-label="Remove attachment" onClick={() => removePendingAttachment(index)} className="shrink-0 rounded-full p-1 text-muted hover:bg-danger-bg hover:text-danger"><Trash2 size={12}/></button></div>)}</div>}
+          </div>
         </div>
-        <div className="mt-5 flex flex-wrap gap-2 border-t border-divider pt-5"><PrimaryButton onClick={submitTransaction} pending={savingTransaction}>{editing ? t("finance.saveChanges") : t("finance.tabRecordTransaction")}<Plus size={15} className="ml-2"/></PrimaryButton>{editing && <SecondaryButton onClick={() => setTransactionForm({ ...blankTransaction, categoryType: transactionForm.categoryType })}>{t("finance.cancel")}</SecondaryButton>}</div>
+        <div className="mt-5 flex flex-wrap gap-2 border-t border-divider pt-5"><PrimaryButton onClick={submitTransaction} pending={savingTransaction}>{editing ? t("finance.saveChanges") : t("finance.tabRecordTransaction")}<Plus size={15} className="ml-2"/></PrimaryButton>{editing && <SecondaryButton onClick={() => resetTransactionForm()}>{t("finance.cancel")}</SecondaryButton>}</div>
       </Surface>
       <Surface>
         <div className="mb-5 flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("finance.ledger")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t(categoryTypeLabelKeys[transactionForm.categoryType])}</p></div><StatusPill>{filteredLedger.length} {t("finance.shown")}</StatusPill></div>
         <SearchField value={ledgerQuery} onChange={setLedgerQuery} placeholder={t("finance.searchTransactions")}/>
-        <div className="mt-4">{ledgerLoading ? <LoadingState label={t("finance.loadingLedger")}/> : filteredLedger.length ? <TableFrame><TableHeader><div className="grid grid-cols-[.75fr_1fr_1.3fr_.65fr_auto] gap-3"><span>{t("common.date")}</span><span>{t("common.category")}</span><span>{t("common.description")}</span><span>{t("finance.amountCol")}</span><span className="text-right">{t("finance.actions")}</span></div></TableHeader>{filteredLedger.map((entry: any) => <TableRow key={entry.id} className="grid-cols-[.75fr_1fr_1.3fr_.65fr_auto]"><span className="text-xs text-muted">{dateLabel(entry.businessDate || entry.date)}</span><span className="truncate text-xs">{entry.categoryName || entry.category || "—"}</span><span className="min-w-0"><b className="block truncate text-sm font-medium">{entry.description || "—"}</b>{(entry.payee || entry.source || entry.vendor) && <span className="mt-1 block truncate text-xs text-muted">{entry.payee || entry.source || entry.vendor}</span>}{entry.receiptNumber && <span className="mt-1 block truncate text-xs text-muted">#{entry.receiptNumber}</span>}{entry.attachmentPath && <a href={entry.attachmentPath} target="_blank" rel="noreferrer" className="mt-1 block text-xs font-medium text-accent hover:underline">{t("finance.viewAttachment")}</a>}</span><b className={cx("text-sm", transactionForm.categoryType === "expense" ? "text-danger" : transactionForm.categoryType === "revenue" ? "text-success" : "text-ink")}>{money(entry.amount)}</b><div className="flex justify-end gap-1">{canManage && <><button aria-label="Edit transaction" onClick={() => editLedgerEntry(entry)} className="rounded-full p-2 text-muted hover:bg-fill hover:text-ink"><Edit3 size={14}/></button><button aria-label="Delete transaction" onClick={() => deleteLedgerEntry(entry)} className="rounded-full p-2 text-muted hover:bg-danger-bg hover:text-danger"><Trash2 size={14}/></button></>}</div></TableRow>)}</TableFrame> : <EmptyState title={t("finance.noTransactionsInPeriod")} description={t("finance.recordFirstTransaction")}/>}</div>
+        <div className="mt-4">{ledgerLoading ? <LoadingState label={t("finance.loadingLedger")}/> : filteredLedger.length ? <TableFrame><TableHeader><div className="grid grid-cols-[.75fr_1fr_1.3fr_.65fr_auto] gap-3"><span>{t("common.date")}</span><span>{t("common.category")}</span><span>{t("common.description")}</span><span>{t("finance.amountCol")}</span><span className="text-right">{t("finance.actions")}</span></div></TableHeader>{filteredLedger.map((entry: any) => <TableRow key={entry.id} className="grid-cols-[.75fr_1fr_1.3fr_.65fr_auto]"><span className="text-xs text-muted">{dateLabel(entry.businessDate || entry.date)}</span><span className="truncate text-xs">{entry.categoryName || entry.category || "—"}</span><span className="min-w-0"><b className="block truncate text-sm font-medium">{entry.description || "—"}</b>{(entry.payee || entry.source || entry.vendor) && <span className="mt-1 block truncate text-xs text-muted">{entry.payee || entry.source || entry.vendor}</span>}{entry.receiptNumber && <span className="mt-1 block truncate text-xs text-muted">#{entry.receiptNumber}</span>}{(entry.attachments as any[])?.length ? (entry.attachments as any[]).map((attachment: any) => <a key={attachment.id} href={attachment.path} target="_blank" rel="noreferrer" className="mt-1 block truncate text-xs font-medium text-accent hover:underline">{t("finance.viewAttachment")}: {attachment.originalName}</a>) : entry.attachmentPath && <a href={entry.attachmentPath} target="_blank" rel="noreferrer" className="mt-1 block text-xs font-medium text-accent hover:underline">{t("finance.viewAttachment")}</a>}</span><b className={cx("text-sm", transactionForm.categoryType === "expense" ? "text-danger" : transactionForm.categoryType === "revenue" ? "text-success" : "text-ink")}>{money(entry.amount)}</b><div className="flex justify-end gap-1">{canManage && <><button aria-label="Edit transaction" onClick={() => editLedgerEntry(entry)} className="rounded-full p-2 text-muted hover:bg-fill hover:text-ink"><Edit3 size={14}/></button><button aria-label="Delete transaction" onClick={() => deleteLedgerEntry(entry)} className="rounded-full p-2 text-muted hover:bg-danger-bg hover:text-danger"><Trash2 size={14}/></button></>}</div></TableRow>)}</TableFrame> : <EmptyState title={t("finance.noTransactionsInPeriod")} description={t("finance.recordFirstTransaction")}/>}</div>
       </Surface>
     </div>}
 

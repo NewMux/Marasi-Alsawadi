@@ -531,6 +531,22 @@ export const partnerDiscountRules = mysqlTable("partner_discount_rules", {
 });
 export type PartnerDiscountRule = typeof partnerDiscountRules.$inferSelect;
 
+// PRD Round 5: any number of attachments per expense/revenue/asset entry,
+// available on both create and edit. The single legacy attachmentPath/
+// attachmentOriginalName columns on those three tables stay untouched (and
+// keep showing) for entries created before this table existed; new uploads
+// — for old and new entries alike — go here instead.
+export const attachments = mysqlTable("attachments", {
+  id: int("id").autoincrement().primaryKey(),
+  entryType: mysqlEnum("entryType", ["expense", "revenue", "asset"]).notNull(),
+  entryId: int("entryId").notNull(),
+  path: varchar("path", { length: 512 }).notNull(),
+  originalName: varchar("originalName", { length: 256 }).notNull(),
+  uploadedBy: int("uploadedBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type Attachment = typeof attachments.$inferSelect;
+
 export const expenseRecords = mysqlTable("expense_records", {
   id: int("id").autoincrement().primaryKey(),
   businessDate: date("businessDate").notNull(),
@@ -794,6 +810,21 @@ export const pettyCashSpends = mysqlTable("petty_cash_spends", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 export type PettyCashSpend = typeof pettyCashSpends.$inferSelect;
+
+// PRD Round 5: a discrete log of every time the Admin tops up a custodian's
+// fund — separate from pettyCashSpends (what the custodian spent) so both
+// sides of the account (money in via allocations, money out via spends) are
+// visible as their own histories. createPettyCashAllocation adds `amount`
+// onto the fund's fixedAmount in the same transaction as this insert.
+export const pettyCashAllocations = mysqlTable("petty_cash_allocations", {
+  id: int("id").autoincrement().primaryKey(),
+  fundId: int("fundId").notNull(),
+  amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
+  note: varchar("note", { length: 256 }),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type PettyCashAllocation = typeof pettyCashAllocations.$inferSelect;
 
 // ─── Activity Log ─────────────────────────────────────────────────────────────
 export const activityLog = mysqlTable("activity_log", {

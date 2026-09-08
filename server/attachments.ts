@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const UPLOADS_ROOT = path.join(process.cwd(), "uploads");
@@ -34,4 +34,14 @@ export async function saveExpenseAttachment(input: { dataBase64: string; mimeTyp
   await writeFile(path.join(EXPENSE_ATTACHMENTS_DIR, storedFileName), buffer);
 
   return { attachmentPath: `/uploads/expenses/${storedFileName}`, attachmentOriginalName: input.fileName.slice(0, 256) };
+}
+
+/** Removes a file previously saved by saveExpenseAttachment. Not fatal if it's already gone. */
+export async function deleteAttachmentFile(attachmentPath: string) {
+  if (!attachmentPath.startsWith("/uploads/")) return;
+  try {
+    await unlink(path.join(UPLOADS_ROOT, attachmentPath.slice("/uploads/".length)));
+  } catch {
+    // already removed, or never persisted on this container — fine either way
+  }
 }

@@ -1,6 +1,7 @@
 import { createPortal } from "react-dom";
 import { cx } from "@/components/MarasiUI";
 import { marasiLogoIconDataUri } from "@/assets/marasiLogoIconDataUri";
+import { instagramQrDataUri } from "@/assets/instagramQrDataUri";
 
 // Same fixed bilingual thermal-receipt layout/markup as TicketReceipt.tsx
 // (PRD Round 4, 4.1: "same design/format as the Waterpark entry ticket ...
@@ -85,10 +86,12 @@ export function FacilityReceiptTicket({ data }: { data: FacilityReceiptData }) {
       <div className="divider"/>
 
       <div className="center contact">
-        📞 98044556 &nbsp;|&nbsp; 📷 marasisawadiresort<br/>
-        ✉️ Sawadi.admin@gmail.com<br/>
-        📍 Barka — Sultanate of Oman
+        📞 +96898044556<br/>
+        ✉️ info@marasiresort.com<br/>
+        📍 Alsawadi, Oman
       </div>
+      <img src={instagramQrDataUri} alt="" width="56" height="56" style={{ display: "block", margin: "2mm auto 0" }}/>
+      <div className="center contact">📷 @marasisawadiresort</div>
     </div>;
 }
 

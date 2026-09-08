@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { ChevronDown, ChevronUp, Edit3, LogOut, Plus, Receipt, Trash2, UserPlus, Wallet } from "lucide-react";
+import { ChevronDown, ChevronUp, Edit3, LogOut, Plus, Receipt, Send, Trash2, UserPlus, Wallet } from "lucide-react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { DateField, EmptyState, Field, LoadingState, MetricCard, PageHeader, PrimaryButton, SecondaryButton, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField } from "@/components/MarasiUI";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { LanguageToggle } from "@/contexts/LanguageContext";
 import { useT } from "@/lib/i18n";
 import marasiLogoIcon from "@/assets/marasi-logo-icon.webp";
@@ -11,8 +12,13 @@ import marasiLogoIcon from "@/assets/marasi-logo-icon.webp";
 const today = new Date().toISOString().slice(0, 10);
 const money = (value: unknown) => `OMR ${Number(value || 0).toLocaleString("en-OM", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
 const dateLabel = (value: unknown) => value ? new Date(value as string).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "—";
+// PRD Round 5, Section 3: the allocation log needs the time an allocation
+// was sent, not just its date — createdAt is a full timestamp, unlike the
+// spend log's date-only businessDate.
+const dateTimeLabel = (value: unknown) => { const date = new Date(value as string); return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); };
 const blankCustodian = { username: "", name: "", temporaryPassword: "", fixedAmount: "" };
 const blankSpend = { businessDate: today, amount: "", description: "", attachmentDataBase64: "", attachmentMimeType: "", attachmentFileName: "" };
+const blankAllocation = { amount: "", note: "" };
 
 function readFileAsAttachment(file: File): Promise<{ dataBase64: string; mimeType: string; fileName: string }> {
   return new Promise((resolve, reject) => {
@@ -48,6 +54,7 @@ function CustodianView() {
   const [spendForm, setSpendForm] = useState({ ...blankSpend });
   const { data: mine, isLoading } = trpc.platform.finance.pettyCashFunds.mine.useQuery();
   const { data: spends = [], isLoading: spendsLoading } = trpc.platform.finance.pettyCashFunds.mineSpends.useQuery();
+  const { data: allocations = [], isLoading: allocationsLoading } = trpc.platform.finance.pettyCashFunds.mineAllocations.useQuery();
   const logSpend = trpc.platform.finance.pettyCashFunds.spend.useMutation({
     onSuccess: () => {
       utils.platform.finance.pettyCashFunds.mine.invalidate();
@@ -98,6 +105,10 @@ function CustodianView() {
         {spendsLoading ? <LoadingState/> : spends.length ? <TableFrame><TableHeader><div className="grid grid-cols-[.7fr_1.3fr_.6fr] gap-3"><span>{t("pettyCash.spendDate")}</span><span>{t("common.description")}</span><span className="text-right">{t("pettyCash.spendAmount")}</span></div></TableHeader>{(spends as any[]).map((entry: any) => <TableRow key={entry.id} className="grid-cols-[.7fr_1.3fr_.6fr]"><span className="text-xs text-muted">{dateLabel(entry.businessDate)}</span><span className="min-w-0"><span className="block truncate text-sm">{entry.description}</span>{entry.attachmentPath && <a href={entry.attachmentPath} target="_blank" rel="noreferrer" className="mt-1 block text-xs font-medium text-accent hover:underline">{t("finance.viewAttachment")}</a>}</span><b className="text-right text-sm text-danger">{money(entry.amount)}</b></TableRow>)}</TableFrame> : <EmptyState icon={Receipt} title={t("pettyCash.noSpendsYet")} description=""/>}
       </Surface>
     </div>
+    <Surface className="mt-6">
+      <div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("pettyCash.allocationHistory")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("pettyCash.allocationHistoryCustodianHint")}</p></div><StatusPill>{allocations.length}</StatusPill></div>
+      {allocationsLoading ? <LoadingState/> : allocations.length ? <TableFrame><TableHeader><div className="grid grid-cols-[1fr_.7fr_.6fr] gap-3"><span>{t("pettyCash.allocationSentAt")}</span><span>{t("pettyCash.allocationSentBy")}</span><span className="text-right">{t("pettyCash.spendAmount")}</span></div></TableHeader>{(allocations as any[]).map((row: any) => <TableRow key={row.allocation.id} className="grid-cols-[1fr_.7fr_.6fr]"><span className="min-w-0"><span className="block truncate text-xs text-muted">{dateTimeLabel(row.allocation.createdAt)}</span>{row.allocation.note && <span className="mt-0.5 block truncate text-xs text-subtle">{row.allocation.note}</span>}</span><span className="truncate text-xs">{row.sender?.name || row.sender?.username || "—"}</span><b className="text-right text-sm text-success">+{money(row.allocation.amount)}</b></TableRow>)}</TableFrame> : <EmptyState icon={Wallet} title={t("pettyCash.noAllocationsYet")} description=""/>}
+    </Surface>
   </>;
 }
 
@@ -108,8 +119,11 @@ function ManagerView() {
   const utils = trpc.useUtils();
   const [custodianForm, setCustodianForm] = useState({ ...blankCustodian });
   const [expandedFundId, setExpandedFundId] = useState<number | null>(null);
+  const [allocatingFund, setAllocatingFund] = useState<any>(null);
+  const [allocationForm, setAllocationForm] = useState({ ...blankAllocation });
   const { data: funds = [], isLoading } = trpc.platform.finance.pettyCashFunds.list.useQuery();
   const { data: expandedSpends = [], isLoading: expandedSpendsLoading } = trpc.platform.finance.pettyCashFunds.spendsFor.useQuery({ fundId: expandedFundId ?? 0 }, { enabled: expandedFundId !== null });
+  const { data: expandedAllocations = [], isLoading: expandedAllocationsLoading } = trpc.platform.finance.pettyCashFunds.allocationsFor.useQuery({ fundId: expandedFundId ?? 0 }, { enabled: expandedFundId !== null });
 
   const refresh = () => utils.platform.finance.pettyCashFunds.invalidate();
   const createCustodian = trpc.platform.finance.pettyCashFunds.createCustodian.useMutation({
@@ -124,6 +138,10 @@ function ManagerView() {
     onSuccess: () => { refresh(); utils.platform.finance.pettyCashFunds.spendsFor.invalidate(); toast.success(t("pettyCash.spendRemoved")); },
     onError: (error) => toast.error(error.message),
   });
+  const allocate = trpc.platform.finance.pettyCashFunds.allocate.useMutation({
+    onSuccess: () => { refresh(); utils.platform.finance.pettyCashFunds.allocationsFor.invalidate(); toast.success(t("pettyCash.allocationSent")); setAllocatingFund(null); setAllocationForm({ ...blankAllocation }); },
+    onError: (error) => toast.error(error.message),
+  });
 
   const submitCustodian = () => {
     if (custodianForm.username.trim().length < 3 || custodianForm.name.trim().length < 2 || custodianForm.temporaryPassword.length < 12 || Number(custodianForm.fixedAmount) <= 0) {
@@ -136,6 +154,11 @@ function ManagerView() {
     if (next === null) return;
     if (!Number(next) || Number(next) <= 0) return toast.error(t("pettyCash.completeCustodianFields"));
     updateAmount.mutate({ id: fund.id, fixedAmount: next });
+  };
+  const openAllocate = (fund: any) => { setAllocationForm({ ...blankAllocation }); setAllocatingFund(fund); };
+  const submitAllocate = () => {
+    if (!allocatingFund || !allocationForm.amount || Number(allocationForm.amount) <= 0) return toast.error(t("pettyCash.completeCustodianFields"));
+    allocate.mutate({ id: allocatingFund.id, amount: allocationForm.amount, note: allocationForm.note.trim() || undefined });
   };
 
   return <div className="grid gap-6 xl:grid-cols-[.8fr_1.2fr]">
@@ -160,15 +183,33 @@ function ManagerView() {
           <span className="text-xs text-danger">−{money(row.totalSpent)}</span>
           <b className={row.balance >= 0 ? "text-sm text-ink" : "text-sm text-danger"}>{money(row.balance)}</b>
           <div className="flex justify-end gap-1">
+            {isSuperAdmin && <button aria-label="Send top-up" onClick={() => openAllocate(row.fund)} className="rounded-full p-2 text-muted hover:bg-fill hover:text-ink"><Send size={14}/></button>}
             {isSuperAdmin && <button aria-label="Edit fixed amount" onClick={() => editAmount(row.fund)} className="rounded-full p-2 text-muted hover:bg-fill hover:text-ink"><Edit3 size={14}/></button>}
             <button aria-label="Toggle spending" onClick={() => setExpandedFundId(expanded ? null : row.fund.id)} className="rounded-full p-2 text-muted hover:bg-fill hover:text-ink">{expanded ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}</button>
           </div>
         </div>
-        {expanded && <div className="mt-3 rounded-xl bg-well p-3">
-          {expandedSpendsLoading ? <LoadingState/> : (expandedSpends as any[]).length ? <div className="divide-y divide-divider">{(expandedSpends as any[]).map((entry) => <div key={entry.id} className="flex items-center justify-between gap-3 py-2 text-xs"><span className="text-muted">{dateLabel(entry.businessDate)}</span><span className="min-w-0 flex-1 truncate px-3">{entry.description}</span><b className="text-danger">{money(entry.amount)}</b><button aria-label="Delete spend" onClick={() => window.confirm(t("pettyCash.confirmDeleteSpend")) && deleteSpend.mutate({ id: entry.id })} className="ml-2 rounded-full p-1.5 text-muted hover:bg-danger-bg hover:text-danger"><Trash2 size={13}/></button></div>)}</div> : <p className="py-2 text-center text-xs text-muted">{t("pettyCash.noSpendsYet")}</p>}
+        {expanded && <div className="mt-3 grid gap-3 rounded-xl bg-well p-3">
+          <div>
+            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[.14em] text-subtle">{t("pettyCash.spendHistory")}</div>
+            {expandedSpendsLoading ? <LoadingState/> : (expandedSpends as any[]).length ? <div className="divide-y divide-divider">{(expandedSpends as any[]).map((entry) => <div key={entry.id} className="flex items-center justify-between gap-3 py-2 text-xs"><span className="text-muted">{dateLabel(entry.businessDate)}</span><span className="min-w-0 flex-1 truncate px-3">{entry.description}</span><b className="text-danger">{money(entry.amount)}</b><button aria-label="Delete spend" onClick={() => window.confirm(t("pettyCash.confirmDeleteSpend")) && deleteSpend.mutate({ id: entry.id })} className="ml-2 rounded-full p-1.5 text-muted hover:bg-danger-bg hover:text-danger"><Trash2 size={13}/></button></div>)}</div> : <p className="py-2 text-center text-xs text-muted">{t("pettyCash.noSpendsYet")}</p>}
+          </div>
+          <div className="border-t border-divider pt-3">
+            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[.14em] text-subtle">{t("pettyCash.allocationHistory")}</div>
+            {expandedAllocationsLoading ? <LoadingState/> : (expandedAllocations as any[]).length ? <div className="divide-y divide-divider">{(expandedAllocations as any[]).map((row2: any) => <div key={row2.allocation.id} className="flex items-center justify-between gap-3 py-2 text-xs"><span className="min-w-0 flex-1"><span className="block truncate text-muted">{dateTimeLabel(row2.allocation.createdAt)}</span>{row2.allocation.note && <span className="mt-0.5 block truncate text-subtle">{row2.allocation.note}</span>}</span><span className="truncate text-muted">{row2.sender?.name || row2.sender?.username || "—"}</span><b className="text-success">+{money(row2.allocation.amount)}</b></div>)}</div> : <p className="py-2 text-center text-xs text-muted">{t("pettyCash.noAllocationsYet")}</p>}
+          </div>
         </div>}
       </div>; })}</div> : <EmptyState icon={Wallet} title={t("pettyCash.noCustodiansYet")} description={t("pettyCash.noCustodiansHint")}/>}
     </Surface>
+    <Dialog open={Boolean(allocatingFund)} onOpenChange={(open) => { if (!open) setAllocatingFund(null); }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>{t("pettyCash.sendTopUpTo")} {allocatingFund && ((funds as any[]).find((row) => row.fund.id === allocatingFund.id)?.custodian?.name || "")}</DialogTitle></DialogHeader>
+        <div className="grid gap-4">
+          <Field label={t("pettyCash.spendAmount")}><TextField inputMode="decimal" value={allocationForm.amount} onChange={(event) => setAllocationForm({ ...allocationForm, amount: event.target.value })} placeholder="0.00"/></Field>
+          <Field label={t("pettyCash.allocationNote")}><TextField value={allocationForm.note} onChange={(event) => setAllocationForm({ ...allocationForm, note: event.target.value })} placeholder={t("common.optional")}/></Field>
+        </div>
+        <DialogFooter><SecondaryButton onClick={() => setAllocatingFund(null)}>{t("common.close")}</SecondaryButton><PrimaryButton onClick={submitAllocate} pending={allocate.isPending}>{t("pettyCash.sendTopUpAction")}</PrimaryButton></DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>;
 }
 

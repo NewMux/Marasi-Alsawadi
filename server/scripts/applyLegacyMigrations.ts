@@ -38,6 +38,7 @@ const MIGRATION_FILES = [
   "drizzle/migrations/0026_add_partner_discount_rules.sql",
   "drizzle/migrations/0027_add_asset_inventory_fields.sql",
   "drizzle/migrations/0028_add_facility_booking_lifecycle.sql",
+  "drizzle/migrations/0029_add_attachments_and_petty_cash_allocations.sql",
 ];
 
 async function main() {
