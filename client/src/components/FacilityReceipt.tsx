@@ -85,13 +85,13 @@ export function FacilityReceiptTicket({ data }: { data: FacilityReceiptData }) {
 
       <div className="divider"/>
 
-      <div className="center contact">
+      <div className="center contact" dir="ltr">
         📞 +968-98044556<br/>
         ✉️ info@marasiresort.com<br/>
-        📍 Alsawadi, Oman
+        📍 Alsawadi, Oman<br/>
+        📷 @marasiwaterpark
       </div>
       <img src={instagramQrDataUri} alt="" width="56" height="56" style={{ display: "block", margin: "2mm auto 0" }}/>
-      <div className="center contact">📷 @marasiwaterpark</div>
     </div>;
 }
 

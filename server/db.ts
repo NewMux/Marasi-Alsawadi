@@ -58,6 +58,7 @@ export async function createLocalUser(data: {
 export async function updateLocalUser(id: number, data: Partial<{
   name: string; email: string | null; role: "staff" | "manager" | "admin" | "guard" | "super_admin" | "petty_cash";
   passwordHash: string; mustChangePassword: boolean; isActive: boolean; lastSignedIn: Date;
+  username: string; openId: string;
 }>) {
   const db = await getDb(); if (!db) throw new Error("Database is not configured");
   await db.update(users).set(data).where(eq(users.id, id));

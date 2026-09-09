@@ -16,9 +16,10 @@ const dateLabel = (value: unknown) => value ? new Date(value as string).toLocale
 // was sent, not just its date — createdAt is a full timestamp, unlike the
 // spend log's date-only businessDate.
 const dateTimeLabel = (value: unknown) => { const date = new Date(value as string); return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); };
-const blankCustodian = { username: "", name: "", temporaryPassword: "", fixedAmount: "" };
+const blankCustodian = { username: "", name: "", temporaryPassword: "" };
 const blankSpend = { businessDate: today, amount: "", description: "", attachmentDataBase64: "", attachmentMimeType: "", attachmentFileName: "" };
 const blankAllocation = { amount: "", note: "" };
+const blankEditCustodian = { name: "", username: "" };
 
 function readFileAsAttachment(file: File): Promise<{ dataBase64: string; mimeType: string; fileName: string }> {
   return new Promise((resolve, reject) => {
@@ -121,6 +122,8 @@ function ManagerView() {
   const [expandedFundId, setExpandedFundId] = useState<number | null>(null);
   const [allocatingFund, setAllocatingFund] = useState<any>(null);
   const [allocationForm, setAllocationForm] = useState({ ...blankAllocation });
+  const [editingCustodian, setEditingCustodian] = useState<any>(null);
+  const [editCustodianForm, setEditCustodianForm] = useState({ ...blankEditCustodian });
   const { data: funds = [], isLoading } = trpc.platform.finance.pettyCashFunds.list.useQuery();
   const { data: expandedSpends = [], isLoading: expandedSpendsLoading } = trpc.platform.finance.pettyCashFunds.spendsFor.useQuery({ fundId: expandedFundId ?? 0 }, { enabled: expandedFundId !== null });
   const { data: expandedAllocations = [], isLoading: expandedAllocationsLoading } = trpc.platform.finance.pettyCashFunds.allocationsFor.useQuery({ fundId: expandedFundId ?? 0 }, { enabled: expandedFundId !== null });
@@ -130,8 +133,8 @@ function ManagerView() {
     onSuccess: () => { refresh(); setCustodianForm({ ...blankCustodian }); toast.success(t("pettyCash.custodianCreated")); },
     onError: (error) => toast.error(error.message),
   });
-  const updateAmount = trpc.platform.finance.pettyCashFunds.updateAmount.useMutation({
-    onSuccess: () => { refresh(); toast.success(t("pettyCash.amountUpdated")); },
+  const updateCustodian = trpc.platform.finance.pettyCashFunds.updateCustodian.useMutation({
+    onSuccess: () => { refresh(); toast.success(t("pettyCash.custodianUpdated")); setEditingCustodian(null); },
     onError: (error) => toast.error(error.message),
   });
   const deleteSpend = trpc.platform.finance.pettyCashFunds.deleteSpend.useMutation({
@@ -144,21 +147,20 @@ function ManagerView() {
   });
 
   const submitCustodian = () => {
-    if (custodianForm.username.trim().length < 3 || custodianForm.name.trim().length < 2 || custodianForm.temporaryPassword.length < 12 || Number(custodianForm.fixedAmount) <= 0) {
+    if (custodianForm.username.trim().length < 3 || custodianForm.name.trim().length < 2 || custodianForm.temporaryPassword.length < 12) {
       return toast.error(t("pettyCash.completeCustodianFields"));
     }
-    createCustodian.mutate({ username: custodianForm.username.trim(), name: custodianForm.name.trim(), temporaryPassword: custodianForm.temporaryPassword, fixedAmount: custodianForm.fixedAmount });
-  };
-  const editAmount = (fund: any) => {
-    const next = window.prompt(t("pettyCash.newFixedAmountPrompt"), String(fund.fixedAmount));
-    if (next === null) return;
-    if (!Number(next) || Number(next) <= 0) return toast.error(t("pettyCash.completeCustodianFields"));
-    updateAmount.mutate({ id: fund.id, fixedAmount: next });
+    createCustodian.mutate({ username: custodianForm.username.trim(), name: custodianForm.name.trim(), temporaryPassword: custodianForm.temporaryPassword });
   };
   const openAllocate = (fund: any) => { setAllocationForm({ ...blankAllocation }); setAllocatingFund(fund); };
   const submitAllocate = () => {
     if (!allocatingFund || !allocationForm.amount || Number(allocationForm.amount) <= 0) return toast.error(t("pettyCash.completeCustodianFields"));
     allocate.mutate({ id: allocatingFund.id, amount: allocationForm.amount, note: allocationForm.note.trim() || undefined });
+  };
+  const openEditCustodian = (row: any) => { setEditCustodianForm({ name: row.custodian?.name || "", username: row.custodian?.username || "" }); setEditingCustodian(row.custodian); };
+  const submitEditCustodian = () => {
+    if (!editingCustodian || editCustodianForm.name.trim().length < 2 || editCustodianForm.username.trim().length < 3) return toast.error(t("pettyCash.completeCustodianFields"));
+    updateCustodian.mutate({ userId: editingCustodian.id, name: editCustodianForm.name.trim(), username: editCustodianForm.username.trim().toLowerCase() });
   };
 
   return <div className="grid gap-6 xl:grid-cols-[.8fr_1.2fr]">
@@ -169,8 +171,8 @@ function ManagerView() {
           <Field label={t("pettyCash.custodianName")}><TextField value={custodianForm.name} onChange={(event) => setCustodianForm({ ...custodianForm, name: event.target.value })}/></Field>
           <Field label={t("pettyCash.custodianUsername")}><TextField autoComplete="off" value={custodianForm.username} onChange={(event) => setCustodianForm({ ...custodianForm, username: event.target.value.toLowerCase() })}/></Field>
           <Field label={t("login.tempPassword")} hint={t("settings.minimum12Chars")}><TextField type="password" autoComplete="new-password" value={custodianForm.temporaryPassword} onChange={(event) => setCustodianForm({ ...custodianForm, temporaryPassword: event.target.value })}/></Field>
-          <Field label={t("pettyCash.fixedAmountLabel")}><TextField inputMode="decimal" value={custodianForm.fixedAmount} onChange={(event) => setCustodianForm({ ...custodianForm, fixedAmount: event.target.value })} placeholder="0.00"/></Field>
         </div>
+        <p className="mt-3 text-[11px] leading-4 text-muted">{t("pettyCash.fundAfterCreateHint")}</p>
         <div className="mt-5 flex flex-wrap gap-2 border-t border-divider pt-5"><PrimaryButton onClick={submitCustodian} pending={createCustodian.isPending}>{t("pettyCash.createCustodianButton")}<Plus size={15} className="ml-2"/></PrimaryButton></div>
       </> : null}
     </Surface>
@@ -184,14 +186,14 @@ function ManagerView() {
           <b className={row.balance >= 0 ? "text-sm text-ink" : "text-sm text-danger"}>{money(row.balance)}</b>
           <div className="flex justify-end gap-1">
             {isSuperAdmin && <button aria-label="Send top-up" onClick={() => openAllocate(row.fund)} className="rounded-full p-2 text-muted hover:bg-fill hover:text-ink"><Send size={14}/></button>}
-            {isSuperAdmin && <button aria-label="Edit fixed amount" onClick={() => editAmount(row.fund)} className="rounded-full p-2 text-muted hover:bg-fill hover:text-ink"><Edit3 size={14}/></button>}
+            {isSuperAdmin && <button aria-label="Edit custodian" onClick={() => openEditCustodian(row)} className="rounded-full p-2 text-muted hover:bg-fill hover:text-ink"><Edit3 size={14}/></button>}
             <button aria-label="Toggle spending" onClick={() => setExpandedFundId(expanded ? null : row.fund.id)} className="rounded-full p-2 text-muted hover:bg-fill hover:text-ink">{expanded ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}</button>
           </div>
         </div>
         {expanded && <div className="mt-3 grid gap-3 rounded-xl bg-well p-3">
           <div>
             <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[.14em] text-subtle">{t("pettyCash.spendHistory")}</div>
-            {expandedSpendsLoading ? <LoadingState/> : (expandedSpends as any[]).length ? <div className="divide-y divide-divider">{(expandedSpends as any[]).map((entry) => <div key={entry.id} className="flex items-center justify-between gap-3 py-2 text-xs"><span className="text-muted">{dateLabel(entry.businessDate)}</span><span className="min-w-0 flex-1 truncate px-3">{entry.description}</span><b className="text-danger">{money(entry.amount)}</b><button aria-label="Delete spend" onClick={() => window.confirm(t("pettyCash.confirmDeleteSpend")) && deleteSpend.mutate({ id: entry.id })} className="ml-2 rounded-full p-1.5 text-muted hover:bg-danger-bg hover:text-danger"><Trash2 size={13}/></button></div>)}</div> : <p className="py-2 text-center text-xs text-muted">{t("pettyCash.noSpendsYet")}</p>}
+            {expandedSpendsLoading ? <LoadingState/> : (expandedSpends as any[]).length ? <div className="divide-y divide-divider">{(expandedSpends as any[]).map((entry) => <div key={entry.id} className="flex items-center justify-between gap-3 py-2 text-xs"><span className="text-muted">{dateLabel(entry.businessDate)}</span><span className="min-w-0 flex-1 truncate px-3"><span className="block truncate">{entry.description}</span>{entry.attachmentPath && <a href={entry.attachmentPath} target="_blank" rel="noreferrer" className="mt-0.5 block text-[11px] font-medium text-accent hover:underline">{t("finance.viewAttachment")}</a>}</span><b className="text-danger">{money(entry.amount)}</b><button aria-label="Delete spend" onClick={() => window.confirm(t("pettyCash.confirmDeleteSpend")) && deleteSpend.mutate({ id: entry.id })} className="ml-2 rounded-full p-1.5 text-muted hover:bg-danger-bg hover:text-danger"><Trash2 size={13}/></button></div>)}</div> : <p className="py-2 text-center text-xs text-muted">{t("pettyCash.noSpendsYet")}</p>}
           </div>
           <div className="border-t border-divider pt-3">
             <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[.14em] text-subtle">{t("pettyCash.allocationHistory")}</div>
@@ -208,6 +210,16 @@ function ManagerView() {
           <Field label={t("pettyCash.allocationNote")}><TextField value={allocationForm.note} onChange={(event) => setAllocationForm({ ...allocationForm, note: event.target.value })} placeholder={t("common.optional")}/></Field>
         </div>
         <DialogFooter><SecondaryButton onClick={() => setAllocatingFund(null)}>{t("common.close")}</SecondaryButton><PrimaryButton onClick={submitAllocate} pending={allocate.isPending}>{t("pettyCash.sendTopUpAction")}</PrimaryButton></DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={Boolean(editingCustodian)} onOpenChange={(open) => { if (!open) setEditingCustodian(null); }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>{t("pettyCash.editCustodianTitle")}</DialogTitle></DialogHeader>
+        <div className="grid gap-4">
+          <Field label={t("pettyCash.custodianName")}><TextField value={editCustodianForm.name} onChange={(event) => setEditCustodianForm({ ...editCustodianForm, name: event.target.value })}/></Field>
+          <Field label={t("pettyCash.custodianUsername")}><TextField autoComplete="off" value={editCustodianForm.username} onChange={(event) => setEditCustodianForm({ ...editCustodianForm, username: event.target.value.toLowerCase() })}/></Field>
+        </div>
+        <DialogFooter><SecondaryButton onClick={() => setEditingCustodian(null)}>{t("common.close")}</SecondaryButton><PrimaryButton onClick={submitEditCustodian} pending={updateCustodian.isPending}>{t("common.save")}</PrimaryButton></DialogFooter>
       </DialogContent>
     </Dialog>
   </div>;

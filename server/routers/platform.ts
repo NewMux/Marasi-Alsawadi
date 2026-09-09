@@ -1275,18 +1275,37 @@ export const platformRouter = router({
     // Revenue-vs-Expense Net Result like any other real expense.
     pettyCashFunds: router({
       list: managerProcedure.query(() => listPettyCashFundsWithBalances()),
+      // PRD Round 6, Section 1: no initial balance at creation — a custodian
+      // starts at 0.000 and is funded afterward through "Send a top-up",
+      // so every allocation (including the first one) is logged the same
+      // way instead of the opening balance silently bypassing that log.
       createCustodian: superAdminProcedure.input(z.object({
         username: z.string().trim().min(3).max(64), name: z.string().trim().min(2).max(128),
         temporaryPassword: z.string().min(12).max(256),
-        fixedAmount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
       })).mutation(async ({ input, ctx }) => {
         const username = input.username.toLowerCase();
         if (await getUserByUsername(username)) throw new TRPCError({ code: "CONFLICT", message: "Username already exists" });
         const user = await createLocalUser({ username, name: input.name, role: "petty_cash", passwordHash: await hashPassword(input.temporaryPassword), mustChangePassword: true });
         if (!user) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Account could not be created" });
-        const fund = await createPettyCashFund({ custodianUserId: user.id, fixedAmount: input.fixedAmount, createdBy: ctx.user.id });
-        await logActivity(ctx.user.id, "petty_cash_fund.create", "petty_cash_fund", fund.id, `${username}:${input.fixedAmount}`);
+        const fund = await createPettyCashFund({ custodianUserId: user.id, fixedAmount: "0.000", createdBy: ctx.user.id });
+        await logActivity(ctx.user.id, "petty_cash_fund.create", "petty_cash_fund", fund.id, username);
         return { fund, custodian: { id: user.id, name: user.name, username: user.username } };
+      }),
+      // PRD Round 6, Section 2: the "Edit" button no longer edits the fixed
+      // amount (that's now only ever changed through logged top-ups) — it
+      // edits the custodian's Full Name and Username instead. Keeps
+      // openId (local:<username>) in sync so a later account created under
+      // the old username doesn't collide with this one's stale openId.
+      updateCustodian: superAdminProcedure.input(z.object({
+        userId: z.number().int().positive(), name: z.string().trim().min(2).max(128), username: z.string().trim().min(3).max(64),
+      })).mutation(async ({ input, ctx }) => {
+        const nextUsername = input.username.toLowerCase();
+        const existing = await getUserByUsername(nextUsername);
+        if (existing && existing.id !== input.userId) throw new TRPCError({ code: "CONFLICT", message: "Username already exists" });
+        const user = await updateLocalUser(input.userId, { name: input.name.trim(), username: nextUsername, openId: `local:${nextUsername}` });
+        if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "Custodian account was not found" });
+        await logActivity(ctx.user.id, "petty_cash_fund.update_custodian", "user", input.userId, nextUsername);
+        return { id: user.id, name: user.name, username: user.username };
       }),
       updateAmount: superAdminProcedure.input(z.object({
         id: z.number().int().positive(), fixedAmount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),

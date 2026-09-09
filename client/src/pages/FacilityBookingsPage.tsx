@@ -83,6 +83,8 @@ export default function FacilityBookingsPage() {
   const [existingBookingId, setExistingBookingId] = useState("");
   const [created, setCreated] = useState<FacilityReceiptData | null>(null);
   const [receiptWidth, setReceiptWidth] = useState<"80" | "58">("80");
+  const [reprintingId, setReprintingId] = useState<number | null>(null);
+  const [reprintedBookingId, setReprintedBookingId] = useState<number | null>(null);
   const [editingBookingId, setEditingBookingId] = useState<number | null>(null);
   const [editDate, setEditDate] = useState(today);
   const [editQuantity, setEditQuantity] = useState("1");
@@ -165,6 +167,27 @@ export default function FacilityBookingsPage() {
     onError: (error) => toast.error(error.message),
   });
   const startEdit = (booking: any) => { setEditingBookingId(booking.id); setEditDate(toIsoDateString(booking.bookingDate)); setEditQuantity(String(booking.quantity)); };
+  // PRD Round 6, item 3: reprint a past facility booking's receipt — data
+  // (booking + addons) is already returned by facilityBookings.list, so this
+  // mirrors TicketDeskPage's reprintPurchase without needing an extra fetch.
+  const reprintBooking = async (row: any) => {
+    setReprintingId(row.booking.id);
+    const facility = facilityTypes.find((entry) => entry.id === row.booking.facilityTypeId);
+    const quantity = Number(row.booking.quantity);
+    const data: FacilityReceiptData = {
+      facilityName: row.booking.facilityTypeName, customerName: row.customer?.fullName || row.booking.customerName || t("facility.noCustomerName"),
+      bookingDate: row.booking.bookingDate,
+      durationLabel: facility?.pricingMethod === "daily" ? `${quantity} ${quantity === 1 ? t("facility.day") : t("facility.daysWord")}` : facility?.pricingMethod === "hourly" ? `${quantity.toFixed(2)} ${t("facility.hoursWord")}` : null,
+      facilityAmount: row.booking.facilityAmount, addons: (row.addons as any[]).map((addon: any) => ({ name: addon.addonServiceName, quantity: addon.quantity, amount: addon.amount })),
+      notes: row.booking.notes || null, totalAmount: row.booking.totalAmount,
+      partnerEntityName: row.booking.partnerEntityName || null, discountPercentage: row.booking.discountPercentage || null,
+    };
+    setCreated(data);
+    setReprintedBookingId(row.booking.id);
+    if (await printFacilityReceiptViaAgent(data)) toast.success(t("tickets.sentToPrinter"));
+    else toast.success(t("tickets.readyToReprint"));
+    setReprintingId(null);
+  };
   const saveEdit = (booking: any) => {
     const facility = facilityTypes.find((entry) => entry.id === booking.facilityTypeId);
     if (facility?.pricingMethod !== "fixed" && !(Number(editQuantity) > 0)) return toast.error(t("facility.enterQuantity"));
@@ -291,9 +314,14 @@ export default function FacilityBookingsPage() {
                 <div className="flex justify-between text-muted"><span>{t("tickets.paymentMethod")}</span><span className="capitalize">{t(`tickets.${row.booking.paymentMethod || "cash"}` as TranslationKey)}</span></div>
                 {cancelled && row.booking.cancelReason && <div className="mt-1 text-danger">{t("facility.cancelReasonNote")}: {row.booking.cancelReason}</div>}
               </div>
-              {!cancelled && <div className="mt-4 flex flex-wrap gap-2 border-t border-divider pt-4">
-                <SecondaryButton onClick={() => (editing ? setEditingBookingId(null) : startEdit(row.booking))}><Pencil size={14} className="mr-1.5"/>{t("facility.editBooking")}</SecondaryButton>
-                <SecondaryButton onClick={() => { setCancelReason(""); setCancelingBooking(row.booking); }} className="text-danger hover:bg-danger-bg"><Ban size={14} className="mr-1.5"/>{t("facility.cancelBooking")}</SecondaryButton>
+              <div className="mt-4 flex flex-wrap gap-2 border-t border-divider pt-4">
+                <SecondaryButton onClick={() => reprintBooking(row)} disabled={reprintingId === row.booking.id}><Printer size={14} className="mr-1.5"/>{t("facility.reprintReceipt")}</SecondaryButton>
+                {!cancelled && <SecondaryButton onClick={() => (editing ? setEditingBookingId(null) : startEdit(row.booking))}><Pencil size={14} className="mr-1.5"/>{t("facility.editBooking")}</SecondaryButton>}
+                {!cancelled && <SecondaryButton onClick={() => { setCancelReason(""); setCancelingBooking(row.booking); }} className="text-danger hover:bg-danger-bg"><Ban size={14} className="mr-1.5"/>{t("facility.cancelBooking")}</SecondaryButton>}
+              </div>
+              {reprintedBookingId === row.booking.id && <div className="mt-3 flex flex-wrap gap-2">
+                <SecondaryButton onClick={() => printReceipt("80")}><Printer size={14} className="mr-2"/>{t("tickets.print80")}</SecondaryButton>
+                <SecondaryButton onClick={() => printReceipt("58")}><Printer size={14} className="mr-2"/>{t("tickets.print58")}</SecondaryButton>
               </div>}
               {editing && <div className="mt-4 border-t border-divider pt-4">
                 <div className="mb-2 text-[11px] font-semibold uppercase tracking-[.14em] text-subtle">{t("facility.editBooking")}</div>
