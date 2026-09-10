@@ -88,6 +88,7 @@ export default function FacilityBookingsPage() {
   const [editingBookingId, setEditingBookingId] = useState<number | null>(null);
   const [editDate, setEditDate] = useState(today);
   const [editQuantity, setEditQuantity] = useState("1");
+  const [editCustomerName, setEditCustomerName] = useState("");
   const [cancelingBooking, setCancelingBooking] = useState<any>(null);
   const [cancelReason, setCancelReason] = useState("");
 
@@ -166,7 +167,7 @@ export default function FacilityBookingsPage() {
     onSuccess: () => { utils.platform.facilityBookings.list.invalidate(); utils.platform.finance.invalidate(); toast.success(t("facility.bookingCancelled")); },
     onError: (error) => toast.error(error.message),
   });
-  const startEdit = (booking: any) => { setEditingBookingId(booking.id); setEditDate(toIsoDateString(booking.bookingDate)); setEditQuantity(String(booking.quantity)); };
+  const startEdit = (booking: any) => { setEditingBookingId(booking.id); setEditDate(toIsoDateString(booking.bookingDate)); setEditQuantity(String(booking.quantity)); setEditCustomerName(booking.customerName || ""); };
   // PRD Round 6, item 3: reprint a past facility booking's receipt — data
   // (booking + addons) is already returned by facilityBookings.list, so this
   // mirrors TicketDeskPage's reprintPurchase without needing an extra fetch.
@@ -191,7 +192,7 @@ export default function FacilityBookingsPage() {
   const saveEdit = (booking: any) => {
     const facility = facilityTypes.find((entry) => entry.id === booking.facilityTypeId);
     if (facility?.pricingMethod !== "fixed" && !(Number(editQuantity) > 0)) return toast.error(t("facility.enterQuantity"));
-    updateBooking.mutate({ id: booking.id, bookingDate: editDate, quantity: facility?.pricingMethod === "fixed" ? undefined : Number(editQuantity) });
+    updateBooking.mutate({ id: booking.id, bookingDate: editDate, quantity: facility?.pricingMethod === "fixed" ? undefined : Number(editQuantity), customerName: editCustomerName.trim() });
   };
   const confirmCancelBooking = () => {
     if (!cancelingBooking) return;
@@ -325,6 +326,7 @@ export default function FacilityBookingsPage() {
               </div>}
               {editing && <div className="mt-4 border-t border-divider pt-4">
                 <div className="mb-2 text-[11px] font-semibold uppercase tracking-[.14em] text-subtle">{t("facility.editBooking")}</div>
+                <div className="mb-2"><TextField value={editCustomerName} onChange={(event) => setEditCustomerName(event.target.value)} placeholder={t("facility.purchaserNamePlaceholder")}/></div>
                 <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
                   <DateField value={editDate} onChange={setEditDate}/>
                   {rowFacility && rowFacility.pricingMethod !== "fixed" && <TextField type="number" min={0.5} step={rowFacility.pricingMethod === "hourly" ? "0.5" : "1"} value={editQuantity} onChange={(event) => setEditQuantity(event.target.value)} placeholder={rowFacility.pricingMethod === "daily" ? t("facility.newDurationDays") : t("facility.newDurationHours")}/>}

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   addonServices, assetAdjustments, assetCategories, assetRecords, attachments, expenseAdjustments, expenseCategories, expenseRecords, facilityBookingAddons, facilityBookings, facilityTypes, guests, partnerEntities, partnerDiscountRules, pettyCashAllocations, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
-  serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers,
+  serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers, ticketTypes, visitorCategories, ticketPrices,
   ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries, users,
 } from "../drizzle/schema";
 import { getDb } from "./db";
@@ -36,27 +36,93 @@ export async function getServiceRate(id: number) {
   return rows[0];
 }
 
-// PRD Round 3, bug 1.1: the Ticket Desk resolves "the" Waterpark/Companion
-// rate by picking the first active row of that ticketType (see
-// resolveRateId in TicketDeskPage.tsx) — a second active rate with the same
-// ticketType silently wins if it sorts first alphabetically, which is
-// exactly how a misconfigured "Events Hall" base price (created with
-// ticketType left at its Waterpark default) hijacked every ticket's price.
-// This finds any other active conflicting rate so create/update can refuse
-// to allow a second one to coexist.
-export async function findConflictingActivePrdRate(ticketType: "waterpark" | "companion", excludeId?: number) {
+// PRD Round 7, Section 1: fully Admin-manageable ticket types (grouped
+// "Water Park" / "Other Tickets") and visitor categories, replacing the old
+// fixed waterpark/companion service-rate pair — see drizzle/schema.ts for
+// the ticketTypes/visitorCategories/ticketPrices tables.
+export async function listTicketTypes(includeInactive = false) {
+  const db = await getDb(); if (!db) return [];
+  const base = db.select().from(ticketTypes).orderBy(ticketTypes.ticketGroup, ticketTypes.name);
+  return includeInactive ? base : base.where(eq(ticketTypes.isActive, true));
+}
+
+export async function getTicketType(id: number) {
   const db = await getDb(); if (!db) return undefined;
-  const conditions = [eq(serviceRates.department, "aqua_park"), eq(serviceRates.ticketType, ticketType), eq(serviceRates.isActive, true)];
-  if (excludeId) conditions.push(sql`${serviceRates.id} != ${excludeId}`);
-  const rows = await db.select().from(serviceRates).where(and(...conditions)).limit(1);
+  const rows = await db.select().from(ticketTypes).where(eq(ticketTypes.id, id)).limit(1);
   return rows[0];
 }
 
-export async function listPrdRates(includeInactive = false) {
+// A new ticket type or category must immediately have a (zero-priced) cell
+// for every category/type it's crossed with, so the Category Pricing matrix
+// always stays a complete grid the Admin can fill in — never a partial one
+// that silently falls back to "no price configured" for missing pairs.
+export async function createTicketType(data: typeof ticketTypes.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(ticketTypes).values(data);
+  const rows = await db.select().from(ticketTypes).orderBy(desc(ticketTypes.id)).limit(1);
+  const type = rows[0]!;
+  const categories = await db.select().from(visitorCategories).where(eq(visitorCategories.isActive, true));
+  if (categories.length) await db.insert(ticketPrices).values(categories.map((category) => ({ ticketTypeId: type.id, categoryId: category.id, unitPrice: "0.000", createdBy: data.createdBy })));
+  return type;
+}
+
+export async function updateTicketType(id: number, data: Partial<typeof ticketTypes.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(ticketTypes).set(data).where(eq(ticketTypes.id, id));
+  return getTicketType(id);
+}
+
+export async function listVisitorCategories(includeInactive = false) {
   const db = await getDb(); if (!db) return [];
-  const predicate = and(eq(serviceRates.department, "aqua_park"), or(eq(serviceRates.ticketType, "waterpark"), eq(serviceRates.ticketType, "companion")));
-  const query = db.select().from(serviceRates).where(predicate).orderBy(serviceRates.ticketType, serviceRates.name);
-  return includeInactive ? db.select().from(serviceRates).where(predicate).orderBy(serviceRates.ticketType, serviceRates.name) : query;
+  const base = db.select().from(visitorCategories).orderBy(visitorCategories.displayOrder, visitorCategories.id);
+  return includeInactive ? base : base.where(eq(visitorCategories.isActive, true));
+}
+
+export async function createVisitorCategory(data: typeof visitorCategories.$inferInsert) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(visitorCategories).values(data);
+  const rows = await db.select().from(visitorCategories).orderBy(desc(visitorCategories.id)).limit(1);
+  const category = rows[0]!;
+  const types = await db.select().from(ticketTypes).where(eq(ticketTypes.isActive, true));
+  if (types.length) await db.insert(ticketPrices).values(types.map((type) => ({ ticketTypeId: type.id, categoryId: category.id, unitPrice: "0.000", createdBy: data.createdBy })));
+  return category;
+}
+
+export async function updateVisitorCategory(id: number, data: Partial<typeof visitorCategories.$inferInsert>) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(visitorCategories).set(data).where(eq(visitorCategories.id, id));
+  const rows = await db.select().from(visitorCategories).where(eq(visitorCategories.id, id)).limit(1);
+  return rows[0];
+}
+
+// The Category Pricing matrix (PRD Round 7, Section 1.3): every Ticket Type
+// x Visitor Category price cell, joined with names for display.
+export async function listTicketPrices(includeInactive = false) {
+  const db = await getDb(); if (!db) return [];
+  const conditions = includeInactive ? [] : [eq(ticketTypes.isActive, true), eq(visitorCategories.isActive, true)];
+  const base = db.select({ price: ticketPrices, ticketType: ticketTypes, category: visitorCategories })
+    .from(ticketPrices)
+    .innerJoin(ticketTypes, eq(ticketPrices.ticketTypeId, ticketTypes.id))
+    .innerJoin(visitorCategories, eq(ticketPrices.categoryId, visitorCategories.id))
+    .orderBy(ticketTypes.ticketGroup, ticketTypes.name, visitorCategories.displayOrder);
+  const rows = await (conditions.length ? base.where(and(...conditions)) : base);
+  return rows.map((row) => ({
+    id: row.price.id, ticketTypeId: row.price.ticketTypeId, categoryId: row.price.categoryId, unitPrice: row.price.unitPrice, isActive: row.price.isActive,
+    ticketTypeName: row.ticketType.name, ticketTypeCode: row.ticketType.code, ticketGroup: row.ticketType.ticketGroup,
+    categoryName: row.category.name, categoryCode: row.category.code,
+  }));
+}
+
+export async function upsertTicketPrice(ticketTypeId: number, categoryId: number, unitPrice: string, createdBy: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const existing = await db.select().from(ticketPrices).where(and(eq(ticketPrices.ticketTypeId, ticketTypeId), eq(ticketPrices.categoryId, categoryId))).limit(1);
+  if (existing[0]) {
+    await db.update(ticketPrices).set({ unitPrice }).where(eq(ticketPrices.id, existing[0].id));
+    return { ...existing[0], unitPrice };
+  }
+  await db.insert(ticketPrices).values({ ticketTypeId, categoryId, unitPrice, createdBy });
+  const rows = await db.select().from(ticketPrices).orderBy(desc(ticketPrices.id)).limit(1);
+  return rows[0]!;
 }
 
 export async function listTicketDiscountTiers(includeInactive = false) {
@@ -99,7 +165,7 @@ export async function createPrdTicketPurchase(data: {
   paymentMethod: "cash" | "card" | "bank" | "mixed";
   notes?: string;
   issuedBy: number;
-  overrideDiscountByTicketType?: Partial<Record<"waterpark" | "companion", string>>;
+  overrideDiscountByTicketType?: Record<string, string>;
   partnerEntity?: { id: number; name: string } | null;
 }) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
@@ -121,7 +187,7 @@ export async function createPrdTicketPurchase(data: {
     const purchase = purchaseRows[0]!;
     const lines = pricing.lines.map((line, index) => ({
       purchaseId: purchase.id, ticketNumber: formatPrdTicketNumber(startNumber + index),
-      ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory, rateId: line.rateId, label: line.label,
+      ticketTypeId: line.ticketTypeId, categoryId: line.categoryId, rateId: line.priceId, label: line.label,
       basePrice: line.basePrice, discountPercentage: line.discountPercentage, discountAmount: line.discountAmount,
       vatAmount: line.vatAmount, feeAmount: line.feeAmount, totalAmount: line.totalAmount,
     }));
@@ -532,13 +598,13 @@ export async function deletePartnerDiscountRule(id: number) {
 // rather than compared in JS (the mysql2 driver returns DATE columns as JS
 // Date objects, not "YYYY-MM-DD" strings, which would need careful,
 // timezone-safe parsing to compare correctly).
-export async function resolveActivePartnerDiscountRule(partnerEntityId: number, appliesTo: "ticket_type" | "facility", match: { ticketType?: string; facilityTypeId?: number }) {
+export async function resolveActivePartnerDiscountRule(partnerEntityId: number, appliesTo: "ticket_type" | "facility", match: { ticketTypeId?: number; facilityTypeId?: number }) {
   const db = await getDb(); if (!db) return undefined;
   const conditions = [
     eq(partnerDiscountRules.partnerEntityId, partnerEntityId), eq(partnerDiscountRules.appliesTo, appliesTo), eq(partnerDiscountRules.isActive, true),
     sql`${partnerDiscountRules.validFrom} <= CURDATE()`, sql`${partnerDiscountRules.validUntil} >= CURDATE()`,
   ];
-  if (appliesTo === "ticket_type" && match.ticketType) conditions.push(eq(partnerDiscountRules.ticketType, match.ticketType as any));
+  if (appliesTo === "ticket_type" && match.ticketTypeId) conditions.push(eq(partnerDiscountRules.ticketTypeId, match.ticketTypeId));
   if (appliesTo === "facility" && match.facilityTypeId) conditions.push(eq(partnerDiscountRules.facilityTypeId, match.facilityTypeId));
   const rows = await db.select().from(partnerDiscountRules).where(and(...conditions)).orderBy(desc(partnerDiscountRules.id)).limit(1);
   return rows[0];
@@ -719,14 +785,17 @@ export async function getFacilityBooking(id: number) {
 // from the facility's current rate and re-applies the booking's own
 // (unchanged) discountPercentage snapshot, then keeps the linked
 // finance_entries/revenue_records rows in sync so reports reflect the edit.
-export async function updateFacilityBookingDetails(id: number, data: { bookingDate: string; quantity: string; facilityAmount: string; totalAmount: string }) {
+export async function updateFacilityBookingDetails(id: number, data: { bookingDate: string; quantity: string; facilityAmount: string; totalAmount: string; customerName?: string | null }) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   return db.transaction(async (tx) => {
     const rows = await tx.select().from(facilityBookings).where(eq(facilityBookings.id, id)).limit(1);
     const booking = rows[0];
     if (!booking) throw new Error("Facility booking was not found");
     if (booking.status === "cancelled") throw new Error("This booking has been cancelled and can no longer be edited");
-    await tx.update(facilityBookings).set({ bookingDate: data.bookingDate as any, quantity: data.quantity, facilityAmount: data.facilityAmount, totalAmount: data.totalAmount }).where(eq(facilityBookings.id, id));
+    await tx.update(facilityBookings).set({
+      bookingDate: data.bookingDate as any, quantity: data.quantity, facilityAmount: data.facilityAmount, totalAmount: data.totalAmount,
+      ...(data.customerName !== undefined ? { customerName: data.customerName } : {}),
+    }).where(eq(facilityBookings.id, id));
     await tx.update(financeEntries).set({ date: data.bookingDate as any, amount: data.facilityAmount }).where(and(eq(financeEntries.referenceType, "facility_booking"), eq(financeEntries.referenceId, id)));
     const financeRows = await tx.select().from(financeEntries).where(and(eq(financeEntries.referenceType, "facility_booking"), eq(financeEntries.referenceId, id))).limit(1);
     if (financeRows[0]) await tx.update(revenueRecords).set({ businessDate: data.bookingDate as any, amount: data.facilityAmount }).where(eq(revenueRecords.financeEntryId, financeRows[0].id));

@@ -8,8 +8,8 @@ import { printViaAgent } from "@/lib/printAgent";
 import { COUNTRIES, DEFAULT_COUNTRY } from "@/lib/countries";
 import { dateLabel, money, today } from "@/localApp/format";
 import { useT, type TranslationKey } from "@/lib/i18n";
-import { MAX_TICKETS_PER_PURCHASE, type PrdFreeEntryCategory, type PrdTicketType } from "@/localApp/pricing";
-import { issuePurchase, previewPurchase, useLocalStore, type PurchaseLineDraft } from "@/localApp/store";
+import { MAX_TICKETS_PER_PURCHASE } from "@/localApp/pricing";
+import { issuePurchase, previewPurchase, useLocalStore, type PrdFreeEntryCategory, type PrdTicketType, type PurchaseLineDraft } from "@/localApp/store";
 
 type FreeEntryCategory = "" | PrdFreeEntryCategory;
 type TicketLine = { id: number; rateId: string; ticketType: PrdTicketType; freeEntryCategory: FreeEntryCategory };

@@ -1,5 +1,22 @@
 import { useSyncExternalStore } from "react";
-import type { PrdDiscountTierInput, PrdFreeEntryCategory, PrdRateInput, PrdTicketType, TicketFeeInput } from "./pricing";
+import type { PrdDiscountTierInput, TicketFeeInput } from "./pricing";
+
+// The backend-free local app never grew the Round 7 ticket-type/category
+// matrix (it's a single-facility Water Park demo) — it keeps its own fixed
+// waterpark/companion + free-entry-category model and maps it onto the
+// shared pricing engine's generic ticketTypeId/categoryId shape at the call
+// boundary below, matching the ids the real migration seeds (Chargeable=1,
+// Companion=2, Retiree=3, Special Needs=4, Under 2=5) purely so numbers
+// look consistent; the local app has no DB row backing them.
+export type PrdTicketType = "waterpark" | "companion";
+export type PrdFreeEntryCategory = "under_two" | "person_of_determination" | "senior";
+export type PrdRateInput = { id: number; name: string; code: string; ticketType: PrdTicketType; unitPrice: string };
+function localCategoryId(ticketType: PrdTicketType, freeEntryCategory: PrdFreeEntryCategory | null): number {
+  if (freeEntryCategory === "senior") return 3;
+  if (freeEntryCategory === "person_of_determination") return 4;
+  if (freeEntryCategory === "under_two") return 5;
+  return ticketType === "companion" ? 2 : 1;
+}
 import { calculatePrdPurchasePricing, formatLocalTicketNumber, STARTING_TICKET_NUMBER } from "./pricing";
 
 const STORAGE_KEY = "marasi-local-v1";
@@ -294,7 +311,13 @@ export function previewPurchase(lines: PurchaseLineDraft[]) {
     .filter((entry): entry is { line: PurchaseLineDraft; rate: LocalRate } => Boolean(entry.rate));
   if (!resolvedLines.length) return null;
   return calculatePrdPurchasePricing({
-    lines: resolvedLines.map(({ line, rate }) => ({ rate, ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory })),
+    lines: resolvedLines.map(({ line, rate }) => ({
+      // A free-entry line is free regardless of which rate it reused for
+      // its ticketType (the old fixed model had no zero-priced rate row of
+      // its own for "senior"/"person_of_determination"/"under_two").
+      price: { id: rate.id, name: rate.name, code: rate.code, unitPrice: line.freeEntryCategory ? "0.000" : rate.unitPrice },
+      ticketTypeId: 1, categoryId: localCategoryId(line.ticketType, line.freeEntryCategory),
+    })),
     discountTiers: data.discountTiers.filter((tier) => tier.active),
     fees: data.fees.filter((fee) => fee.active),
   });
@@ -307,11 +330,16 @@ export function issuePurchase(input: {
   if (!input.customerId && !(input.customerName?.trim() && input.customerPhone?.trim())) throw new Error("Select a customer or add a name and phone");
   const pricing = previewPurchase(input.lines);
   if (!pricing) throw new Error("Select a ticket type and approved price for every line");
+  // Same filter previewPurchase used, so pricing.lines lines up index-for-index
+  // with the original draft lines' ticketType/freeEntryCategory/rate.id.
+  const resolvedLines = input.lines
+    .map((line) => ({ line, rate: data.rates.find((rate) => rate.id === line.rateId && rate.active) }))
+    .filter((entry): entry is { line: PurchaseLineDraft; rate: LocalRate } => Boolean(entry.rate));
   const customer = findOrCreateCustomer({ customerId: input.customerId, fullName: input.customerName, phone: input.customerPhone, email: input.customerEmail, country: input.customerCountry });
   const startNumber = data.nextTicketNumber;
   const lines: LocalPurchaseLine[] = pricing.lines.map((line, index) => ({
-    ticketNumber: formatLocalTicketNumber(startNumber + index), ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory,
-    rateId: line.rateId, label: line.label, code: line.code, basePrice: line.basePrice, discountPercentage: line.discountPercentage,
+    ticketNumber: formatLocalTicketNumber(startNumber + index), ticketType: resolvedLines[index].line.ticketType, freeEntryCategory: resolvedLines[index].line.freeEntryCategory,
+    rateId: resolvedLines[index].rate.id, label: line.label, code: line.code, basePrice: line.basePrice, discountPercentage: line.discountPercentage,
     discountAmount: line.discountAmount, vatAmount: line.vatAmount, feeAmount: line.feeAmount, totalAmount: line.totalAmount,
   }));
   const purchase: LocalPurchase = {

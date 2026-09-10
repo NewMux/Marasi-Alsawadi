@@ -19,12 +19,13 @@ import { protectedProcedure, publicProcedure, router } from "../_core/trpc";
 import { hashPassword } from "../auth";
 import { canIssueAquaTickets, remainingAquaCapacity } from "../operationRules";
 import {
-  createExpenseCategory, createExpenseRecord, createSalesTransaction, createServiceRate, createTicketFee, deleteExpenseCategory,
+  createExpenseCategory, createExpenseRecord, createSalesTransaction, createTicketFee, deleteExpenseCategory,
   deleteExpenseRecord, deleteTicketFee, getExpenseCategory, getExpenseRecord, getOperationalFinancialSummary, getSalesTransactionByToken,
   getServiceRate, listApplicableTicketFees, listExpenseCategories, listExpenseRecords, listFeeAssignments, listRecentTicketScans,
-  listSalesTransactionLines, listSalesTransactions, listServiceRates, listTicketFees, recordTicketScan, replaceFeeAssignments,
-  searchCustomers, getCustomerByPhone, updateExpenseCategory, updateExpenseRecord, updateServiceRate, updateTicketFee, deleteServiceRate,
-  createPrdTicketPurchase, listPrdRates, findConflictingActivePrdRate, listTicketDiscountTiers, createTicketDiscountTier, updateTicketDiscountTier, deleteTicketDiscountTier,
+  listSalesTransactionLines, listSalesTransactions, listTicketFees, recordTicketScan, replaceFeeAssignments,
+  searchCustomers, getCustomerByPhone, updateExpenseCategory, updateExpenseRecord, updateTicketFee,
+  createPrdTicketPurchase, listTicketDiscountTiers, createTicketDiscountTier, updateTicketDiscountTier, deleteTicketDiscountTier,
+  listTicketTypes, getTicketType, createTicketType, updateTicketType, listVisitorCategories, createVisitorCategory, updateVisitorCategory, listTicketPrices, upsertTicketPrice,
   listPartnerEntities, getPartnerEntity, createPartnerEntity, updatePartnerEntity, deletePartnerEntity,
   listPartnerDiscountRules, createPartnerDiscountRule, updatePartnerDiscountRule, deletePartnerDiscountRule, resolveActivePartnerDiscountRule,
   listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
@@ -73,34 +74,38 @@ export function recordFromJoin<T>(entry: T | { r?: T; t?: T; s?: T }) {
 }
 
 const prdLineInput = z.object({
-  rateId: z.number().int().positive(),
-  ticketType: z.enum(["waterpark", "companion"]),
-  freeEntryCategory: z.enum(["under_two", "person_of_determination", "senior"]).nullable().optional(),
+  priceId: z.number().int().positive(),
 });
 
+// PRD Round 7, Section 1: a line just names the Category Pricing matrix cell
+// it wants (Ticket Type x Visitor Category) — ticketTypeId/categoryId and
+// the price itself are all resolved from that one id, so the client never
+// needs to send them separately (and can't send a mismatched pair).
 async function resolvePrdPricing(linesInput: Array<z.infer<typeof prdLineInput>>, partnerEntityId?: number | null) {
-  const rateCatalog = await listPrdRates();
-  const rateById = new Map(rateCatalog.map((rate) => [rate.id, rate]));
+  const priceCatalog = await listTicketPrices();
+  const priceById = new Map(priceCatalog.map((price) => [price.id, price]));
   const lines = linesInput.map((line) => {
-    const rate = rateById.get(line.rateId);
-    if (!rate || !rate.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "One of the selected ticket prices is no longer active" });
-    if (rate.ticketType && rate.ticketType !== line.ticketType) throw new TRPCError({ code: "BAD_REQUEST", message: "Ticket type does not match the selected price" });
-    return { rate: { id: rate.id, name: rate.name, code: rate.code, ticketType: (rate.ticketType || line.ticketType) as "waterpark" | "companion", unitPrice: String(rate.unitPrice) }, ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory || null };
+    const price = priceById.get(line.priceId);
+    if (!price || !price.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "One of the selected ticket prices is no longer active" });
+    return {
+      price: { id: price.id, name: `${price.ticketTypeName} — ${price.categoryName}`, code: `${price.ticketTypeCode}_${price.categoryCode}`, unitPrice: String(price.unitPrice) },
+      ticketTypeId: price.ticketTypeId, categoryId: price.categoryId,
+    };
   });
   const tiers = await listTicketDiscountTiers();
   const feeMap = new Map<number, any>();
-  for (const line of lines) for (const fee of await listApplicableTicketFees(line.rate.id)) feeMap.set(fee.id, { ...fee, value: String(fee.value) });
+  for (const line of lines) for (const fee of await listApplicableTicketFees(line.ticketTypeId)) feeMap.set(fee.id, { ...fee, value: String(fee.value) });
   const fees = Array.from(feeMap.values());
   let partnerEntity: { id: number; name: string } | null = null;
-  let overrideDiscountByTicketType: Partial<Record<"waterpark" | "companion", string>> | undefined;
+  let overrideDiscountByTicketType: Record<string, string> | undefined;
   if (partnerEntityId) {
     const entity = await getPartnerEntity(partnerEntityId);
     if (!entity || !entity.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected partner entity is no longer active" });
     partnerEntity = { id: entity.id, name: entity.name };
     overrideDiscountByTicketType = {};
-    for (const ticketType of Array.from(new Set(lines.map((line) => line.ticketType)))) {
-      const rule = await resolveActivePartnerDiscountRule(entity.id, "ticket_type", { ticketType });
-      if (rule) overrideDiscountByTicketType[ticketType as "waterpark" | "companion"] = String(rule.discountPercentage);
+    for (const ticketTypeId of Array.from(new Set(lines.map((line) => line.ticketTypeId)))) {
+      const rule = await resolveActivePartnerDiscountRule(entity.id, "ticket_type", { ticketTypeId });
+      if (rule) overrideDiscountByTicketType[String(ticketTypeId)] = String(rule.discountPercentage);
     }
   }
   const pricing = calculatePrdPurchasePricing({
@@ -219,49 +224,60 @@ export const platformRouter = router({
     }),
   }),
 
-  rates: router({
+  // PRD Round 7, Section 1.2/1.3: Base Prices became a fully open,
+  // Admin-managed Ticket Types list (each belonging to a Water Park / Other
+  // Tickets group), and a separate Category Pricing matrix gives every
+  // Ticket Type x Visitor Category combination its own editable price —
+  // replacing the old fixed waterpark/companion `rates` router.
+  ticketTypes: router({
     list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
-      .query(({ input, ctx }) => listServiceRates(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
+      .query(({ input, ctx }) => listTicketTypes(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
     create: superAdminProcedure.input(z.object({
-      name: z.string().min(2).max(128), code: z.string().min(2).max(48),
-      department: z.enum(["aqua_park", "rooms", "fnb", "general"]),
-      ticketType: z.enum(["waterpark", "companion"]).optional(),
-      unitPrice: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals"),
-      description: z.string().max(1000).optional(),
+      name: z.string().trim().min(2).max(128), code: z.string().trim().min(2).max(48), ticketGroup: z.enum(["water_park", "other_tickets"]),
     })).mutation(async ({ input, ctx }) => {
-      if (input.department === "aqua_park" && input.ticketType) {
-        const conflict = await findConflictingActivePrdRate(input.ticketType);
-        if (conflict) throw new TRPCError({ code: "BAD_REQUEST", message: `"${conflict.name}" is already the active ${input.ticketType} price — retire it first before adding another, so Ticket Desk never has two prices to choose between` });
-      }
-      const rate = await createServiceRate({ ...input, code: normalizeRateCode(input.code), name: input.name.trim(), currency: "OMR", description: input.description?.trim() || null });
-      await logActivity(ctx.user.id, "service_rate.create", "service_rate", rate.id, rate.code);
-      return rate;
+      const type = await createTicketType({ name: input.name, code: normalizeRateCode(input.code), ticketGroup: input.ticketGroup, createdBy: ctx.user.id });
+      await logActivity(ctx.user.id, "ticket_type.create", "ticket_type", type.id, type.code);
+      return type;
     }),
     update: superAdminProcedure.input(z.object({
-      id: z.number(), name: z.string().min(2).max(128).optional(), code: z.string().min(2).max(48).optional(),
-      department: z.enum(["aqua_park", "rooms", "fnb", "general"]).optional(),
-      ticketType: z.enum(["waterpark", "companion"]).nullable().optional(),
-      unitPrice: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals").optional(),
-      description: z.string().max(1000).nullable().optional(), isActive: z.boolean().optional(),
+      id: z.number().int().positive(), name: z.string().trim().min(2).max(128).optional(), ticketGroup: z.enum(["water_park", "other_tickets"]).optional(), isActive: z.boolean().optional(),
     })).mutation(async ({ input, ctx }) => {
-      const { id, code, name, description, ...rest } = input;
-      const existing = await getServiceRate(id);
-      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Base price was not found" });
-      const effectiveDepartment = rest.department ?? existing.department;
-      const effectiveTicketType = rest.ticketType !== undefined ? rest.ticketType : existing.ticketType;
-      const effectiveActive = rest.isActive ?? existing.isActive;
-      if (effectiveDepartment === "aqua_park" && effectiveTicketType && effectiveActive) {
-        const conflict = await findConflictingActivePrdRate(effectiveTicketType, id);
-        if (conflict) throw new TRPCError({ code: "BAD_REQUEST", message: `"${conflict.name}" is already the active ${effectiveTicketType} price — retire it first, so Ticket Desk never has two prices to choose between` });
-      }
-      const rate = await updateServiceRate(id, { ...rest, code: code ? normalizeRateCode(code) : undefined, name: name?.trim(), description: description === null ? null : description?.trim() });
-      await logActivity(ctx.user.id, "service_rate.update", "service_rate", id, rate?.code);
-      return rate;
+      const { id, ...rest } = input;
+      const type = await updateTicketType(id, rest);
+      if (!type) throw new TRPCError({ code: "NOT_FOUND", message: "Ticket type was not found" });
+      await logActivity(ctx.user.id, "ticket_type.update", "ticket_type", id, JSON.stringify(rest));
+      return type;
     }),
-    delete: superAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
-      const result = await deleteServiceRate(input.id);
-      await logActivity(ctx.user.id, "service_rate.delete", "service_rate", input.id);
-      return result;
+  }),
+  visitorCategories: router({
+    list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
+      .query(({ input, ctx }) => listVisitorCategories(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
+    create: superAdminProcedure.input(z.object({
+      name: z.string().trim().min(2).max(128), code: z.string().trim().min(2).max(48), displayOrder: z.number().int().min(0).max(999).default(0),
+    })).mutation(async ({ input, ctx }) => {
+      const category = await createVisitorCategory({ name: input.name, code: normalizeRateCode(input.code), displayOrder: input.displayOrder, createdBy: ctx.user.id });
+      await logActivity(ctx.user.id, "visitor_category.create", "visitor_category", category.id, category.code);
+      return category;
+    }),
+    update: superAdminProcedure.input(z.object({
+      id: z.number().int().positive(), name: z.string().trim().min(2).max(128).optional(), displayOrder: z.number().int().min(0).max(999).optional(), isActive: z.boolean().optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const { id, ...rest } = input;
+      const category = await updateVisitorCategory(id, rest);
+      if (!category) throw new TRPCError({ code: "NOT_FOUND", message: "Visitor category was not found" });
+      await logActivity(ctx.user.id, "visitor_category.update", "visitor_category", id, JSON.stringify(rest));
+      return category;
+    }),
+  }),
+  ticketPrices: router({
+    list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
+      .query(({ input, ctx }) => listTicketPrices(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
+    set: superAdminProcedure.input(z.object({
+      ticketTypeId: z.number().int().positive(), categoryId: z.number().int().positive(), unitPrice: z.string().regex(/^\d+(\.\d{1,3})?$/, "Enter an OMR amount with up to three decimals"),
+    })).mutation(async ({ input, ctx }) => {
+      const price = await upsertTicketPrice(input.ticketTypeId, input.categoryId, input.unitPrice, ctx.user.id);
+      await logActivity(ctx.user.id, "ticket_price.set", "ticket_price", price.id, `${input.ticketTypeId}x${input.categoryId}:${input.unitPrice}`);
+      return price;
     }),
   }),
 
@@ -278,12 +294,12 @@ export const platformRouter = router({
     create: superAdminProcedure.input(z.object({
       name: z.string().min(2).max(128), code: z.string().min(2).max(48), calculationType: z.enum(["fixed", "percentage"]),
       value: z.string().regex(/^\d+(\.\d{1,4})?$/), applicationBasis: z.enum(["per_ticket", "per_transaction"]),
-      appliesGlobally: z.boolean().default(false), displayOrder: z.number().int().min(0).max(999).default(0), rateIds: z.array(z.number()).default([]),
-    }).refine((input) => input.appliesGlobally || input.rateIds.length > 0, { path: ["rateIds"], message: "Apply the fee globally or select at least one base price" })).mutation(async ({ input, ctx }) => {
+      appliesGlobally: z.boolean().default(false), displayOrder: z.number().int().min(0).max(999).default(0), ticketTypeIds: z.array(z.number()).default([]),
+    }).refine((input) => input.appliesGlobally || input.ticketTypeIds.length > 0, { path: ["ticketTypeIds"], message: "Apply the fee globally or select at least one ticket type" })).mutation(async ({ input, ctx }) => {
       if (Number(input.value) <= 0 || (input.calculationType === "percentage" && Number(input.value) > 100)) throw new TRPCError({ code: "BAD_REQUEST", message: "Enter a valid positive fee value" });
-      const { rateIds, ...data } = input;
+      const { ticketTypeIds, ...data } = input;
       const fee = await createTicketFee({ ...data, name: data.name.trim(), code: normalizeRateCode(data.code), createdBy: ctx.user.id });
-      if (!fee.appliesGlobally) await replaceFeeAssignments(fee.id, rateIds);
+      if (!fee.appliesGlobally) await replaceFeeAssignments(fee.id, ticketTypeIds);
       await logActivity(ctx.user.id, "ticket_fee.create", "ticket_fee", fee.id, JSON.stringify(data));
       return fee;
     }),
@@ -291,15 +307,15 @@ export const platformRouter = router({
       id: z.number(), name: z.string().min(2).max(128).optional(), code: z.string().min(2).max(48).optional(),
       calculationType: z.enum(["fixed", "percentage"]).optional(), value: z.string().regex(/^\d+(\.\d{1,4})?$/).optional(),
       applicationBasis: z.enum(["per_ticket", "per_transaction"]).optional(), appliesGlobally: z.boolean().optional(),
-      displayOrder: z.number().int().min(0).max(999).optional(), isActive: z.boolean().optional(), rateIds: z.array(z.number()).optional(),
+      displayOrder: z.number().int().min(0).max(999).optional(), isActive: z.boolean().optional(), ticketTypeIds: z.array(z.number()).optional(),
     })).mutation(async ({ input, ctx }) => {
       if (input.value && Number(input.value) <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: "Fee value must be positive" });
       if (input.calculationType === "percentage" && input.value && Number(input.value) > 100) throw new TRPCError({ code: "BAD_REQUEST", message: "Percentage cannot exceed 100" });
-      if (input.appliesGlobally === false && input.rateIds && input.rateIds.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "Apply the fee globally or select at least one base price" });
-      const { id, rateIds, code, name, ...rest } = input;
+      if (input.appliesGlobally === false && input.ticketTypeIds && input.ticketTypeIds.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "Apply the fee globally or select at least one ticket type" });
+      const { id, ticketTypeIds, code, name, ...rest } = input;
       const fee = await updateTicketFee(id, { ...rest, code: code ? normalizeRateCode(code) : undefined, name: name?.trim() });
       if (!fee) throw new TRPCError({ code: "NOT_FOUND", message: "Fee item was not found" });
-      if (rateIds) await replaceFeeAssignments(id, fee.appliesGlobally ? [] : rateIds);
+      if (ticketTypeIds) await replaceFeeAssignments(id, fee.appliesGlobally ? [] : ticketTypeIds);
       await logActivity(ctx.user.id, "ticket_fee.update", "ticket_fee", id, JSON.stringify(input));
       return fee;
     }),
@@ -419,6 +435,9 @@ export const platformRouter = router({
     // date are recalculated and kept in sync with its linked revenue entry.
     update: protectedProcedure.input(z.object({
       id: z.number().int().positive(), bookingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), quantity: z.number().positive().optional(),
+      // PRD Round 7, Section 3: the purchaser name can be added or corrected
+      // from the Edit action too, not only at booking creation time.
+      customerName: z.string().trim().max(160).optional(),
     })).mutation(async ({ input, ctx }) => {
       const booking = await getFacilityBooking(input.id);
       if (!booking) throw new TRPCError({ code: "NOT_FOUND", message: "Facility booking was not found" });
@@ -430,7 +449,7 @@ export const platformRouter = router({
       const fullFacilityAmount = calculateFacilityLineAmount(String(facility.rate), quantity);
       const { discountedAmount: facilityAmount } = applyFacilityDiscount(fullFacilityAmount, booking.discountPercentage as any);
       const totalAmount = (Number(facilityAmount) + Number(booking.addonsAmount)).toFixed(3);
-      const updated = await updateFacilityBookingDetails(input.id, { bookingDate: input.bookingDate, quantity: String(quantity), facilityAmount, totalAmount });
+      const updated = await updateFacilityBookingDetails(input.id, { bookingDate: input.bookingDate, quantity: String(quantity), facilityAmount, totalAmount, customerName: input.customerName !== undefined ? (input.customerName || null) : undefined });
       await logActivity(ctx.user.id, "facility_booking.update", "facility_booking", input.id, `${input.bookingDate}:${totalAmount}`);
       return { booking: updated, addons: await listFacilityBookingAddons(updated.id) };
     }),
@@ -470,7 +489,9 @@ export const platformRouter = router({
 
   tickets: router({
     prdCatalog: protectedProcedure.query(async ({ ctx }) => ({
-      rates: await listPrdRates(Boolean(ctx.user.role === "super_admin")),
+      ticketTypes: await listTicketTypes(Boolean(ctx.user.role === "super_admin")),
+      visitorCategories: await listVisitorCategories(Boolean(ctx.user.role === "super_admin")),
+      prices: await listTicketPrices(Boolean(ctx.user.role === "super_admin")),
       discountTiers: await listTicketDiscountTiers(Boolean(ctx.user.role === "super_admin")),
       fees: await listTicketFees(Boolean(ctx.user.role === "super_admin")),
       partnerEntities: await listPartnerEntities(false),
@@ -500,7 +521,7 @@ export const platformRouter = router({
         create: superAdminProcedure.input(z.object({
           partnerEntityId: z.number().int().positive(),
           appliesTo: z.enum(["ticket_type", "facility"]),
-          ticketType: z.enum(["waterpark", "companion"]).optional(),
+          ticketTypeId: z.number().int().positive().optional(),
           facilityTypeId: z.number().int().positive().optional(),
           discountPercentage: z.string().regex(/^\d+(\.\d{1,2})?$/),
           validFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -508,7 +529,7 @@ export const platformRouter = router({
         })).mutation(async ({ input, ctx }) => {
           if (Number(input.discountPercentage) <= 0 || Number(input.discountPercentage) > 100) throw new TRPCError({ code: "BAD_REQUEST", message: "Discount percentage must be between 0 and 100" });
           if (input.validUntil < input.validFrom) throw new TRPCError({ code: "BAD_REQUEST", message: "Valid Until must be on or after Valid From" });
-          if (input.appliesTo === "ticket_type" && !input.ticketType) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose a ticket type" });
+          if (input.appliesTo === "ticket_type" && !input.ticketTypeId) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose a ticket type" });
           if (input.appliesTo === "facility" && !input.facilityTypeId) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose a facility" });
           let facilityTypeName: string | null = null;
           if (input.appliesTo === "facility") {
@@ -516,9 +537,13 @@ export const platformRouter = router({
             if (!facility) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected facility was not found" });
             facilityTypeName = facility.name;
           }
+          if (input.appliesTo === "ticket_type") {
+            const ticketType = await getTicketType(input.ticketTypeId!);
+            if (!ticketType) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected ticket type was not found" });
+          }
           const rule = await createPartnerDiscountRule({
             partnerEntityId: input.partnerEntityId, appliesTo: input.appliesTo,
-            ticketType: input.appliesTo === "ticket_type" ? input.ticketType : null, facilityTypeId: input.appliesTo === "facility" ? input.facilityTypeId : null, facilityTypeName,
+            ticketTypeId: input.appliesTo === "ticket_type" ? input.ticketTypeId : null, facilityTypeId: input.appliesTo === "facility" ? input.facilityTypeId : null, facilityTypeName,
             discountPercentage: input.discountPercentage, validFrom: input.validFrom as any, validUntil: input.validUntil as any, createdBy: ctx.user.id,
           } as any);
           await logActivity(ctx.user.id, "partner_discount_rule.create", "partner_discount_rule", rule.id, JSON.stringify(input));

@@ -52,10 +52,10 @@ describe("ticketing business rules", () => {
   it("applies group discount to chargeable lines, excludes free entry, then calculates 5% VAT", () => {
     const pricing = calculatePrdPurchasePricing({
       lines: [
-        { rate: { id: 1, name: "Waterpark", code: "WATERPARK", ticketType: "waterpark", unitPrice: "10.00" }, ticketType: "waterpark" },
-        { rate: { id: 1, name: "Waterpark", code: "WATERPARK", ticketType: "waterpark", unitPrice: "10.00" }, ticketType: "waterpark" },
-        { rate: { id: 2, name: "Companion", code: "COMPANION", ticketType: "companion", unitPrice: "4.00" }, ticketType: "companion" },
-        { rate: { id: 1, name: "Waterpark", code: "WATERPARK", ticketType: "waterpark", unitPrice: "10.00" }, ticketType: "waterpark", freeEntryCategory: "under_two" },
+        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1 },
+        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1 },
+        { price: { id: 2, name: "Companion", code: "COMPANION", unitPrice: "4.00" }, ticketTypeId: 1, categoryId: 2 },
+        { price: { id: 3, name: "Under 2", code: "UNDER_TWO", unitPrice: "0.00" }, ticketTypeId: 1, categoryId: 5 },
       ],
       discountTiers: [{ id: 1, minTickets: 3, maxTickets: null, percentage: "10.00" }], fees: [],
     });
@@ -72,12 +72,12 @@ describe("ticketing business rules", () => {
   it("replaces the automatic group discount tier with a partner entity's per-ticket-type override percentage", () => {
     const pricing = calculatePrdPurchasePricing({
       lines: [
-        { rate: { id: 1, name: "Waterpark", code: "WATERPARK", ticketType: "waterpark", unitPrice: "10.00" }, ticketType: "waterpark" },
-        { rate: { id: 1, name: "Waterpark", code: "WATERPARK", ticketType: "waterpark", unitPrice: "10.00" }, ticketType: "waterpark" },
+        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1 },
+        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1 },
       ],
       // Only 2 chargeable tickets would normally get 0% under this tier (min 3+).
       discountTiers: [{ id: 1, minTickets: 3, maxTickets: null, percentage: "10.00" }], fees: [],
-      overrideDiscountByTicketType: { waterpark: "25.00" },
+      overrideDiscountByTicketType: { "1": "25.00" },
     });
     expect(pricing.discountPercentage).toBe("25.00");
     expect(pricing.appliedTier).toBeNull();
@@ -90,11 +90,11 @@ describe("ticketing business rules", () => {
   it("gives a ticket type with no matching partner rule 0% instead of falling back to the group tier", () => {
     const pricing = calculatePrdPurchasePricing({
       lines: [
-        { rate: { id: 1, name: "Waterpark", code: "WATERPARK", ticketType: "waterpark", unitPrice: "10.00" }, ticketType: "waterpark" },
-        { rate: { id: 2, name: "Companion", code: "COMPANION", ticketType: "companion", unitPrice: "5.00" }, ticketType: "companion" },
+        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1 },
+        { price: { id: 2, name: "Festival Entry", code: "FESTIVAL", unitPrice: "5.00" }, ticketTypeId: 2, categoryId: 1 },
       ],
       discountTiers: [{ id: 1, minTickets: 1, maxTickets: null, percentage: "50.00" }], fees: [],
-      overrideDiscountByTicketType: { waterpark: "10.00" },
+      overrideDiscountByTicketType: { "1": "10.00" },
     });
     expect(pricing.lines[0].discountPercentage).toBe("10.00");
     expect(pricing.lines[1].discountPercentage).toBe("0.00");
@@ -103,7 +103,7 @@ describe("ticketing business rules", () => {
 
   it("does not apply the discount tier when only free-entry lines exist", () => {
     const pricing = calculatePrdPurchasePricing({
-      lines: [{ rate: { id: 1, name: "Waterpark", code: "WATERPARK", ticketType: "waterpark", unitPrice: "10.00" }, ticketType: "waterpark", freeEntryCategory: "senior" }],
+      lines: [{ price: { id: 1, name: "Retiree", code: "RETIREE", unitPrice: "0.00" }, ticketTypeId: 1, categoryId: 3 }],
       discountTiers: [{ id: 1, minTickets: 1, maxTickets: null, percentage: "50.00" }], fees: [],
     });
     expect(pricing.chargeableTicketCount).toBe(0);

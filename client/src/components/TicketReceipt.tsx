@@ -8,18 +8,28 @@ import { instagramQrDataUri } from "@/assets/instagramQrDataUri";
 
 export type TicketReceiptLine = {
   ticketNumber: string;
-  ticketType: "waterpark" | "companion";
-  freeEntryCategory: "under_two" | "person_of_determination" | "senior" | null;
+  // PRD Round 7: ticket types and visitor categories are now Admin-managed
+  // (no longer a fixed enum), so each line carries its own ready-to-print
+  // label instead of enum codes the receipt looks up a translation for.
+  label: string;
   basePrice: string;
   discountAmount: string;
   vatAmount: string;
   totalAmount: string;
+  // Present only on historical lines issued before Round 7 — still used so
+  // old receipts keep their bilingual per-category translation on reprint.
+  ticketType?: "waterpark" | "companion" | null;
+  freeEntryCategory?: "under_two" | "person_of_determination" | "senior" | null;
 };
 
 export type TicketReceiptData = {
   customerName: string;
   customerPhone: string;
   visitDate: string;
+  // PRD Round 7, Section 1: "Other Tickets" (festivals, events, etc.) print
+  // their own receipt, distinct from the fixed "Waterpark Admission" title —
+  // absent (or "water_park") keeps the original wording exactly.
+  ticketGroup?: "water_park" | "other_tickets";
   lines: TicketReceiptLine[];
   baseSubtotal: string;
   discountAmount: string;
@@ -39,18 +49,22 @@ const freeEntryLabels: Record<NonNullable<TicketReceiptLine["freeEntryCategory"]
   person_of_determination: { ar: "من ذوي الهمم", en: "Special Needs — Free" },
   senior: { ar: "متقاعد", en: "Retiree — Free" },
 };
-const ticketTypeLabels: Record<TicketReceiptLine["ticketType"], { ar: string; en: string }> = {
+const ticketTypeLabels: Record<"waterpark" | "companion", { ar: string; en: string }> = {
   waterpark: { ar: "تذكرة رئيسية", en: "Main Ticket — Water Park" },
   companion: { ar: "تذكرة مرافق", en: "Companion Ticket" },
 };
 
-function lineLabel(line: Pick<TicketReceiptLine, "ticketType" | "freeEntryCategory">) {
-  return line.freeEntryCategory ? freeEntryLabels[line.freeEntryCategory] : ticketTypeLabels[line.ticketType];
+function lineLabel(line: Pick<TicketReceiptLine, "label" | "ticketType" | "freeEntryCategory">) {
+  if (line.freeEntryCategory) return freeEntryLabels[line.freeEntryCategory];
+  if (line.ticketType) return ticketTypeLabels[line.ticketType];
+  return { ar: line.label, en: line.label };
 }
 
 type ReceiptLineGroup = {
-  ticketType: TicketReceiptLine["ticketType"];
-  freeEntryCategory: TicketReceiptLine["freeEntryCategory"];
+  label: string;
+  isFree: boolean;
+  ticketType?: "waterpark" | "companion" | null;
+  freeEntryCategory?: "under_two" | "person_of_determination" | "senior" | null;
   ticketNumbers: string[];
   basePrice: number;
   discountAmount: number;
@@ -68,7 +82,7 @@ function groupReceiptLines(lines: TicketReceiptLine[]): ReceiptLineGroup[] {
   const groups: ReceiptLineGroup[] = [];
   for (const line of lines) {
     const last = groups[groups.length - 1];
-    if (last && last.ticketType === line.ticketType && last.freeEntryCategory === line.freeEntryCategory) {
+    if (last && last.label === line.label && last.ticketType === line.ticketType && last.freeEntryCategory === line.freeEntryCategory) {
       last.ticketNumbers.push(line.ticketNumber);
       last.basePrice += Number(line.basePrice || 0);
       last.discountAmount += Number(line.discountAmount || 0);
@@ -76,7 +90,7 @@ function groupReceiptLines(lines: TicketReceiptLine[]): ReceiptLineGroup[] {
       last.totalAmount += Number(line.totalAmount || 0);
     } else {
       groups.push({
-        ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory, ticketNumbers: [line.ticketNumber],
+        label: line.label, isFree: Number(line.basePrice || 0) === 0, ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory, ticketNumbers: [line.ticketNumber],
         basePrice: Number(line.basePrice || 0), discountAmount: Number(line.discountAmount || 0),
         vatAmount: Number(line.vatAmount || 0), totalAmount: Number(line.totalAmount || 0),
       });
@@ -110,8 +124,7 @@ export function TicketReceiptTicket({ data }: { data: TicketReceiptData }) {
 
       <div className="divider"/>
 
-      <div className="center title-ar">تذكرة دخول — الحديقة المائية</div>
-      <div className="center title-en">WATERPARK ADMISSION TICKET</div>
+      {data.ticketGroup === "other_tickets" ? <><div className="center title-ar">تذكرة دخول</div><div className="center title-en">EVENT ADMISSION TICKET</div></> : <><div className="center title-ar">تذكرة دخول — الحديقة المائية</div><div className="center title-en">WATERPARK ADMISSION TICKET</div></>}
 
       <div className="divider"/>
 
@@ -132,7 +145,7 @@ export function TicketReceiptTicket({ data }: { data: TicketReceiptData }) {
             <tr><td className="label" style={{ fontSize: 10 }}>السعر الأساسي / Base</td><td className="value" style={{ fontSize: 10 }}>{omr(group.basePrice)}</td></tr>
             {group.discountAmount > 0 && <tr><td className="label" style={{ fontSize: 10 }}>الخصم / Discount</td><td className="value" style={{ fontSize: 10 }}>−{omr(group.discountAmount)}</td></tr>}
             <tr><td className="label" style={{ fontSize: 10 }}>ضريبة ٥٪ / VAT 5%</td><td className="value" style={{ fontSize: 10 }}>{omr(group.vatAmount)}</td></tr>
-            <tr><td className="label" style={{ fontWeight: 700 }}>الإجمالي / Line Total</td><td className="value" style={{ fontWeight: 700 }}>{omr(group.totalAmount)}{group.freeEntryCategory ? " — FREE" : ""}</td></tr>
+            <tr><td className="label" style={{ fontWeight: 700 }}>الإجمالي / Line Total</td><td className="value" style={{ fontWeight: 700 }}>{omr(group.totalAmount)}{group.isFree ? " — FREE" : ""}</td></tr>
           </tbody></table>
           {index < groups.length - 1 && <div style={{ borderTop: "1px dotted #ccc", margin: "6px 0" }}/>}
         </div>;

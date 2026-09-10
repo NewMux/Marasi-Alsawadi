@@ -10,8 +10,8 @@ const manager = { id: 2, role: "manager", name: "Manager", passwordHash: null };
 const admin = { id: 3, role: "admin", name: "Admin", passwordHash: null };
 const guard = { id: 4, role: "guard", name: "Guard", passwordHash: null };
 
-const rateInput = { name: "Adult pass", code: "ADULT", department: "aqua_park" as const, unitPrice: "5.00" };
-const feeInput = { name: "Municipality", code: "MUNI", calculationType: "fixed" as const, value: "0.50", applicationBasis: "per_transaction" as const, appliesGlobally: true, displayOrder: 1, rateIds: [] };
+const ticketTypeInput = { name: "Festival Entry", code: "FESTIVAL", ticketGroup: "other_tickets" as const };
+const feeInput = { name: "Municipality", code: "MUNI", calculationType: "fixed" as const, value: "0.50", applicationBasis: "per_transaction" as const, appliesGlobally: true, displayOrder: 1, ticketTypeIds: [] };
 const categoryInput = { name: "Utilities", code: "UTIL" };
 
 async function expectForbidden(action: Promise<unknown>) {
@@ -22,7 +22,7 @@ describe("Super Admin configuration boundary", () => {
   it("denies price, fee, category, and account mutations to non-Super Admin roles", async () => {
     for (const user of [staff, manager, admin, guard]) {
       const caller = callerFor(user);
-      await expectForbidden(caller.platform.rates.create(rateInput));
+      await expectForbidden(caller.platform.ticketTypes.create(ticketTypeInput));
       await expectForbidden(caller.platform.fees.create(feeInput));
       await expectForbidden(caller.platform.finance.expenseCategories.create(categoryInput));
       await expectForbidden(caller.platform.admin.listUsers());

@@ -98,11 +98,20 @@ export function calculateTicketPricing(input: {
 }
 
 export const PRD_VAT_PERCENT = 5;
-export type PrdFreeEntryCategory = "under_two" | "person_of_determination" | "senior";
-export type PrdTicketType = "waterpark" | "companion";
-export type PrdRateInput = { id: number; name: string; code: string; ticketType: PrdTicketType; unitPrice: string };
+// PRD Round 7, Section 1.3: ticket types and visitor categories are now
+// fully Admin-managed (server/ticketingDb.ts's ticketTypes/visitorCategories
+// tables), each Ticket Type x Category combination carrying its own
+// editable price — replacing the old fixed waterpark/companion ticketType
+// enum and the hardcoded-free under_two/person_of_determination/senior
+// categories. A line's price of 0 is simply "free" (no special-casing
+// needed for discount/VAT/fees — a percentage of 0 is 0); the only place
+// category matters is whether a line counts toward the group-discount
+// tier's ticket-count threshold, which this derives from the line actually
+// costing something (matching the old free-categories-never-count and
+// paid-categories-always-count behavior, but generalized to any price).
+export type PrdPriceInput = { id: number; name: string; code: string; unitPrice: string };
 export type PrdDiscountTierInput = { id: number; minTickets: number; maxTickets: number | null; percentage: string };
-export type PrdTicketLineInput = { rate: PrdRateInput; ticketType: PrdTicketType; freeEntryCategory?: PrdFreeEntryCategory | null };
+export type PrdTicketLineInput = { price: PrdPriceInput; ticketTypeId: number; categoryId: number };
 
 function percentageToBasisPoints(value: string) {
   if (!/^\d+(\.\d{1,2})?$/.test(value) || Number(value) < 0 || Number(value) > 100) throw new Error("Discount percentages must be between 0 and 100");
@@ -116,24 +125,26 @@ export function calculatePrdPurchasePricing(input: {
   // PRD Round 4, Section 5 (Partner/Entity Discounts): a selected partner
   // entity replaces the automatic group-size tier entirely (never stacks on
   // top of it) with its OWN per-ticket-type negotiated rate — e.g. 10% on
-  // Waterpark but 20% on Companion. Passing this object at all (even {})
-  // means a partner entity is selected; a ticket type absent from it gets
-  // 0%, it does NOT fall back to the group-size tier.
-  overrideDiscountByTicketType?: Partial<Record<PrdTicketType, string>>;
+  // Water Park Entry but 20% on Festival Entry. Passing this object at all
+  // (even {}) means a partner entity is selected; a ticket type absent from
+  // it gets 0%, it does NOT fall back to the group-size tier. Keyed by
+  // ticketTypeId (stringified, since object keys are always strings).
+  overrideDiscountByTicketType?: Record<string, string>;
 }) {
   if (!input.lines.length) throw new Error("Add at least one ticket line");
-  const chargeableTicketCount = input.lines.filter((line) => !line.freeEntryCategory).length;
+  const isChargeableLine = (line: PrdTicketLineInput) => Number(line.price.unitPrice) > 0;
+  const chargeableTicketCount = input.lines.filter(isChargeableLine).length;
   const usingPartnerOverride = input.overrideDiscountByTicketType !== undefined;
   const tier = usingPartnerOverride ? undefined : [...input.discountTiers]
     .filter((candidate) => candidate.minTickets <= chargeableTicketCount && (candidate.maxTickets === null || candidate.maxTickets >= chargeableTicketCount))
     .sort((a, b) => b.minTickets - a.minTickets || b.id - a.id)[0];
   const tierBasisPoints = tier ? percentageToBasisPoints(String(tier.percentage)) : 0;
   const basisPointsForLine = (line: PrdTicketLineInput) => usingPartnerOverride
-    ? percentageToBasisPoints(input.overrideDiscountByTicketType![line.ticketType] ?? "0")
+    ? percentageToBasisPoints(input.overrideDiscountByTicketType![String(line.ticketTypeId)] ?? "0")
     : tierBasisPoints;
   const discountPercentageForLine = (line: PrdTicketLineInput) => (basisPointsForLine(line) / 100).toFixed(2);
-  const baseSubtotalMinor = input.lines.reduce((sum, line) => sum + (line.freeEntryCategory ? 0 : moneyToMinor(String(line.rate.unitPrice))), 0);
-  const discountMinorByLine = input.lines.map((line) => line.freeEntryCategory ? 0 : Math.round((moneyToMinor(String(line.rate.unitPrice)) * basisPointsForLine(line)) / 10_000));
+  const baseSubtotalMinor = input.lines.reduce((sum, line) => sum + moneyToMinor(String(line.price.unitPrice)), 0);
+  const discountMinorByLine = input.lines.map((line) => Math.round((moneyToMinor(String(line.price.unitPrice)) * basisPointsForLine(line)) / 10_000));
   const discountAmountMinor = discountMinorByLine.reduce((sum, value) => sum + value, 0);
   // Purchase-level summary percentage: the flat tier rate when one applies,
   // otherwise the blended (discount / pre-discount subtotal) rate — the only
@@ -141,7 +152,7 @@ export function calculatePrdPurchasePricing(input: {
   const discountPercentage = usingPartnerOverride
     ? (baseSubtotalMinor > 0 ? ((discountAmountMinor / baseSubtotalMinor) * 100).toFixed(2) : "0.00")
     : (tierBasisPoints / 100).toFixed(2);
-  const discountedBaseMinorByLine = input.lines.map((line, index) => line.freeEntryCategory ? 0 : moneyToMinor(String(line.rate.unitPrice)) - discountMinorByLine[index]);
+  const discountedBaseMinorByLine = input.lines.map((line, index) => moneyToMinor(String(line.price.unitPrice)) - discountMinorByLine[index]);
   const discountedBaseMinor = discountedBaseMinorByLine.reduce((sum, value) => sum + value, 0);
   const vatAmountMinor = Math.round((discountedBaseMinor * (PRD_VAT_PERCENT * 100)) / 10_000);
   const vatFloors = discountedBaseMinorByLine.map((value) => Math.floor((value * (PRD_VAT_PERCENT * 100)) / 10_000));
@@ -159,13 +170,14 @@ export function calculatePrdPurchasePricing(input: {
   const feeTotalMinor = feeAmounts.reduce((sum, entry) => sum + entry.amountMinor, 0);
   const perTicketFeeMinor = feeAmounts.filter((entry) => entry.fee.applicationBasis === "per_ticket").reduce((sum, entry) => sum + Math.round(entry.amountMinor / Math.max(1, chargeableTicketCount)), 0);
   const lines = input.lines.map((line, index) => {
-    const unitMinor = moneyToMinor(String(line.rate.unitPrice));
-    const lineTotalMinor = line.freeEntryCategory ? 0 : unitMinor - discountMinorByLine[index] + vatMinorByLine[index] + perTicketFeeMinor;
+    const unitMinor = moneyToMinor(String(line.price.unitPrice));
+    const chargeable = isChargeableLine(line);
+    const lineTotalMinor = unitMinor - discountMinorByLine[index] + vatMinorByLine[index] + (chargeable ? perTicketFeeMinor : 0);
     return {
-      ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory || null, rateId: line.rate.id,
-      label: line.rate.name, code: line.rate.code, basePrice: minorToMoney(line.freeEntryCategory ? 0 : unitMinor),
+      ticketTypeId: line.ticketTypeId, categoryId: line.categoryId, priceId: line.price.id,
+      label: line.price.name, code: line.price.code, basePrice: minorToMoney(unitMinor),
       discountPercentage: discountPercentageForLine(line), discountAmount: minorToMoney(discountMinorByLine[index]), vatAmount: minorToMoney(vatMinorByLine[index]),
-      feeAmount: minorToMoney(line.freeEntryCategory ? 0 : perTicketFeeMinor), totalAmount: minorToMoney(lineTotalMinor),
+      feeAmount: minorToMoney(chargeable ? perTicketFeeMinor : 0), totalAmount: minorToMoney(lineTotalMinor),
     };
   });
   return {

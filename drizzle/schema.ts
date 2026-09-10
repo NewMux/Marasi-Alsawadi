@@ -139,6 +139,49 @@ export const ticketNumberSequences = mysqlTable("ticket_number_sequences", {
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
+// PRD Round 7: fully Admin-manageable ticket types (grouped "Water Park" /
+// "Other Tickets") and visitor categories, with an editable price for every
+// Ticket Type x Category combination — replaces the old fixed
+// waterpark/companion ticketType enum and the hardcoded-free
+// under_two/person_of_determination/senior categories.
+export const ticketTypes = mysqlTable("ticket_types", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 128 }).notNull(),
+  code: varchar("code", { length: 48 }).notNull().unique(),
+  ticketGroup: mysqlEnum("ticketGroup", ["water_park", "other_tickets"]).default("water_park").notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type TicketTypeRow = typeof ticketTypes.$inferSelect;
+
+export const visitorCategories = mysqlTable("visitor_categories", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 128 }).notNull(),
+  code: varchar("code", { length: 48 }).notNull().unique(),
+  displayOrder: int("displayOrder").default(0).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type VisitorCategory = typeof visitorCategories.$inferSelect;
+
+export const ticketPrices = mysqlTable("ticket_prices", {
+  id: int("id").autoincrement().primaryKey(),
+  ticketTypeId: int("ticketTypeId").notNull(),
+  categoryId: int("categoryId").notNull(),
+  unitPrice: decimal("unitPrice", { precision: 12, scale: 3 }).default("0").notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({
+  typeCategoryUnique: unique("ticket_prices_type_category_unique").on(table.ticketTypeId, table.categoryId),
+}));
+export type TicketPrice = typeof ticketPrices.$inferSelect;
+
 export const ticketDiscountTiers = mysqlTable("ticket_discount_tiers", {
   id: int("id").autoincrement().primaryKey(),
   minTickets: int("minTickets").notNull(),
@@ -179,8 +222,14 @@ export const ticketPurchaseLines = mysqlTable("ticket_purchase_lines", {
   id: int("id").autoincrement().primaryKey(),
   purchaseId: int("purchaseId").notNull(),
   ticketNumber: varchar("ticketNumber", { length: 40 }).notNull().unique(),
-  ticketType: mysqlEnum("ticketType", ["waterpark", "companion"]).notNull(),
+  // Legacy fixed enums, superseded by ticketTypeId/categoryId (PRD Round 7) —
+  // kept nullable for historical rows (their basePrice/label are already
+  // snapshotted and never re-derived from these), no longer written.
+  ticketType: mysqlEnum("ticketType", ["waterpark", "companion"]),
   freeEntryCategory: mysqlEnum("freeEntryCategory", ["under_two", "person_of_determination", "senior"]),
+  ticketTypeId: int("ticketTypeId"),
+  categoryId: int("categoryId"),
+  // Now holds a ticket_prices.id (the matrix cell), not a service_rates.id.
   rateId: int("rateId"),
   label: varchar("label", { length: 128 }).notNull(),
   basePrice: decimal("basePrice", { precision: 12, scale: 3 }).notNull(),
@@ -518,7 +567,10 @@ export const partnerDiscountRules = mysqlTable("partner_discount_rules", {
   id: int("id").autoincrement().primaryKey(),
   partnerEntityId: int("partnerEntityId").notNull(),
   appliesTo: mysqlEnum("appliesTo", ["ticket_type", "facility"]).notNull(),
+  // Legacy fixed enum, superseded by ticketTypeId (PRD Round 7) — kept
+  // nullable for historical rows, no longer written.
   ticketType: mysqlEnum("ticketType", ["waterpark", "companion"]),
+  ticketTypeId: int("ticketTypeId"),
   facilityTypeId: int("facilityTypeId"),
   facilityTypeName: varchar("facilityTypeName", { length: 160 }),
   discountPercentage: decimal("discountPercentage", { precision: 5, scale: 2 }).notNull(),

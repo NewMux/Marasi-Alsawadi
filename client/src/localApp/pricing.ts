@@ -15,9 +15,7 @@ export {
   formatPrdTicketNumber as formatLocalTicketNumber,
 } from "../../../server/ticketingRules";
 export type {
-  PrdFreeEntryCategory,
-  PrdTicketType,
-  PrdRateInput,
+  PrdPriceInput,
   PrdDiscountTierInput,
   PrdTicketLineInput,
   TicketFeeInput,
