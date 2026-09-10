@@ -127,8 +127,8 @@ export default function TicketDeskPage() {
   });
   const useMatchedCustomer = () => { if (phoneMatch) setForm((current) => ({ ...current, customerId: String(phoneMatch.id) })); };
   const changeCustomer = () => setForm((current) => ({ ...current, customerId: "", customerName: "", customerPhone: `${COUNTRY_DIAL_CODES[current.customerCountry] || COUNTRY_DIAL_CODES[DEFAULT_COUNTRY]} `, customerEmail: "", customerCountry: DEFAULT_COUNTRY }));
-  const updateCategoryQuantity = (categoryId: number, value: string, isCompanion: boolean) => {
-    const clamped = isCompanion && value !== "" ? String(Math.min(2, Math.max(0, Math.floor(Number(value) || 0)))) : value;
+  const updateCategoryQuantity = (categoryId: number, value: string, maxPerBooking: number | null) => {
+    const clamped = maxPerBooking && value !== "" ? String(Math.min(maxPerBooking, Math.max(0, Math.floor(Number(value) || 0)))) : value;
     setCategoryQuantities((current) => ({ ...current, [categoryId]: clamped }));
   };
   const updateGroupLine = (id: number, patch: Partial<GroupLine>) => setGroupLines((current) => current.map((line) => line.id === id ? { ...line, ...patch } : line));
@@ -243,16 +243,16 @@ export default function TicketDeskPage() {
         </div>
         {mode === "group" && <div className="mb-4"><Field label={t("tickets.groupName")}><TextField value={form.groupName} onChange={(event) => setForm({ ...form, groupName: event.target.value })} placeholder="e.g. Al Falaj School Trip"/></Field></div>}
         {mode === "individual" ? <div className="grid gap-3">{visitorCategories.map((category) => {
-          const isCompanion = category.code === "COMPANION";
+          const maxPerBooking = category.maxPerBooking ?? null;
           const price = priceFor(category.id);
           const quantity = categoryQuantities[category.id] || "";
           const rowMissingPrice = attemptedSubmit && Number(quantity) > 0 && !priceIdFor(category.id);
           return <div key={category.id} className={cx("flex items-center justify-between gap-4 rounded-2xl border bg-well p-4", rowMissingPrice ? "border-danger" : "border-divider")}>
             <div className="min-w-0">
               <b className="text-sm">{category.name}</b>
-              <div className="mt-1 text-[11px] leading-4 text-muted">{!price ? t("tickets.noPriceConfigured") : Number(price.unitPrice) === 0 ? t("tickets.freeHint") : money(price.unitPrice)}{isCompanion ? ` · ${t("tickets.companionLimitHint")}` : ""}</div>
+              <div className="mt-1 text-[11px] leading-4 text-muted">{!price ? t("tickets.noPriceConfigured") : Number(price.unitPrice) === 0 ? t("tickets.freeHint") : money(price.unitPrice)}{maxPerBooking ? ` · ${t("tickets.maxPerBookingHint", { max: maxPerBooking })}` : ""}</div>
             </div>
-            <TextField type="number" min={0} max={isCompanion ? 2 : undefined} value={quantity} onChange={(event) => updateCategoryQuantity(category.id, event.target.value, isCompanion)} placeholder="0" className="w-20 shrink-0 text-center"/>
+            <TextField type="number" min={0} max={maxPerBooking ?? undefined} value={quantity} onChange={(event) => updateCategoryQuantity(category.id, event.target.value, maxPerBooking)} placeholder="0" className="w-20 shrink-0 text-center"/>
           </div>;
         })}</div>
         : <div className="grid gap-3">{groupLines.map((line, index) => {
@@ -263,9 +263,9 @@ export default function TicketDeskPage() {
             <div className="mb-3 flex items-center justify-between"><b className="text-sm">{t("tickets.groupLine")} {index + 1}</b><button onClick={() => removeGroupLine(line.id)} aria-label={`Remove group line ${index + 1}`} className="rounded-full p-2 text-muted hover:bg-danger-bg hover:text-danger"><Trash2 size={14}/></button></div>
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label={t("tickets.freeEntry")}><SelectField value={line.categoryId} onChange={(event) => updateGroupLine(line.id, { categoryId: event.target.value })}><option value="">{t("tickets.chooseCategory")}</option>{visitorCategories.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</SelectField></Field>
-              <Field label={t("tickets.quantity")} error={attemptedSubmit && (!line.quantity || line.quantity < 1) ? t("tickets.atLeastOne") : undefined}><TextField type="number" min={1} value={line.quantity} onChange={(event) => updateGroupLine(line.id, { quantity: Math.max(0, Math.floor(Number(event.target.value) || 0)) })} className={attemptedSubmit && (!line.quantity || line.quantity < 1) ? "border-danger ring-1 ring-danger/30" : undefined}/></Field>
+              <Field label={t("tickets.quantity")} error={attemptedSubmit && (!line.quantity || line.quantity < 1) ? t("tickets.atLeastOne") : undefined}><TextField type="number" min={1} max={category?.maxPerBooking ?? undefined} value={line.quantity} onChange={(event) => updateGroupLine(line.id, { quantity: Math.max(0, Math.floor(Number(event.target.value) || 0)) })} className={attemptedSubmit && (!line.quantity || line.quantity < 1) ? "border-danger ring-1 ring-danger/30" : undefined}/></Field>
             </div>
-            {price ? <p className="mt-3 text-[11px] leading-4 text-muted">{category?.name} · {money(price.unitPrice)} {t("tickets.eachOf")} — {line.quantity || 0} {t("tickets.ticketsCount")} {t("tickets.ofThisType")}</p> : <p className="mt-3 text-[11px] leading-4 text-danger">{t("tickets.noPriceConfigured")}</p>}
+            {price ? <p className="mt-3 text-[11px] leading-4 text-muted">{category?.name} · {money(price.unitPrice)} {t("tickets.eachOf")} — {line.quantity || 0} {t("tickets.ticketsCount")} {t("tickets.ofThisType")}{category?.maxPerBooking ? ` · ${t("tickets.maxPerBookingHint", { max: category.maxPerBooking })}` : ""}</p> : <p className="mt-3 text-[11px] leading-4 text-danger">{t("tickets.noPriceConfigured")}</p>}
           </div>;
         })}<SecondaryButton onClick={addGroupLine}><Plus size={15} className="mr-2"/>{t("tickets.addGroupLine")}</SecondaryButton></div>}
         </>}

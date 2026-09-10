@@ -110,6 +110,7 @@ export async function listTicketPrices(includeInactive = false) {
     id: row.price.id, ticketTypeId: row.price.ticketTypeId, categoryId: row.price.categoryId, unitPrice: row.price.unitPrice, isActive: row.price.isActive,
     ticketTypeName: row.ticketType.name, ticketTypeCode: row.ticketType.code, ticketGroup: row.ticketType.ticketGroup,
     categoryName: row.category.name, categoryCode: row.category.code,
+    categoryMaxPerBooking: row.category.maxPerBooking, categoryCountsTowardGroupDiscount: row.category.countsTowardGroupDiscount,
   }));
 }
 

@@ -104,14 +104,16 @@ export const PRD_VAT_PERCENT = 5;
 // editable price — replacing the old fixed waterpark/companion ticketType
 // enum and the hardcoded-free under_two/person_of_determination/senior
 // categories. A line's price of 0 is simply "free" (no special-casing
-// needed for discount/VAT/fees — a percentage of 0 is 0); the only place
-// category matters is whether a line counts toward the group-discount
-// tier's ticket-count threshold, which this derives from the line actually
-// costing something (matching the old free-categories-never-count and
-// paid-categories-always-count behavior, but generalized to any price).
+// needed for discount/VAT/fees — a percentage of 0 is 0). Whether a line
+// counts toward the group-discount tier's ticket-count threshold is its
+// own explicit, Admin-configurable per-category flag (PRD Round 8, Section
+// 2 — restored after Round 7 briefly derived it from price alone), also
+// reused to decide per-ticket fee eligibility (a category excluded from
+// the group-discount count is likewise excluded from per-ticket fees,
+// matching the pre-Round-7 free-category behavior).
 export type PrdPriceInput = { id: number; name: string; code: string; unitPrice: string };
 export type PrdDiscountTierInput = { id: number; minTickets: number; maxTickets: number | null; percentage: string };
-export type PrdTicketLineInput = { price: PrdPriceInput; ticketTypeId: number; categoryId: number };
+export type PrdTicketLineInput = { price: PrdPriceInput; ticketTypeId: number; categoryId: number; countsTowardGroupDiscount: boolean };
 
 function percentageToBasisPoints(value: string) {
   if (!/^\d+(\.\d{1,2})?$/.test(value) || Number(value) < 0 || Number(value) > 100) throw new Error("Discount percentages must be between 0 and 100");
@@ -132,7 +134,7 @@ export function calculatePrdPurchasePricing(input: {
   overrideDiscountByTicketType?: Record<string, string>;
 }) {
   if (!input.lines.length) throw new Error("Add at least one ticket line");
-  const isChargeableLine = (line: PrdTicketLineInput) => Number(line.price.unitPrice) > 0;
+  const isChargeableLine = (line: PrdTicketLineInput) => line.countsTowardGroupDiscount;
   const chargeableTicketCount = input.lines.filter(isChargeableLine).length;
   const usingPartnerOverride = input.overrideDiscountByTicketType !== undefined;
   const tier = usingPartnerOverride ? undefined : [...input.discountTiers]

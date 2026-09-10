@@ -89,9 +89,21 @@ async function resolvePrdPricing(linesInput: Array<z.infer<typeof prdLineInput>>
     if (!price || !price.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "One of the selected ticket prices is no longer active" });
     return {
       price: { id: price.id, name: `${price.ticketTypeName} — ${price.categoryName}`, code: `${price.ticketTypeCode}_${price.categoryCode}`, unitPrice: String(price.unitPrice) },
-      ticketTypeId: price.ticketTypeId, categoryId: price.categoryId,
+      ticketTypeId: price.ticketTypeId, categoryId: price.categoryId, countsTowardGroupDiscount: price.categoryCountsTowardGroupDiscount,
+      categoryName: price.categoryName, categoryMaxPerBooking: price.categoryMaxPerBooking,
     };
   });
+  // PRD Round 8, Section 2: enforce each category's "Max per booking" limit
+  // server-side too (the client clamps the input, but this is the actual
+  // guard) — e.g. Companion's cap of 2 per family.
+  const countByCategory = new Map<number, number>();
+  for (const line of lines) countByCategory.set(line.categoryId, (countByCategory.get(line.categoryId) ?? 0) + 1);
+  for (const line of lines) {
+    const max = line.categoryMaxPerBooking;
+    if (max !== null && max !== undefined && (countByCategory.get(line.categoryId) ?? 0) > max) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: `${line.categoryName} is limited to ${max} per booking` });
+    }
+  }
   const tiers = await listTicketDiscountTiers();
   const feeMap = new Map<number, any>();
   for (const line of lines) for (const fee of await listApplicableTicketFees(line.ticketTypeId)) feeMap.set(fee.id, { ...fee, value: String(fee.value) });
@@ -254,13 +266,18 @@ export const platformRouter = router({
       .query(({ input, ctx }) => listVisitorCategories(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
     create: superAdminProcedure.input(z.object({
       name: z.string().trim().min(2).max(128), code: z.string().trim().min(2).max(48), displayOrder: z.number().int().min(0).max(999).default(0),
+      // PRD Round 8, Section 2: restored behavioral fields from the old
+      // fixed Water Park categories.
+      maxPerBooking: z.number().int().positive().nullable().optional(),
+      countsTowardGroupDiscount: z.boolean().default(true),
     })).mutation(async ({ input, ctx }) => {
-      const category = await createVisitorCategory({ name: input.name, code: normalizeRateCode(input.code), displayOrder: input.displayOrder, createdBy: ctx.user.id });
+      const category = await createVisitorCategory({ name: input.name, code: normalizeRateCode(input.code), displayOrder: input.displayOrder, maxPerBooking: input.maxPerBooking ?? null, countsTowardGroupDiscount: input.countsTowardGroupDiscount, createdBy: ctx.user.id });
       await logActivity(ctx.user.id, "visitor_category.create", "visitor_category", category.id, category.code);
       return category;
     }),
     update: superAdminProcedure.input(z.object({
       id: z.number().int().positive(), name: z.string().trim().min(2).max(128).optional(), displayOrder: z.number().int().min(0).max(999).optional(), isActive: z.boolean().optional(),
+      maxPerBooking: z.number().int().positive().nullable().optional(), countsTowardGroupDiscount: z.boolean().optional(),
     })).mutation(async ({ input, ctx }) => {
       const { id, ...rest } = input;
       const category = await updateVisitorCategory(id, rest);

@@ -52,10 +52,10 @@ describe("ticketing business rules", () => {
   it("applies group discount to chargeable lines, excludes free entry, then calculates 5% VAT", () => {
     const pricing = calculatePrdPurchasePricing({
       lines: [
-        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1 },
-        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1 },
-        { price: { id: 2, name: "Companion", code: "COMPANION", unitPrice: "4.00" }, ticketTypeId: 1, categoryId: 2 },
-        { price: { id: 3, name: "Under 2", code: "UNDER_TWO", unitPrice: "0.00" }, ticketTypeId: 1, categoryId: 5 },
+        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true },
+        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true },
+        { price: { id: 2, name: "Companion", code: "COMPANION", unitPrice: "4.00" }, ticketTypeId: 1, categoryId: 2, countsTowardGroupDiscount: true },
+        { price: { id: 3, name: "Under 2", code: "UNDER_TWO", unitPrice: "0.00" }, ticketTypeId: 1, categoryId: 5, countsTowardGroupDiscount: false },
       ],
       discountTiers: [{ id: 1, minTickets: 3, maxTickets: null, percentage: "10.00" }], fees: [],
     });
@@ -72,8 +72,8 @@ describe("ticketing business rules", () => {
   it("replaces the automatic group discount tier with a partner entity's per-ticket-type override percentage", () => {
     const pricing = calculatePrdPurchasePricing({
       lines: [
-        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1 },
-        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1 },
+        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true },
+        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true },
       ],
       // Only 2 chargeable tickets would normally get 0% under this tier (min 3+).
       discountTiers: [{ id: 1, minTickets: 3, maxTickets: null, percentage: "10.00" }], fees: [],
@@ -90,8 +90,8 @@ describe("ticketing business rules", () => {
   it("gives a ticket type with no matching partner rule 0% instead of falling back to the group tier", () => {
     const pricing = calculatePrdPurchasePricing({
       lines: [
-        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1 },
-        { price: { id: 2, name: "Festival Entry", code: "FESTIVAL", unitPrice: "5.00" }, ticketTypeId: 2, categoryId: 1 },
+        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true },
+        { price: { id: 2, name: "Festival Entry", code: "FESTIVAL", unitPrice: "5.00" }, ticketTypeId: 2, categoryId: 1, countsTowardGroupDiscount: true },
       ],
       discountTiers: [{ id: 1, minTickets: 1, maxTickets: null, percentage: "50.00" }], fees: [],
       overrideDiscountByTicketType: { "1": "10.00" },
@@ -103,7 +103,7 @@ describe("ticketing business rules", () => {
 
   it("does not apply the discount tier when only free-entry lines exist", () => {
     const pricing = calculatePrdPurchasePricing({
-      lines: [{ price: { id: 1, name: "Retiree", code: "RETIREE", unitPrice: "0.00" }, ticketTypeId: 1, categoryId: 3 }],
+      lines: [{ price: { id: 1, name: "Retiree", code: "RETIREE", unitPrice: "0.00" }, ticketTypeId: 1, categoryId: 3, countsTowardGroupDiscount: false }],
       discountTiers: [{ id: 1, minTickets: 1, maxTickets: null, percentage: "50.00" }], fees: [],
     });
     expect(pricing.chargeableTicketCount).toBe(0);

@@ -40,43 +40,57 @@ const MIGRATION_FILES = [
   "drizzle/migrations/0028_add_facility_booking_lifecycle.sql",
   "drizzle/migrations/0029_add_attachments_and_petty_cash_allocations.sql",
   "drizzle/migrations/0030_add_ticket_types_and_categories.sql",
+  "drizzle/migrations/0031_add_visitor_category_rules.sql",
 ];
 
-async function main() {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) throw new Error("DATABASE_URL is required");
-
+// Exported so server/_core/index.ts can run this automatically on every
+// server boot (PRD Round 8: the recurring "insert fails" bug reports —
+// guests, revenue_categories, expense/asset/revenue_records, and now
+// ticket_types — all traced back to a migration that was never actually
+// applied to the live database, because applying it was a manual,
+// easy-to-forget deployment-checklist step. Since `_schema_migrations`
+// already tracks what's applied, running this on every boot is a safe,
+// idempotent no-op once a database is up to date, and eliminates the
+// entire class of bug rather than fixing one more instance of it.
+export async function applyLegacyMigrations(connectionString: string) {
   const connection = await mysql.createConnection({ uri: connectionString, multipleStatements: true });
-  await connection.query(
-    "CREATE TABLE IF NOT EXISTS `_schema_migrations` (`filename` VARCHAR(255) NOT NULL PRIMARY KEY, `applied_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"
-  );
+  try {
+    await connection.query(
+      "CREATE TABLE IF NOT EXISTS `_schema_migrations` (`filename` VARCHAR(255) NOT NULL PRIMARY KEY, `applied_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+    );
 
-  const [appliedRows] = await connection.query("SELECT filename FROM `_schema_migrations`");
-  const applied = new Set((appliedRows as Array<{ filename: string }>).map((row) => row.filename));
+    const [appliedRows] = await connection.query("SELECT filename FROM `_schema_migrations`");
+    const applied = new Set((appliedRows as Array<{ filename: string }>).map((row) => row.filename));
 
-  for (const relativePath of MIGRATION_FILES) {
-    if (applied.has(relativePath)) {
-      console.log(`skip  ${relativePath} (already applied)`);
-      continue;
+    let appliedCount = 0;
+    for (const relativePath of MIGRATION_FILES) {
+      if (applied.has(relativePath)) continue;
+      console.log(`apply ${relativePath} ...`);
+      const raw = readFileSync(join(process.cwd(), relativePath), "utf8");
+      // drizzle-kit's own generated files (e.g. 0000_chubby_marrow.sql) use
+      // "--> statement-breakpoint" to mark statement boundaries for its own
+      // migrator — it isn't valid SQL and must be stripped/split on, not
+      // executed. Hand-written migrations don't contain this marker, so the
+      // split is a no-op for them.
+      const statements = raw.split(/--\>\s*statement-breakpoint/g).map((part) => part.trim()).filter(Boolean);
+      for (const statement of statements) await connection.query(statement);
+      await connection.query("INSERT INTO `_schema_migrations` (filename) VALUES (?)", [relativePath]);
+      console.log(`done  ${relativePath}`);
+      appliedCount += 1;
     }
-    console.log(`apply ${relativePath} ...`);
-    const raw = readFileSync(join(process.cwd(), relativePath), "utf8");
-    // drizzle-kit's own generated files (e.g. 0000_chubby_marrow.sql) use
-    // "--> statement-breakpoint" to mark statement boundaries for its own
-    // migrator — it isn't valid SQL and must be stripped/split on, not
-    // executed. Hand-written migrations don't contain this marker, so the
-    // split is a no-op for them.
-    const statements = raw.split(/--\>\s*statement-breakpoint/g).map((part) => part.trim()).filter(Boolean);
-    for (const statement of statements) await connection.query(statement);
-    await connection.query("INSERT INTO `_schema_migrations` (filename) VALUES (?)", [relativePath]);
-    console.log(`done  ${relativePath}`);
+    return { appliedCount, totalCount: MIGRATION_FILES.length };
+  } finally {
+    await connection.end();
   }
-
-  await connection.end();
-  console.log("All migrations applied.");
 }
 
-main().catch((error) => {
-  console.error("Migration failed:", error);
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) throw new Error("DATABASE_URL is required");
+  applyLegacyMigrations(connectionString)
+    .then(({ appliedCount, totalCount }) => console.log(`All migrations applied (${appliedCount} newly applied, ${totalCount} total).`))
+    .catch((error) => {
+      console.error("Migration failed:", error);
+      process.exit(1);
+    });
+}

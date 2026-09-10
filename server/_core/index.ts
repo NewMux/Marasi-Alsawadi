@@ -7,6 +7,7 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { applyLegacyMigrations } from "../scripts/applyLegacyMigrations";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -55,7 +56,26 @@ export function createApp() {
   return app;
 }
 
+// PRD Round 8: applying a new migration to the live database was a manual,
+// easy-to-forget deployment-checklist step — the direct cause of repeated
+// "insert fails" bug reports (guests, revenue_categories, expense/asset/
+// revenue_records, and now ticket_types) whenever a round shipped a schema
+// change the operator hadn't separately applied yet. Running it here, before
+// the app accepts any request, makes every deploy self-migrating; it's a
+// safe no-op once `_schema_migrations` shows a database is already current.
+async function runStartupMigrations() {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) return;
+  try {
+    const { appliedCount, totalCount } = await applyLegacyMigrations(connectionString);
+    console.log(appliedCount ? `Applied ${appliedCount} pending database migration(s) (${totalCount} total).` : `Database schema is up to date (${totalCount} migrations).`);
+  } catch (error) {
+    console.error("Startup database migration failed — the app will still start, but some features may not work until this is resolved:", error);
+  }
+}
+
 export async function startServer() {
+  await runStartupMigrations();
   const app = createApp();
   const server = createServer(app);
   // development mode uses Vite, production mode uses static files

@@ -161,6 +161,13 @@ export const visitorCategories = mysqlTable("visitor_categories", {
   name: varchar("name", { length: 128 }).notNull(),
   code: varchar("code", { length: 48 }).notNull().unique(),
   displayOrder: int("displayOrder").default(0).notNull(),
+  // PRD Round 8, Section 2: restored behavioral fields from the old fixed
+  // Water Park categories — max per booking (e.g. Companion's cap of 2 per
+  // family; null = unlimited) and whether this category's tickets count
+  // toward the group-discount tier's ticket-count threshold (the old free
+  // categories — Retiree, Special Needs, Under 2 — were excluded).
+  maxPerBooking: int("maxPerBooking"),
+  countsTowardGroupDiscount: boolean("countsTowardGroupDiscount").default(true).notNull(),
   isActive: boolean("isActive").default(true).notNull(),
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),

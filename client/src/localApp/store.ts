@@ -316,7 +316,7 @@ export function previewPurchase(lines: PurchaseLineDraft[]) {
       // its ticketType (the old fixed model had no zero-priced rate row of
       // its own for "senior"/"person_of_determination"/"under_two").
       price: { id: rate.id, name: rate.name, code: rate.code, unitPrice: line.freeEntryCategory ? "0.000" : rate.unitPrice },
-      ticketTypeId: 1, categoryId: localCategoryId(line.ticketType, line.freeEntryCategory),
+      ticketTypeId: 1, categoryId: localCategoryId(line.ticketType, line.freeEntryCategory), countsTowardGroupDiscount: !line.freeEntryCategory,
     })),
     discountTiers: data.discountTiers.filter((tier) => tier.active),
     fees: data.fees.filter((fee) => fee.active),
