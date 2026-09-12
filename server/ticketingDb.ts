@@ -52,6 +52,12 @@ export async function getTicketType(id: number) {
   return rows[0];
 }
 
+export async function getTicketTypeByCode(code: string) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select().from(ticketTypes).where(eq(ticketTypes.code, code)).limit(1);
+  return rows[0];
+}
+
 // A new ticket type or category must immediately have a (zero-priced) cell
 // for every category/type it's crossed with, so the Category Pricing matrix
 // always stays a complete grid the Admin can fill in — never a partial one
@@ -599,6 +605,15 @@ export async function deletePartnerDiscountRule(id: number) {
 // rather than compared in JS (the mysql2 driver returns DATE columns as JS
 // Date objects, not "YYYY-MM-DD" strings, which would need careful,
 // timezone-safe parsing to compare correctly).
+//
+// PRD Round 9, Section 5: ordered by discount DESC, not id DESC. Migration
+// 0030 collapsed every legacy rule (old fixed 'waterpark' AND 'companion'
+// enums alike) onto the single new Water Park Entry ticket type, so an
+// entity can legitimately hold two overlapping rules for one ticket type.
+// Picking by newest id made which one applied arbitrary — one silently
+// shadowed the other, which is what "the discount sometimes doesn't apply"
+// looked like on the desk. The partner is now always given the best rule
+// they actually hold.
 export async function resolveActivePartnerDiscountRule(partnerEntityId: number, appliesTo: "ticket_type" | "facility", match: { ticketTypeId?: number; facilityTypeId?: number }) {
   const db = await getDb(); if (!db) return undefined;
   const conditions = [
@@ -607,7 +622,7 @@ export async function resolveActivePartnerDiscountRule(partnerEntityId: number, 
   ];
   if (appliesTo === "ticket_type" && match.ticketTypeId) conditions.push(eq(partnerDiscountRules.ticketTypeId, match.ticketTypeId));
   if (appliesTo === "facility" && match.facilityTypeId) conditions.push(eq(partnerDiscountRules.facilityTypeId, match.facilityTypeId));
-  const rows = await db.select().from(partnerDiscountRules).where(and(...conditions)).orderBy(desc(partnerDiscountRules.id)).limit(1);
+  const rows = await db.select().from(partnerDiscountRules).where(and(...conditions)).orderBy(desc(partnerDiscountRules.discountPercentage), desc(partnerDiscountRules.id)).limit(1);
   return rows[0];
 }
 
@@ -1436,4 +1451,78 @@ export async function deletePettyCashSpendWithExpense(id: number) {
     await tx.delete(pettyCashSpends).where(eq(pettyCashSpends.id, id));
     return spend;
   });
+}
+
+// PRD Round 9, Section 11: the combined "Tickets" revenue figure stays the
+// headline, with this as the per-ticket-type breakdown behind it. Summed
+// from the purchase lines (not finance entries, which only carry one
+// aqua_park total per purchase) so each ticket type's own earnings are
+// visible; refunded purchases are excluded, matching the headline total.
+export async function summariseTicketRevenueByType(range: { from: string; to: string }) {
+  const db = await getDb(); if (!db) return [];
+  const rows = await db.select({
+    ticketTypeId: ticketPurchaseLines.ticketTypeId,
+    ticketTypeName: ticketTypes.name,
+    ticketGroup: ticketTypes.ticketGroup,
+    ticketCount: sql<number>`COUNT(*)`,
+    baseSubtotal: sql<string>`SUM(${ticketPurchaseLines.basePrice})`,
+    discountAmount: sql<string>`SUM(${ticketPurchaseLines.discountAmount})`,
+    totalAmount: sql<string>`SUM(${ticketPurchaseLines.totalAmount})`,
+  })
+    .from(ticketPurchaseLines)
+    .innerJoin(ticketPurchases, eq(ticketPurchaseLines.purchaseId, ticketPurchases.id))
+    .leftJoin(ticketTypes, eq(ticketPurchaseLines.ticketTypeId, ticketTypes.id))
+    .where(and(eq(ticketPurchases.status, "issued"), sql`${ticketPurchases.visitDate} >= ${range.from}`, sql`${ticketPurchases.visitDate} <= ${range.to}`))
+    .groupBy(ticketPurchaseLines.ticketTypeId, ticketTypes.name, ticketTypes.ticketGroup)
+    .orderBy(desc(sql`SUM(${ticketPurchaseLines.totalAmount})`));
+  return rows.map((row) => ({
+    ticketTypeId: row.ticketTypeId,
+    // Purchases issued before Round 7 carry no ticketTypeId — they are still
+    // real revenue, so they are reported rather than dropped.
+    ticketTypeName: row.ticketTypeName ?? "Water Park (legacy)",
+    ticketGroup: row.ticketGroup ?? "water_park",
+    ticketCount: Number(row.ticketCount || 0),
+    baseSubtotal: Number(row.baseSubtotal || 0).toFixed(3),
+    discountAmount: Number(row.discountAmount || 0).toFixed(3),
+    totalAmount: Number(row.totalAmount || 0).toFixed(3),
+  }));
+}
+
+// PRD Round 9, Section 10: before an Admin retires or removes a library
+// entry, say exactly what else in the system is built on it ("This change
+// affects pricing for: Water Park Entry, Oman Festival"), so the decision is
+// an informed one rather than a silent break discovered later at the desk.
+export async function describeSettingDependents(entity: "ticket_type" | "visitor_category" | "revenue_category" | "expense_category" | "asset_category" | "facility_type" | "addon_service" | "partner_entity", id: number) {
+  const db = await getDb(); if (!db) return [];
+  const affected: string[] = [];
+  const push = (label: string, rows: Array<{ name?: string | null }> | number) => {
+    if (typeof rows === "number") { if (rows > 0) affected.push(`${label} (${rows})`); return; }
+    if (rows.length) affected.push(`${label}: ${rows.map((row) => row.name).filter(Boolean).join(", ")}`);
+  };
+  const countOf = async (query: Promise<Array<{ total: number }>>) => Number((await query)[0]?.total || 0);
+
+  if (entity === "ticket_type") {
+    push("Category pricing", await db.select({ name: visitorCategories.name }).from(ticketPrices).innerJoin(visitorCategories, eq(ticketPrices.categoryId, visitorCategories.id)).where(eq(ticketPrices.ticketTypeId, id)));
+    push("Fee items", await db.select({ name: ticketFeeDefinitions.name }).from(serviceRateFees).innerJoin(ticketFeeDefinitions, eq(serviceRateFees.feeId, ticketFeeDefinitions.id)).where(and(eq(serviceRateFees.rateId, id), eq(serviceRateFees.isActive, true))));
+    push("Partner discount rules", await db.select({ name: partnerEntities.name }).from(partnerDiscountRules).innerJoin(partnerEntities, eq(partnerDiscountRules.partnerEntityId, partnerEntities.id)).where(and(eq(partnerDiscountRules.ticketTypeId, id), eq(partnerDiscountRules.isActive, true))));
+    push("Issued tickets", await countOf(db.select({ total: sql<number>`COUNT(*)` }).from(ticketPurchaseLines).where(eq(ticketPurchaseLines.ticketTypeId, id))));
+  }
+  if (entity === "visitor_category") {
+    push("Category pricing", await db.select({ name: ticketTypes.name }).from(ticketPrices).innerJoin(ticketTypes, eq(ticketPrices.ticketTypeId, ticketTypes.id)).where(eq(ticketPrices.categoryId, id)));
+    push("Issued tickets", await countOf(db.select({ total: sql<number>`COUNT(*)` }).from(ticketPurchaseLines).where(eq(ticketPurchaseLines.categoryId, id))));
+  }
+  if (entity === "revenue_category") {
+    push("Facility types", await db.select({ name: facilityTypes.name }).from(facilityTypes).where(eq(facilityTypes.revenueCategoryId, id)));
+    push("Add-on services", await db.select({ name: addonServices.name }).from(addonServices).where(eq(addonServices.revenueCategoryId, id)));
+    push("Revenue records", await countOf(db.select({ total: sql<number>`COUNT(*)` }).from(revenueRecords).where(eq(revenueRecords.categoryId, id))));
+  }
+  if (entity === "expense_category") push("Expense records", await countOf(db.select({ total: sql<number>`COUNT(*)` }).from(expenseRecords).where(eq(expenseRecords.categoryId, id))));
+  if (entity === "asset_category") push("Asset records", await countOf(db.select({ total: sql<number>`COUNT(*)` }).from(assetRecords).where(eq(assetRecords.categoryId, id))));
+  if (entity === "facility_type") {
+    push("Partner discount rules", await db.select({ name: partnerEntities.name }).from(partnerDiscountRules).innerJoin(partnerEntities, eq(partnerDiscountRules.partnerEntityId, partnerEntities.id)).where(and(eq(partnerDiscountRules.facilityTypeId, id), eq(partnerDiscountRules.isActive, true))));
+    push("Bookings", await countOf(db.select({ total: sql<number>`COUNT(*)` }).from(facilityBookings).where(eq(facilityBookings.facilityTypeId, id))));
+  }
+  if (entity === "addon_service") push("Booking add-ons", await countOf(db.select({ total: sql<number>`COUNT(*)` }).from(facilityBookingAddons).where(eq(facilityBookingAddons.addonServiceId, id))));
+  if (entity === "partner_entity") push("Discount rules", await countOf(db.select({ total: sql<number>`COUNT(*)` }).from(partnerDiscountRules).where(eq(partnerDiscountRules.partnerEntityId, id))));
+  return affected;
 }

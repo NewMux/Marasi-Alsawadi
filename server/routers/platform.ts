@@ -25,7 +25,8 @@ import {
   listSalesTransactionLines, listSalesTransactions, listTicketFees, recordTicketScan, replaceFeeAssignments,
   searchCustomers, getCustomerByPhone, updateExpenseCategory, updateExpenseRecord, updateTicketFee,
   createPrdTicketPurchase, listTicketDiscountTiers, createTicketDiscountTier, updateTicketDiscountTier, deleteTicketDiscountTier,
-  listTicketTypes, getTicketType, createTicketType, updateTicketType, listVisitorCategories, createVisitorCategory, updateVisitorCategory, listTicketPrices, upsertTicketPrice,
+  listTicketTypes, getTicketType, getTicketTypeByCode, createTicketType, updateTicketType, listVisitorCategories, createVisitorCategory, updateVisitorCategory, listTicketPrices, upsertTicketPrice,
+  summariseTicketRevenueByType, describeSettingDependents,
   listPartnerEntities, getPartnerEntity, createPartnerEntity, updatePartnerEntity, deletePartnerEntity,
   listPartnerDiscountRules, createPartnerDiscountRule, updatePartnerDiscountRule, deletePartnerDiscountRule, resolveActivePartnerDiscountRule,
   listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
@@ -251,15 +252,35 @@ export const platformRouter = router({
       await logActivity(ctx.user.id, "ticket_type.create", "ticket_type", type.id, type.code);
       return type;
     }),
+    // PRD Round 9, Section 2: the code is editable after creation. Nothing
+    // downstream re-reads it — purchase lines keep their own label snapshot
+    // and reference the type by id — so a correction here cannot rewrite or
+    // mislabel an already-issued ticket. It stays unique, since the code is
+    // what identifies the type to an operator.
     update: superAdminProcedure.input(z.object({
-      id: z.number().int().positive(), name: z.string().trim().min(2).max(128).optional(), ticketGroup: z.enum(["water_park", "other_tickets"]).optional(), isActive: z.boolean().optional(),
+      id: z.number().int().positive(), name: z.string().trim().min(2).max(128).optional(), code: z.string().trim().min(2).max(48).optional(), ticketGroup: z.enum(["water_park", "other_tickets"]).optional(), isActive: z.boolean().optional(),
     })).mutation(async ({ input, ctx }) => {
-      const { id, ...rest } = input;
-      const type = await updateTicketType(id, rest);
+      const { id, code, ...rest } = input;
+      const patch: Record<string, unknown> = { ...rest };
+      if (code !== undefined) {
+        const normalized = normalizeRateCode(code);
+        const clash = await getTicketTypeByCode(normalized);
+        if (clash && clash.id !== id) throw new TRPCError({ code: "BAD_REQUEST", message: `Code ${normalized} is already used by ${clash.name}` });
+        patch.code = normalized;
+      }
+      const type = await updateTicketType(id, patch);
       if (!type) throw new TRPCError({ code: "NOT_FOUND", message: "Ticket type was not found" });
-      await logActivity(ctx.user.id, "ticket_type.update", "ticket_type", id, JSON.stringify(rest));
+      await logActivity(ctx.user.id, "ticket_type.update", "ticket_type", id, JSON.stringify(patch));
       return type;
     }),
+  }),
+  // PRD Round 9, Section 10: what else is built on a library entry, asked
+  // before the Admin retires or removes it.
+  settings: router({
+    dependents: superAdminProcedure.input(z.object({
+      entity: z.enum(["ticket_type", "visitor_category", "revenue_category", "expense_category", "asset_category", "facility_type", "addon_service", "partner_entity"]),
+      id: z.number().int().positive(),
+    })).query(({ input }) => describeSettingDependents(input.entity, input.id)),
   }),
   visitorCategories: router({
     list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
@@ -593,7 +614,15 @@ export const platformRouter = router({
       }),
       delete: superAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => { const result = await deleteTicketDiscountTier(input.id); await logActivity(ctx.user.id, "ticket_discount.delete", "ticket_discount_tier", input.id); return result; }),
     }),
-    purchasePreview: protectedProcedure.input(z.object({ lines: z.array(prdLineInput).min(1).max(MAX_TICKETS_PER_PURCHASE), partnerEntityId: z.number().int().positive().optional() })).query(async ({ input }) => (await resolvePrdPricing(input.lines, input.partnerEntityId)).pricing),
+    // PRD Round 9, Section 5: the preview also reports which ticket types the
+    // selected partner actually holds a rule for. A partner selection
+    // deliberately replaces the group-discount tier (PRD Round 4, Section 5),
+    // so a ticket type with no rule is charged at 0% — the desk needs to see
+    // that rather than read it as "the discount didn't apply".
+    purchasePreview: protectedProcedure.input(z.object({ lines: z.array(prdLineInput).min(1).max(MAX_TICKETS_PER_PURCHASE), partnerEntityId: z.number().int().positive().optional() })).query(async ({ input }) => {
+      const resolved = await resolvePrdPricing(input.lines, input.partnerEntityId);
+      return { ...resolved.pricing, partnerEntity: resolved.partnerEntity, partnerDiscountByTicketType: resolved.overrideDiscountByTicketType ?? null };
+    }),
     purchaseList: protectedProcedure.input(z.object({ query: z.string().optional(), from: z.string().optional(), to: z.string().optional() }).optional()).query(({ input }) => listPrdTicketPurchases(input?.query, input?.from, input?.to)),
     purchaseLines: protectedProcedure.input(z.object({ purchaseId: z.number().int().positive() })).query(({ input }) => listPrdTicketLines(input.purchaseId)),
     purchaseCreate: protectedProcedure.input(z.object({
@@ -955,6 +984,9 @@ export const platformRouter = router({
     }),
     summary: managerProcedure.input(z.object({ from: z.string(), to: z.string() }))
       .query(({ input }) => getRevenueSummary(input.from, input.to)),
+    // PRD Round 9, Section 11: the breakdown behind the combined Tickets total.
+    ticketRevenueByType: managerProcedure.input(z.object({ from: z.string(), to: z.string() }))
+      .query(({ input }) => summariseTicketRevenueByType({ from: input.from, to: input.to })),
     occupancy: managerProcedure.input(z.object({ from: z.string(), to: z.string() }))
       .query(({ input }) => getOccupancyStats(input.from, input.to)),
     aquaAttendance: managerProcedure.input(z.object({ from: z.string(), to: z.string() }))
