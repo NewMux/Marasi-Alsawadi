@@ -63,7 +63,7 @@ describe("ticketing business rules", () => {
       ],
       // Below the lowest active tier's minimum, so no group discount applies —
       // the fee percentage is the only thing evaluated, and used to throw regardless.
-      discountTiers: [{ id: 1, minTickets: 5, maxTickets: 10, percentage: "5.00" }],
+      discountTiers: [{ id: 1, ticketTypeId: 1, minTickets: 5, maxTickets: 10, percentage: "5.00" }],
       fees: [{ id: 1, name: "Municipality fee", code: "MUNI", calculationType: "percentage", value: "5.0000", applicationBasis: "per_transaction", displayOrder: 1 }],
     });
     expect(pricing.discountAmount).toBe("0.000");
@@ -79,7 +79,7 @@ describe("ticketing business rules", () => {
         { price: { id: 2, name: "Companion", code: "COMPANION", unitPrice: "4.00" }, ticketTypeId: 1, categoryId: 2, countsTowardGroupDiscount: true },
         { price: { id: 3, name: "Under 2", code: "UNDER_TWO", unitPrice: "0.00" }, ticketTypeId: 1, categoryId: 5, countsTowardGroupDiscount: false },
       ],
-      discountTiers: [{ id: 1, minTickets: 3, maxTickets: null, percentage: "10.00" }], fees: [],
+      discountTiers: [{ id: 1, ticketTypeId: 1, minTickets: 3, maxTickets: null, percentage: "10.00" }], fees: [],
     });
     expect(pricing.chargeableTicketCount).toBe(3);
     expect(pricing.discountPercentage).toBe("10.00");
@@ -98,7 +98,7 @@ describe("ticketing business rules", () => {
         { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true },
       ],
       // Only 2 chargeable tickets would normally get 0% under this tier (min 3+).
-      discountTiers: [{ id: 1, minTickets: 3, maxTickets: null, percentage: "10.00" }], fees: [],
+      discountTiers: [{ id: 1, ticketTypeId: 1, minTickets: 3, maxTickets: null, percentage: "10.00" }], fees: [],
       overrideDiscountByTicketType: { "1": "25.00" },
     });
     expect(pricing.discountPercentage).toBe("25.00");
@@ -109,13 +109,36 @@ describe("ticketing business rules", () => {
     expect(pricing.totalAmount).toBe("15.750");
   });
 
+  // PRD Round 9 follow-up (group discounts, Section 2): "25 tickets could be
+  // 20% off for Water Park but only 10% off for a festival" — each ticket
+  // type's tier is looked up against that type's own chargeable count
+  // within the purchase, independently of any other type's lines and count.
+  it("resolves each ticket type's own quantity tier independently within one purchase", () => {
+    const waterParkLines = Array.from({ length: 25 }, () => ({ price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true }));
+    const festivalLines = Array.from({ length: 25 }, () => ({ price: { id: 2, name: "Oman Festival", code: "FESTIVAL", unitPrice: "10.00" }, ticketTypeId: 2, categoryId: 1, countsTowardGroupDiscount: true }));
+    const pricing = calculatePrdPurchasePricing({
+      lines: [...waterParkLines, ...festivalLines],
+      discountTiers: [
+        { id: 1, ticketTypeId: 1, minTickets: 25, maxTickets: null, percentage: "20.00" },
+        { id: 2, ticketTypeId: 2, minTickets: 25, maxTickets: null, percentage: "10.00" },
+      ],
+      fees: [],
+    });
+    expect(pricing.lines.filter((line) => line.ticketTypeId === 1).every((line) => line.discountPercentage === "20.00")).toBe(true);
+    expect(pricing.lines.filter((line) => line.ticketTypeId === 2).every((line) => line.discountPercentage === "10.00")).toBe(true);
+    // Rates differ across the purchase, so the header figure is the blended
+    // rate rather than a single flat percentage.
+    expect(pricing.appliedTier).toBeNull();
+    expect(pricing.discountAmount).toBe("75.000");
+  });
+
   it("gives a ticket type with no matching partner rule 0% instead of falling back to the group tier", () => {
     const pricing = calculatePrdPurchasePricing({
       lines: [
         { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true },
         { price: { id: 2, name: "Festival Entry", code: "FESTIVAL", unitPrice: "5.00" }, ticketTypeId: 2, categoryId: 1, countsTowardGroupDiscount: true },
       ],
-      discountTiers: [{ id: 1, minTickets: 1, maxTickets: null, percentage: "50.00" }], fees: [],
+      discountTiers: [{ id: 1, ticketTypeId: 1, minTickets: 1, maxTickets: null, percentage: "50.00" }], fees: [],
       overrideDiscountByTicketType: { "1": "10.00" },
     });
     expect(pricing.lines[0].discountPercentage).toBe("10.00");
@@ -126,7 +149,7 @@ describe("ticketing business rules", () => {
   it("does not apply the discount tier when only free-entry lines exist", () => {
     const pricing = calculatePrdPurchasePricing({
       lines: [{ price: { id: 1, name: "Retiree", code: "RETIREE", unitPrice: "0.00" }, ticketTypeId: 1, categoryId: 3, countsTowardGroupDiscount: false }],
-      discountTiers: [{ id: 1, minTickets: 1, maxTickets: null, percentage: "50.00" }], fees: [],
+      discountTiers: [{ id: 1, ticketTypeId: 1, minTickets: 1, maxTickets: null, percentage: "50.00" }], fees: [],
     });
     expect(pricing.chargeableTicketCount).toBe(0);
     expect(pricing.discountPercentage).toBe("0.00");

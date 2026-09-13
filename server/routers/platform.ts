@@ -24,7 +24,7 @@ import {
   getServiceRate, listApplicableTicketFees, listExpenseCategories, listExpenseRecords, listFeeAssignments, listRecentTicketScans,
   listSalesTransactionLines, listSalesTransactions, listTicketFees, recordTicketScan, replaceFeeAssignments,
   searchCustomers, getCustomerByPhone, updateExpenseCategory, updateExpenseRecord, updateTicketFee,
-  createPrdTicketPurchase, listTicketDiscountTiers, createTicketDiscountTier, updateTicketDiscountTier, deleteTicketDiscountTier,
+  createPrdTicketPurchase, listTicketDiscountTiers, getTicketDiscountTier, createTicketDiscountTier, updateTicketDiscountTier, deleteTicketDiscountTier, findOverlappingActiveTier,
   listTicketTypes, getTicketType, getTicketTypeByCode, createTicketType, updateTicketType, listVisitorCategories, createVisitorCategory, updateVisitorCategory, listTicketPrices, upsertTicketPrice,
   summariseTicketRevenueByType, describeSettingDependents,
   listPartnerEntities, getPartnerEntity, createPartnerEntity, updatePartnerEntity, deletePartnerEntity,
@@ -599,16 +599,37 @@ export const platformRouter = router({
         }),
       }),
     }),
+    // PRD Round 9 follow-up (group discounts, Section 2): tiers now belong
+    // to exactly one ticket type, mirroring the Water Park / Other Tickets
+    // split already used on the Ticket Desk, with an overlap check so two
+    // active tiers for the same type can never cover the same quantity
+    // range at once (the finding that surfaced this: two Water Park tiers,
+    // 100-500 and 100-1000, both active at 30%, with nothing stopping it).
     discountTiers: router({
-      list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listTicketDiscountTiers(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
-      create: superAdminProcedure.input(z.object({ minTickets: z.number().int().min(1), maxTickets: z.number().int().min(1).nullable().optional(), percentage: z.string().regex(/^\d+(\.\d{1,2})?$/) })).mutation(async ({ input, ctx }) => {
+      list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional(), ticketTypeId: z.number().int().positive().optional() }).optional()).query(({ input, ctx }) => listTicketDiscountTiers(Boolean(input?.includeInactive && ctx.user.role === "super_admin"), input?.ticketTypeId)),
+      create: superAdminProcedure.input(z.object({ ticketTypeId: z.number().int().positive(), minTickets: z.number().int().min(1), maxTickets: z.number().int().min(1).nullable().optional(), percentage: z.string().regex(/^\d+(\.\d{1,2})?$/) })).mutation(async ({ input, ctx }) => {
         if (input.maxTickets !== null && input.maxTickets !== undefined && input.maxTickets < input.minTickets) throw new TRPCError({ code: "BAD_REQUEST", message: "Maximum tickets must be greater than or equal to the minimum" });
         if (Number(input.percentage) < 0 || Number(input.percentage) > 100) throw new TRPCError({ code: "BAD_REQUEST", message: "Discount percentage must be between 0 and 100" });
-        const tier = await createTicketDiscountTier({ minTickets: input.minTickets, maxTickets: input.maxTickets ?? null, percentage: input.percentage, createdBy: ctx.user.id });
+        const overlap = await findOverlappingActiveTier(input.ticketTypeId, input.minTickets, input.maxTickets ?? null);
+        if (overlap) throw new TRPCError({ code: "BAD_REQUEST", message: `Overlaps the existing ${overlap.minTickets}–${overlap.maxTickets ?? "∞"} tier for this ticket type` });
+        const tier = await createTicketDiscountTier({ ticketTypeId: input.ticketTypeId, minTickets: input.minTickets, maxTickets: input.maxTickets ?? null, percentage: input.percentage, createdBy: ctx.user.id });
         await logActivity(ctx.user.id, "ticket_discount.create", "ticket_discount_tier", tier.id, JSON.stringify(input)); return tier;
       }),
       update: superAdminProcedure.input(z.object({ id: z.number().int().positive(), minTickets: z.number().int().min(1).optional(), maxTickets: z.number().int().min(1).nullable().optional(), percentage: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(), isActive: z.boolean().optional() })).mutation(async ({ input, ctx }) => {
         if (input.percentage !== undefined && (Number(input.percentage) < 0 || Number(input.percentage) > 100)) throw new TRPCError({ code: "BAD_REQUEST", message: "Discount percentage must be between 0 and 100" });
+        // A range/activation change can only newly overlap another tier, so
+        // it's only worth checking when one of those fields is in play.
+        if (input.minTickets !== undefined || input.maxTickets !== undefined || input.isActive === true) {
+          const existing = await getTicketDiscountTier(input.id);
+          if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Discount tier not found" });
+          const minTickets = input.minTickets ?? existing.minTickets;
+          const maxTickets = input.maxTickets !== undefined ? input.maxTickets : existing.maxTickets;
+          const willBeActive = input.isActive ?? existing.isActive;
+          if (willBeActive) {
+            const overlap = await findOverlappingActiveTier(existing.ticketTypeId, minTickets, maxTickets, existing.id);
+            if (overlap) throw new TRPCError({ code: "BAD_REQUEST", message: `Overlaps the existing ${overlap.minTickets}–${overlap.maxTickets ?? "∞"} tier for this ticket type` });
+          }
+        }
         const tier = await updateTicketDiscountTier(input.id, input as any); if (!tier) throw new TRPCError({ code: "NOT_FOUND", message: "Discount tier not found" });
         await logActivity(ctx.user.id, "ticket_discount.update", "ticket_discount_tier", input.id, JSON.stringify(input)); return tier;
       }),

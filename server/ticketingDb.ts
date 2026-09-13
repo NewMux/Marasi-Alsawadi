@@ -132,16 +132,34 @@ export async function upsertTicketPrice(ticketTypeId: number, categoryId: number
   return rows[0]!;
 }
 
-export async function listTicketDiscountTiers(includeInactive = false) {
+// PRD Round 9 follow-up: `ticketTypeId` optionally scopes the list to one
+// ticket type's own tiers (the Group discounts settings tab), otherwise
+// every active tier is returned (the pricing engine resolves each line's
+// own type against the full set itself).
+export async function listTicketDiscountTiers(includeInactive = false, ticketTypeId?: number) {
   const db = await getDb(); if (!db) return [];
+  const conditions = [...(includeInactive ? [] : [eq(ticketDiscountTiers.isActive, true)]), ...(ticketTypeId ? [eq(ticketDiscountTiers.ticketTypeId, ticketTypeId)] : [])];
   const query = db.select().from(ticketDiscountTiers).orderBy(desc(ticketDiscountTiers.minTickets), ticketDiscountTiers.id);
-  return includeInactive ? query : query.where(eq(ticketDiscountTiers.isActive, true));
+  return conditions.length ? query.where(and(...conditions)) : query;
 }
 
 export async function getTicketDiscountTier(id: number) {
   const db = await getDb(); if (!db) return undefined;
   const rows = await db.select().from(ticketDiscountTiers).where(eq(ticketDiscountTiers.id, id)).limit(1);
   return rows[0];
+}
+
+// PRD Round 9 follow-up: the findings report flagged two active Water Park
+// tiers overlapping (100-500 and 100-1000, both 30%) with nothing stopping
+// it — a purchase in the overlap could arbitrarily match either row. Two
+// integer ranges (null upper bound = unbounded) overlap when each range's
+// floor falls at or below the other's ceiling.
+export async function findOverlappingActiveTier(ticketTypeId: number, minTickets: number, maxTickets: number | null, excludeId?: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const conditions = [eq(ticketDiscountTiers.ticketTypeId, ticketTypeId), eq(ticketDiscountTiers.isActive, true)];
+  if (excludeId) conditions.push(sql`${ticketDiscountTiers.id} != ${excludeId}`);
+  const candidates = await db.select().from(ticketDiscountTiers).where(and(...conditions));
+  return candidates.find((tier) => minTickets <= (tier.maxTickets ?? Infinity) && tier.minTickets <= (maxTickets ?? Infinity));
 }
 
 export async function createTicketDiscountTier(data: typeof ticketDiscountTiers.$inferInsert) {

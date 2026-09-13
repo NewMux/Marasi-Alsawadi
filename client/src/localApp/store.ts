@@ -69,10 +69,12 @@ function defaultData(): StoreData {
       { id: 1, name: "Water Park ticket", code: "WATERPARK", ticketType: "waterpark", unitPrice: "3.00", active: true },
       { id: 2, name: "Companion ticket", code: "COMPANION", ticketType: "companion", unitPrice: "2.00", active: true },
     ],
+    // The offline fallback app has no separate ticket-type concept (just the
+    // two fixed rates above), so every tier implicitly belongs to that one.
     discountTiers: [
-      { id: 1, minTickets: 25, maxTickets: 29, percentage: "15.00", active: true },
-      { id: 2, minTickets: 50, maxTickets: 99, percentage: "25.00", active: true },
-      { id: 3, minTickets: 100, maxTickets: null, percentage: "50.00", active: true },
+      { id: 1, ticketTypeId: 1, minTickets: 25, maxTickets: 29, percentage: "15.00", active: true },
+      { id: 2, ticketTypeId: 1, minTickets: 50, maxTickets: 99, percentage: "25.00", active: true },
+      { id: 3, ticketTypeId: 1, minTickets: 100, maxTickets: null, percentage: "50.00", active: true },
     ],
     fees: [],
     // Matches the client's actual accounting-sheet categories. Super Admin
@@ -171,7 +173,7 @@ export function removeRate(id: number) {
 
 // ─── Discount tiers ─────────────────────────────────────────────────────────
 export function addDiscountTier(input: { minTickets: number; maxTickets: number | null; percentage: string }) {
-  const tier: LocalDiscountTier = { id: nextId(), ...input, active: true };
+  const tier: LocalDiscountTier = { id: nextId(), ticketTypeId: 1, ...input, active: true };
   data = { ...data, discountTiers: [...data.discountTiers, tier] };
   persist();
   return tier;

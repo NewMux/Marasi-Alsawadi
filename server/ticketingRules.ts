@@ -112,7 +112,7 @@ export const PRD_VAT_PERCENT = 5;
 // the group-discount count is likewise excluded from per-ticket fees,
 // matching the pre-Round-7 free-category behavior).
 export type PrdPriceInput = { id: number; name: string; code: string; unitPrice: string };
-export type PrdDiscountTierInput = { id: number; minTickets: number; maxTickets: number | null; percentage: string };
+export type PrdDiscountTierInput = { id: number; ticketTypeId: number; minTickets: number; maxTickets: number | null; percentage: string };
 export type PrdTicketLineInput = { price: PrdPriceInput; ticketTypeId: number; categoryId: number; countsTowardGroupDiscount: boolean };
 
 // Every caller feeds this a decimal column's value read back through
@@ -144,23 +144,42 @@ export function calculatePrdPurchasePricing(input: {
   const isChargeableLine = (line: PrdTicketLineInput) => line.countsTowardGroupDiscount;
   const chargeableTicketCount = input.lines.filter(isChargeableLine).length;
   const usingPartnerOverride = input.overrideDiscountByTicketType !== undefined;
-  const tier = usingPartnerOverride ? undefined : [...input.discountTiers]
-    .filter((candidate) => candidate.minTickets <= chargeableTicketCount && (candidate.maxTickets === null || candidate.maxTickets >= chargeableTicketCount))
-    .sort((a, b) => b.minTickets - a.minTickets || b.id - a.id)[0];
-  const tierBasisPoints = tier ? percentageToBasisPoints(String(tier.percentage)) : 0;
+  // PRD Round 9 follow-up (group discounts, Section 2): each ticket type
+  // carries its own independent quantity tiers now — e.g. 25 tickets can be
+  // 20% off for Water Park but only 10% off for a festival — so the
+  // qualifying tier is resolved per ticket type, against that type's own
+  // chargeable count within this purchase, not one purchase-wide count. The
+  // Ticket Desk only ever builds a purchase from a single ticket type
+  // today, so this is unchanged in practice for every real purchase; it
+  // also means a future purchase spanning types is priced correctly
+  // line-group by line-group instead of by one ambiguous blended rate.
+  const chargeableCountByType = new Map<number, number>();
+  for (const line of input.lines) if (isChargeableLine(line)) chargeableCountByType.set(line.ticketTypeId, (chargeableCountByType.get(line.ticketTypeId) ?? 0) + 1);
+  const tierByType = new Map<number, PrdDiscountTierInput>();
+  if (!usingPartnerOverride) {
+    for (const [ticketTypeId, count] of Array.from(chargeableCountByType)) {
+      const tier = [...input.discountTiers]
+        .filter((candidate) => candidate.ticketTypeId === ticketTypeId && candidate.minTickets <= count && (candidate.maxTickets === null || candidate.maxTickets >= count))
+        .sort((a, b) => b.minTickets - a.minTickets || b.id - a.id)[0];
+      if (tier) tierByType.set(ticketTypeId, tier);
+    }
+  }
   const basisPointsForLine = (line: PrdTicketLineInput) => usingPartnerOverride
     ? percentageToBasisPoints(input.overrideDiscountByTicketType![String(line.ticketTypeId)] ?? "0")
-    : tierBasisPoints;
+    : percentageToBasisPoints(String(tierByType.get(line.ticketTypeId)?.percentage ?? "0"));
   const discountPercentageForLine = (line: PrdTicketLineInput) => (basisPointsForLine(line) / 100).toFixed(2);
   const baseSubtotalMinor = input.lines.reduce((sum, line) => sum + moneyToMinor(String(line.price.unitPrice)), 0);
   const discountMinorByLine = input.lines.map((line) => Math.round((moneyToMinor(String(line.price.unitPrice)) * basisPointsForLine(line)) / 10_000));
   const discountAmountMinor = discountMinorByLine.reduce((sum, value) => sum + value, 0);
-  // Purchase-level summary percentage: the flat tier rate when one applies,
-  // otherwise the blended (discount / pre-discount subtotal) rate — the only
-  // single number that stays meaningful when lines carry different percentages.
-  const discountPercentage = usingPartnerOverride
-    ? (baseSubtotalMinor > 0 ? ((discountAmountMinor / baseSubtotalMinor) * 100).toFixed(2) : "0.00")
-    : (tierBasisPoints / 100).toFixed(2);
+  // Purchase-level summary percentage: a flat rate when every line was
+  // discounted at the same basis-point rate (true for every purchase today,
+  // since the desk never mixes ticket types in one purchase), otherwise the
+  // blended (discount / pre-discount subtotal) rate — the only single
+  // number that stays meaningful once lines carry different percentages.
+  const distinctBasisPoints = new Set(input.lines.map(basisPointsForLine));
+  const discountPercentage = distinctBasisPoints.size === 1
+    ? (distinctBasisPoints.values().next().value! / 100).toFixed(2)
+    : (baseSubtotalMinor > 0 ? ((discountAmountMinor / baseSubtotalMinor) * 100).toFixed(2) : "0.00");
   const discountedBaseMinorByLine = input.lines.map((line, index) => moneyToMinor(String(line.price.unitPrice)) - discountMinorByLine[index]);
   const discountedBaseMinor = discountedBaseMinorByLine.reduce((sum, value) => sum + value, 0);
   const vatAmountMinor = Math.round((discountedBaseMinor * (PRD_VAT_PERCENT * 100)) / 10_000);
@@ -193,7 +212,11 @@ export function calculatePrdPurchasePricing(input: {
     chargeableTicketCount, discountPercentage, baseSubtotal: minorToMoney(baseSubtotalMinor), discountAmount: minorToMoney(discountAmountMinor),
     vatAmount: minorToMoney(vatAmountMinor), feeTotal: minorToMoney(feeTotalMinor),
     totalAmount: minorToMoney(discountedBaseMinor + vatAmountMinor + feeTotalMinor),
-    appliedTier: tier || null,
+    // A single tier when every chargeable ticket type in this purchase
+    // resolved to the same tier (true for every purchase today); null once
+    // a purchase spans multiple ticket types with different applicable
+    // tiers, since no one tier would describe the whole purchase.
+    appliedTier: (() => { const tiers = Array.from(new Set(tierByType.values())); return tiers.length === 1 ? tiers[0] : null; })(),
     lines,
     fees: feeAmounts.map(({ fee, amountMinor, quantity }) => ({ feeId: fee.id, label: fee.name, code: fee.code, calculationType: fee.calculationType, applicationBasis: fee.applicationBasis, value: String(fee.value), amount: minorToMoney(amountMinor), quantity })),
   };

@@ -191,6 +191,11 @@ export type TicketPrice = typeof ticketPrices.$inferSelect;
 
 export const ticketDiscountTiers = mysqlTable("ticket_discount_tiers", {
   id: int("id").autoincrement().primaryKey(),
+  // PRD Round 9 follow-up (group discounts, Section 2): each ticket type
+  // now has its own independent set of quantity tiers — e.g. 25 tickets can
+  // be 20% off for Water Park but only 10% off for a festival — instead of
+  // one shared table applying everywhere.
+  ticketTypeId: int("ticketTypeId").notNull(),
   minTickets: int("minTickets").notNull(),
   maxTickets: int("maxTickets"),
   percentage: decimal("percentage", { precision: 5, scale: 2 }).notNull(),
