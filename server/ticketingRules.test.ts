@@ -49,6 +49,28 @@ describe("ticketing business rules", () => {
     expect(pricing.totalAmount).toBe("0.315");
   });
 
+  // PRD Round 9 follow-up: ticket_fee_definitions.value is DECIMAL(12,4) —
+  // mysql2 always pads a decimal column's string to its declared scale, so
+  // an ordinary "5%" fee comes back from the database as "5.0000". Before
+  // this fix, percentageToBasisPoints only accepted up to 2 decimal digits,
+  // so any percentage-type fee threw "Discount percentages must be between
+  // 0 and 100" on every single purchase it applied to — reproduced live on
+  // the simplest possible booking (3 tickets, no group tier, no partner).
+  it("accepts a percentage fee value at its actual DECIMAL(12,4) precision instead of throwing", () => {
+    const pricing = calculatePrdPurchasePricing({
+      lines: [
+        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true },
+      ],
+      // Below the lowest active tier's minimum, so no group discount applies —
+      // the fee percentage is the only thing evaluated, and used to throw regardless.
+      discountTiers: [{ id: 1, minTickets: 5, maxTickets: 10, percentage: "5.00" }],
+      fees: [{ id: 1, name: "Municipality fee", code: "MUNI", calculationType: "percentage", value: "5.0000", applicationBasis: "per_transaction", displayOrder: 1 }],
+    });
+    expect(pricing.discountAmount).toBe("0.000");
+    expect(pricing.feeTotal).toBe("0.500");
+    expect(pricing.totalAmount).toBe("11.000");
+  });
+
   it("applies group discount to chargeable lines, excludes free entry, then calculates 5% VAT", () => {
     const pricing = calculatePrdPurchasePricing({
       lines: [

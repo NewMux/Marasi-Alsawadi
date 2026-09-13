@@ -115,8 +115,15 @@ export type PrdPriceInput = { id: number; name: string; code: string; unitPrice:
 export type PrdDiscountTierInput = { id: number; minTickets: number; maxTickets: number | null; percentage: string };
 export type PrdTicketLineInput = { price: PrdPriceInput; ticketTypeId: number; categoryId: number; countsTowardGroupDiscount: boolean };
 
+// Every caller feeds this a decimal column's value read back through
+// mysql2, which always pads a string to the column's declared scale (e.g.
+// ticket_fee_definitions.value is DECIMAL(12,4), so an ordinary "5%" fee
+// comes back as "5.0000") — the format check has to accept whatever
+// precision any of those columns actually store, not just the 2 decimals
+// most of them (discount tiers, partner rules) happen to use. The result is
+// still rounded to the nearest basis point regardless of input precision.
 function percentageToBasisPoints(value: string) {
-  if (!/^\d+(\.\d{1,2})?$/.test(value) || Number(value) < 0 || Number(value) > 100) throw new Error("Discount percentages must be between 0 and 100");
+  if (!/^\d+(\.\d{1,4})?$/.test(value) || Number(value) < 0 || Number(value) > 100) throw new Error("Discount percentages must be between 0 and 100");
   return Math.round(Number(value) * 100);
 }
 
