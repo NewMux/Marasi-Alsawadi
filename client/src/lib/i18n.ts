@@ -278,6 +278,8 @@ const dict = {
   "tickets.incompleteGroupLine": { en: "Group line {index} still needs a category and a quantity.", ar: "السطر {index} ما زال يحتاج فئة وكمية." },
   "tickets.partnerNoRule": { en: "No discount rule for {name} on this ticket type — these tickets are priced at 0% partner discount.", ar: "لا توجد قاعدة خصم لـ {name} على نوع التذكرة هذا — تُسعَّر هذه التذاكر بخصم شريك ٠٪." },
   "tickets.partnerDiscountApplied": { en: "Partner discount applied", ar: "تم تطبيق خصم الشريك" },
+  "tickets.previewFailed": { en: "Could not calculate the price: {message}", ar: "تعذّر احتساب السعر: {message}" },
+  "tickets.previewErrorPill": { en: "Error", ar: "خطأ" },
 
   "settings.dependencyWarningTitle": { en: "This change affects other parts of the system", ar: "يؤثر هذا التغيير على أجزاء أخرى من النظام" },
   "settings.dependencyWarningBody": { en: "\"{name}\" is used by:\n\n{items}\n\nContinue?", ar: "«{name}» مستخدم في:\n\n{items}\n\nهل تريد المتابعة؟" },
