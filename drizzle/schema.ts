@@ -149,6 +149,12 @@ export const ticketTypes = mysqlTable("ticket_types", {
   name: varchar("name", { length: 128 }).notNull(),
   code: varchar("code", { length: 48 }).notNull().unique(),
   ticketGroup: mysqlEnum("ticketGroup", ["water_park", "other_tickets"]).default("water_park").notNull(),
+  // PRD Round 10: VAT moves from one hardcoded system-wide 5% into a direct
+  // per-price field — an apply toggle and its own editable rate, defaulting
+  // to the prior behavior (on, 5%) so migrating existing rows changes
+  // nothing until an Admin edits one.
+  applyVat: boolean("applyVat").default(true).notNull(),
+  vatPercent: decimal("vatPercent", { precision: 5, scale: 2 }).default("5.00").notNull(),
   isActive: boolean("isActive").default(true).notNull(),
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -284,14 +290,19 @@ export const ticketFeeDefinitions = mysqlTable("ticket_fee_definitions", {
 });
 export type TicketFeeDefinition = typeof ticketFeeDefinitions.$inferSelect;
 
+// PRD Round 10, Section 4: `rateId` alone can't tell a ticket type from a
+// facility type apart (both are autoincrement PKs starting at 1, so id=3
+// could mean either) now that a fee item can be assigned to either kind of
+// price — `rateType` disambiguates which table `rateId` points into.
 export const serviceRateFees = mysqlTable("service_rate_fees", {
   id: int("id").autoincrement().primaryKey(),
+  rateType: mysqlEnum("rateType", ["ticket_type", "facility_type"]).default("ticket_type").notNull(),
   rateId: int("rateId").notNull(),
   feeId: int("feeId").notNull(),
   isActive: boolean("isActive").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, (table) => ({
-  rateFeeUnique: unique("service_rate_fee_unique").on(table.rateId, table.feeId),
+  rateFeeUnique: unique("service_rate_fee_unique").on(table.rateType, table.rateId, table.feeId),
 }));
 
 export const salesTransactions = mysqlTable("sales_transactions", {
@@ -675,6 +686,12 @@ export const facilityTypes = mysqlTable("facility_types", {
   pricingMethod: mysqlEnum("pricingMethod", ["hourly", "daily", "fixed"]).notNull(),
   rate: decimal("rate", { precision: 12, scale: 3 }).notNull(),
   revenueCategoryId: int("revenueCategoryId").notNull(),
+  // PRD Round 10: same direct VAT field as ticket types — facility bookings
+  // had no VAT concept at all before this round, so this is a genuinely new
+  // charge, not a relocated one; defaulting on/5% matches what tickets
+  // already charge so nothing looks inconsistent between the two receipts.
+  applyVat: boolean("applyVat").default(true).notNull(),
+  vatPercent: decimal("vatPercent", { precision: 5, scale: 2 }).default("5.00").notNull(),
   isActive: boolean("isActive").default(true).notNull(),
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -704,6 +721,19 @@ export const facilityBookings = mysqlTable("facility_bookings", {
   quantity: decimal("quantity", { precision: 10, scale: 2 }).notNull(),
   facilityAmount: decimal("facilityAmount", { precision: 12, scale: 3 }).notNull(),
   addonsAmount: decimal("addonsAmount", { precision: 12, scale: 3 }).default("0").notNull(),
+  // PRD Round 10: VAT on the facility line's own rate, using its facility
+  // type's VAT setting at the time of booking — snapshotted the same way
+  // discountPercentage already is, so a later edit to the facility type's
+  // VAT rate never reshapes an already-confirmed booking. Never applied to
+  // add-ons, matching how the partner discount already excludes them.
+  vatAmount: decimal("vatAmount", { precision: 12, scale: 3 }).default("0").notNull(),
+  // PRD Round 10, Section 4: a Fee Item can now be assigned to a facility
+  // type — this is the aggregate charge from every fee that applied, on
+  // the facility line only (never add-ons). Kept as one snapshot total
+  // rather than itemized per fee (unlike ticket_purchase_fees for tickets)
+  // — a deliberately smaller lift for this round; the printed receipt
+  // shows one "Fees" line rather than a per-fee breakdown.
+  feeAmount: decimal("feeAmount", { precision: 12, scale: 3 }).default("0").notNull(),
   totalAmount: decimal("totalAmount", { precision: 12, scale: 3 }).notNull(),
   // PRD Round 4, Section 9.3: linked to the Customer Directory the same way
   // ticket_purchases links to guests — customerName stays as a display

@@ -15,6 +15,9 @@ export type TicketReceiptLine = {
   basePrice: string;
   discountAmount: string;
   vatAmount: string;
+  // PRD Round 10: VAT is now a per-ticket-type rate rather than one
+  // hardcoded 5% — printed dynamically instead of a fixed "5%" label.
+  vatPercentage?: string;
   totalAmount: string;
   // Present only on historical lines issued before Round 7 — still used so
   // old receipts keep their bilingual per-category translation on reprint.
@@ -34,6 +37,7 @@ export type TicketReceiptData = {
   baseSubtotal: string;
   discountAmount: string;
   vatAmount: string;
+  vatPercentage?: string;
   totalAmount: string;
   // PRD Section 2 (Partner/Entity Discounts): "the printed ticket should
   // display the entity name and the discount applied, for easy review".
@@ -69,6 +73,7 @@ type ReceiptLineGroup = {
   basePrice: number;
   discountAmount: number;
   vatAmount: number;
+  vatPercentage?: string;
   totalAmount: number;
 };
 
@@ -92,7 +97,7 @@ function groupReceiptLines(lines: TicketReceiptLine[]): ReceiptLineGroup[] {
       groups.push({
         label: line.label, isFree: Number(line.basePrice || 0) === 0, ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory, ticketNumbers: [line.ticketNumber],
         basePrice: Number(line.basePrice || 0), discountAmount: Number(line.discountAmount || 0),
-        vatAmount: Number(line.vatAmount || 0), totalAmount: Number(line.totalAmount || 0),
+        vatAmount: Number(line.vatAmount || 0), vatPercentage: line.vatPercentage, totalAmount: Number(line.totalAmount || 0),
       });
     }
   }
@@ -144,7 +149,7 @@ export function TicketReceiptTicket({ data }: { data: TicketReceiptData }) {
             <tr><td className="label" style={{ fontWeight: 700 }}>{toArabicIndic(index + 1)}) {label.ar}{group.ticketNumbers.length > 1 ? ` ×${group.ticketNumbers.length}` : ""}<br/><span style={{ fontWeight: 400, fontSize: 10 }}>{label.en}{group.ticketNumbers.length > 1 ? ` ×${group.ticketNumbers.length}` : ""}</span></td><td className="value">{ticketRangeLabel(group.ticketNumbers)}</td></tr>
             <tr><td className="label" style={{ fontSize: 10 }}>السعر الأساسي / Base</td><td className="value" style={{ fontSize: 10 }}>{omr(group.basePrice)}</td></tr>
             {group.discountAmount > 0 && <tr><td className="label" style={{ fontSize: 10 }}>الخصم / Discount</td><td className="value" style={{ fontSize: 10 }}>−{omr(group.discountAmount)}</td></tr>}
-            <tr><td className="label" style={{ fontSize: 10 }}>ضريبة ٥٪ / VAT 5%</td><td className="value" style={{ fontSize: 10 }}>{omr(group.vatAmount)}</td></tr>
+            <tr><td className="label" style={{ fontSize: 10 }}>ضريبة {toArabicIndic(Number(group.vatPercentage ?? 0))}٪ / VAT {Number(group.vatPercentage ?? 0)}%</td><td className="value" style={{ fontSize: 10 }}>{omr(group.vatAmount)}</td></tr>
             <tr><td className="label" style={{ fontWeight: 700 }}>الإجمالي / Line Total</td><td className="value" style={{ fontWeight: 700 }}>{omr(group.totalAmount)}{group.isFree ? " — FREE" : ""}</td></tr>
           </tbody></table>
           {index < groups.length - 1 && <div style={{ borderTop: "1px dotted #ccc", margin: "6px 0" }}/>}
@@ -157,7 +162,7 @@ export function TicketReceiptTicket({ data }: { data: TicketReceiptData }) {
         <tr><td className="label">المجموع قبل الضريبة / Subtotal</td><td className="value">{omr(data.baseSubtotal)}</td></tr>
         {Number(data.discountAmount) > 0 && <tr><td className="label">الخصم / Discount</td><td className="value">−{omr(data.discountAmount)}</td></tr>}
         {data.partnerEntityName && <tr><td className="label" style={{ fontSize: 10 }}>جهة شريكة / Partner</td><td className="value" style={{ fontSize: 10 }}>{data.partnerEntityName} ({Number(data.discountPercentage || 0).toFixed(0)}%)</td></tr>}
-        <tr><td className="label">إجمالي الضريبة / Total VAT (5%)</td><td className="value">{omr(data.vatAmount)}</td></tr>
+        <tr><td className="label">إجمالي الضريبة / Total VAT ({Number(data.vatPercentage ?? 0)}%)</td><td className="value">{omr(data.vatAmount)}</td></tr>
       </tbody></table>
 
       <div className="center price" style={{ marginTop: 6 }}>{omr(data.totalAmount)}</div>

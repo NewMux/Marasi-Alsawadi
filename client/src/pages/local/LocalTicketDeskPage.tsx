@@ -25,6 +25,8 @@ function Step({ number, title, detail, active }: { number: string; title: string
   return <div className={cx("flex items-start gap-3 rounded-2xl border p-4", active ? "border-[#bfe7ee] bg-[#eaf6f8]" : "border-divider bg-white")}><span className={cx("grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs font-semibold", active ? "bg-accent text-white" : "bg-fill text-body")}>{number}</span><div><b className="block text-xs text-ink">{title}</b><span className="mt-1 block text-[11px] leading-4 text-muted">{detail}</span></div></div>;
 }
 
+// The offline fallback app has no per-ticket-type VAT setting (PRD Round
+// 10) — it always charges a flat 5%, so the receipt prints that fixed rate.
 function toReceiptData(created: any): TicketReceiptData {
   return {
     customerName: created.customer.fullName,
@@ -33,10 +35,11 @@ function toReceiptData(created: any): TicketReceiptData {
     baseSubtotal: created.purchase.baseSubtotal,
     discountAmount: created.purchase.discountAmount,
     vatAmount: created.purchase.vatAmount,
+    vatPercentage: "5.00",
     totalAmount: created.purchase.totalAmount,
     lines: created.purchase.lines.map((line: any) => ({
       ticketNumber: line.ticketNumber, ticketType: line.ticketType, freeEntryCategory: line.freeEntryCategory,
-      basePrice: line.basePrice, discountAmount: line.discountAmount, vatAmount: line.vatAmount, totalAmount: line.totalAmount,
+      basePrice: line.basePrice, discountAmount: line.discountAmount, vatAmount: line.vatAmount, vatPercentage: "5.00", totalAmount: line.totalAmount,
     })),
   };
 }
@@ -215,7 +218,7 @@ export default function LocalTicketDeskPage() {
           {pricing && <div className="mt-4 border-t border-white/15 pt-3 text-xs text-[#d6d6da]">
             <div className="flex justify-between py-1"><span>{t("tickets.baseSubtotal")}</span><span>{money(pricing.baseSubtotal)}</span></div>
             <div className="flex justify-between py-1"><span>{t("tickets.groupDiscount")} ({pricing.discountPercentage}%)</span><span>−{money(pricing.discountAmount)}</span></div>
-            <div className="flex justify-between py-1"><span>{t("tickets.vatAfterDiscount")}</span><span>{money(pricing.vatAmount)}</span></div>
+            <div className="flex justify-between py-1"><span>{t("tickets.vatAfterDiscount", { rate: pricing.vatPercentage ?? "0.00" })}</span><span>{money(pricing.vatAmount)}</span></div>
             {pricing.fees?.map((fee: any) => <div key={fee.feeId} className="flex justify-between py-1"><span>{fee.label}</span><span>{money(fee.amount)}</span></div>)}
             {mode === "individual" && <div className="mt-2 border-t border-white/15 pt-2">{pricing.lines.map((line: any, index: number) => <div key={`${line.rateId}-${index}`} className="flex justify-between py-1"><span>{line.label}{line.freeEntryCategory ? ` · ${t(freeKeys[line.freeEntryCategory as PrdFreeEntryCategory])}` : ""}</span><span>{money(line.totalAmount)}</span></div>)}</div>}
           </div>}

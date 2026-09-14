@@ -97,7 +97,6 @@ export function calculateTicketPricing(input: {
   };
 }
 
-export const PRD_VAT_PERCENT = 5;
 // PRD Round 7, Section 1.3: ticket types and visitor categories are now
 // fully Admin-managed (server/ticketingDb.ts's ticketTypes/visitorCategories
 // tables), each Ticket Type x Category combination carrying its own
@@ -111,9 +110,17 @@ export const PRD_VAT_PERCENT = 5;
 // reused to decide per-ticket fee eligibility (a category excluded from
 // the group-discount count is likewise excluded from per-ticket fees,
 // matching the pre-Round-7 free-category behavior).
+//
+// PRD Round 10, Section 2: VAT is no longer one hardcoded system-wide
+// PRD_VAT_PERCENT — it's each line's own ticket type's VAT setting
+// (on/off + rate), resolved by the caller (server/routers/platform.ts) from
+// ticket_types.applyVat/vatPercent and carried on the line itself, the same
+// way price and countsTowardGroupDiscount already are. "0" here means
+// either VAT is genuinely off for that type, or (pre-Round-10 legacy calls)
+// no rate was supplied at all — both computed identically as no VAT.
 export type PrdPriceInput = { id: number; name: string; code: string; unitPrice: string };
 export type PrdDiscountTierInput = { id: number; ticketTypeId: number; minTickets: number; maxTickets: number | null; percentage: string };
-export type PrdTicketLineInput = { price: PrdPriceInput; ticketTypeId: number; categoryId: number; countsTowardGroupDiscount: boolean };
+export type PrdTicketLineInput = { price: PrdPriceInput; ticketTypeId: number; categoryId: number; countsTowardGroupDiscount: boolean; vatPercent?: string };
 
 // Every caller feeds this a decimal column's value read back through
 // mysql2, which always pads a string to the column's declared scale (e.g.
@@ -125,6 +132,27 @@ export type PrdTicketLineInput = { price: PrdPriceInput; ticketTypeId: number; c
 function percentageToBasisPoints(value: string) {
   if (!/^\d+(\.\d{1,4})?$/.test(value) || Number(value) < 0 || Number(value) > 100) throw new Error("Discount percentages must be between 0 and 100");
   return Math.round(Number(value) * 100);
+}
+
+// Applies one basis-point rate to a set of minor amounts, floor-rounding
+// each one and then handing the shortfall against the exactly-rounded
+// total to whichever amounts have the largest fractional remainder — so
+// many small amounts at the same rate sum to the same total a single
+// rounding of their sum would give, rather than each amount's own 0.5
+// rounding independently drifting the total up or down as the count grows
+// (e.g. 25 lines each rounding a .5 baisa VAT remainder up would overshoot
+// the true total by 25 baisa; grouped, they instead absorb it as ±1 baisa
+// on only as many lines as the shortfall actually requires).
+function distributeBasisPoints(amountsMinor: number[], basisPoints: number) {
+  const totalMinor = amountsMinor.reduce((sum, value) => sum + value, 0);
+  const exactTotal = Math.round((totalMinor * basisPoints) / 10_000);
+  const floors = amountsMinor.map((value) => Math.floor((value * basisPoints) / 10_000));
+  const remainders = amountsMinor.map((value, index) => ({ index, remainder: (value * basisPoints) % 10_000 }));
+  const result = [...floors];
+  let remaining = exactTotal - floors.reduce((sum, value) => sum + value, 0);
+  remainders.sort((a, b) => b.remainder - a.remainder || a.index - b.index);
+  for (let i = 0; i < remainders.length && remaining > 0; i += 1, remaining -= 1) result[remainders[i].index] += 1;
+  return result;
 }
 
 export function calculatePrdPurchasePricing(input: {
@@ -182,13 +210,31 @@ export function calculatePrdPurchasePricing(input: {
     : (baseSubtotalMinor > 0 ? ((discountAmountMinor / baseSubtotalMinor) * 100).toFixed(2) : "0.00");
   const discountedBaseMinorByLine = input.lines.map((line, index) => moneyToMinor(String(line.price.unitPrice)) - discountMinorByLine[index]);
   const discountedBaseMinor = discountedBaseMinorByLine.reduce((sum, value) => sum + value, 0);
-  const vatAmountMinor = Math.round((discountedBaseMinor * (PRD_VAT_PERCENT * 100)) / 10_000);
-  const vatFloors = discountedBaseMinorByLine.map((value) => Math.floor((value * (PRD_VAT_PERCENT * 100)) / 10_000));
-  const vatRemainders = discountedBaseMinorByLine.map((value, index) => ({ index, remainder: (value * (PRD_VAT_PERCENT * 100)) % 10_000 }));
-  const vatMinorByLine = [...vatFloors];
-  let vatCentsRemaining = vatAmountMinor - vatFloors.reduce((sum, value) => sum + value, 0);
-  vatRemainders.sort((a, b) => b.remainder - a.remainder || a.index - b.index);
-  for (let index = 0; index < vatRemainders.length && vatCentsRemaining > 0; index += 1, vatCentsRemaining -= 1) vatMinorByLine[vatRemainders[index].index] += 1;
+  // PRD Round 10, Section 2: each line's VAT comes from its own ticket
+  // type's rate rather than one hardcoded system-wide rate — lines sharing
+  // a rate (every line in a purchase today, since the desk never mixes
+  // ticket types) are grouped and distributed together via
+  // distributeBasisPoints, so a large group booking's per-baisa rounding
+  // matches rounding the total once, not each line independently.
+  const vatBasisPointsForLine = (line: PrdTicketLineInput) => percentageToBasisPoints(line.vatPercent ?? "0");
+  const vatMinorByLine = new Array<number>(input.lines.length).fill(0);
+  const lineIndexesByVatBasisPoints = new Map<number, number[]>();
+  input.lines.forEach((line, index) => {
+    const basisPoints = vatBasisPointsForLine(line);
+    lineIndexesByVatBasisPoints.set(basisPoints, [...(lineIndexesByVatBasisPoints.get(basisPoints) ?? []), index]);
+  });
+  for (const [basisPoints, indexes] of Array.from(lineIndexesByVatBasisPoints)) {
+    const distributed = distributeBasisPoints(indexes.map((index) => discountedBaseMinorByLine[index]), basisPoints);
+    indexes.forEach((index, i) => { vatMinorByLine[index] = distributed[i]; });
+  }
+  const vatAmountMinor = vatMinorByLine.reduce((sum, value) => sum + value, 0);
+  // Purchase-level summary rate, same "flat when uniform, else blended"
+  // pattern as discountPercentage — every purchase today is a single
+  // ticket type, so this is always the flat rate in practice.
+  const distinctVatBasisPoints = new Set(input.lines.map(vatBasisPointsForLine));
+  const vatPercentage = distinctVatBasisPoints.size === 1
+    ? (distinctVatBasisPoints.values().next().value! / 100).toFixed(2)
+    : (discountedBaseMinor > 0 ? ((vatAmountMinor / discountedBaseMinor) * 100).toFixed(2) : "0.00");
   const applicableFees = [...input.fees].sort((a, b) => a.displayOrder - b.displayOrder || a.id - b.id);
   const feeAmounts = applicableFees.map((fee) => {
     const value = fee.calculationType === "percentage" ? Math.round((discountedBaseMinor * percentageToBasisPoints(String(fee.value))) / 10_000) : moneyToMinor(Number(fee.value).toFixed(3));
@@ -204,13 +250,13 @@ export function calculatePrdPurchasePricing(input: {
     return {
       ticketTypeId: line.ticketTypeId, categoryId: line.categoryId, priceId: line.price.id,
       label: line.price.name, code: line.price.code, basePrice: minorToMoney(unitMinor),
-      discountPercentage: discountPercentageForLine(line), discountAmount: minorToMoney(discountMinorByLine[index]), vatAmount: minorToMoney(vatMinorByLine[index]),
+      discountPercentage: discountPercentageForLine(line), discountAmount: minorToMoney(discountMinorByLine[index]), vatAmount: minorToMoney(vatMinorByLine[index]), vatPercentage: (vatBasisPointsForLine(line) / 100).toFixed(2),
       feeAmount: minorToMoney(chargeable ? perTicketFeeMinor : 0), totalAmount: minorToMoney(lineTotalMinor),
     };
   });
   return {
     chargeableTicketCount, discountPercentage, baseSubtotal: minorToMoney(baseSubtotalMinor), discountAmount: minorToMoney(discountAmountMinor),
-    vatAmount: minorToMoney(vatAmountMinor), feeTotal: minorToMoney(feeTotalMinor),
+    vatAmount: minorToMoney(vatAmountMinor), vatPercentage, feeTotal: minorToMoney(feeTotalMinor),
     totalAmount: minorToMoney(discountedBaseMinor + vatAmountMinor + feeTotalMinor),
     // A single tier when every chargeable ticket type in this purchase
     // resolved to the same tier (true for every purchase today); null once
@@ -262,6 +308,38 @@ export function applyFacilityDiscount(facilityAmount: string, discountPercentage
   const fullMinor = moneyToMinor(facilityAmount);
   const discountMinor = Math.round((fullMinor * basisPoints) / 10_000);
   return { discountedAmount: minorToMoney(fullMinor - discountMinor), discountAmount: minorToMoney(discountMinor) };
+}
+
+// PRD Round 10, Sections 1-2: facility bookings had no VAT concept at all
+// before this round — this is the facility-line equivalent of the ticket
+// engine's per-line VAT above, computed on the already-discounted facility
+// amount, never on add-ons (same scope as the partner discount just above).
+export function calculateFacilityVat(discountedFacilityAmount: string, applyVat: boolean, vatPercent: string) {
+  if (!applyVat) return { vatAmount: "0.000" };
+  const basisPoints = percentageToBasisPoints(vatPercent);
+  const vatMinor = Math.round((moneyToMinor(discountedFacilityAmount) * basisPoints) / 10_000);
+  return { vatAmount: minorToMoney(vatMinor) };
+}
+
+// PRD Round 10, Section 4: a Fee Item can now be assigned to a facility
+// type — each applicable fee is charged once per booking on the facility
+// line's own (already-discounted) amount, never on add-ons, mirroring the
+// scope of the discount and VAT just above. Unlike the ticket engine, a
+// facility booking has no "per ticket" concept to multiply a per_ticket fee
+// by, so every fee is charged exactly once regardless of applicationBasis.
+export function calculateFacilityFees(discountedFacilityAmount: string, fees: TicketFeeInput[]) {
+  const sorted = [...fees].sort((a, b) => a.displayOrder - b.displayOrder || a.id - b.id);
+  const feeAmounts = sorted.map((fee) => {
+    const amountMinor = fee.calculationType === "percentage"
+      ? Math.round((moneyToMinor(discountedFacilityAmount) * percentageToBasisPoints(String(fee.value))) / 10_000)
+      : moneyToMinor(Number(fee.value).toFixed(3));
+    return { fee, amountMinor };
+  });
+  const feeTotalMinor = feeAmounts.reduce((sum, entry) => sum + entry.amountMinor, 0);
+  return {
+    feeAmount: minorToMoney(feeTotalMinor),
+    fees: feeAmounts.map(({ fee, amountMinor }) => ({ feeId: fee.id, label: fee.name, code: fee.code, amount: minorToMoney(amountMinor) })),
+  };
 }
 
 export function calculateOperationalNet(revenue: number, expenses: number) {

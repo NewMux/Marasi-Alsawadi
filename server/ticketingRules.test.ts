@@ -59,7 +59,7 @@ describe("ticketing business rules", () => {
   it("accepts a percentage fee value at its actual DECIMAL(12,4) precision instead of throwing", () => {
     const pricing = calculatePrdPurchasePricing({
       lines: [
-        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true },
+        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true, vatPercent: "5" },
       ],
       // Below the lowest active tier's minimum, so no group discount applies —
       // the fee percentage is the only thing evaluated, and used to throw regardless.
@@ -74,10 +74,10 @@ describe("ticketing business rules", () => {
   it("applies group discount to chargeable lines, excludes free entry, then calculates 5% VAT", () => {
     const pricing = calculatePrdPurchasePricing({
       lines: [
-        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true },
-        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true },
-        { price: { id: 2, name: "Companion", code: "COMPANION", unitPrice: "4.00" }, ticketTypeId: 1, categoryId: 2, countsTowardGroupDiscount: true },
-        { price: { id: 3, name: "Under 2", code: "UNDER_TWO", unitPrice: "0.00" }, ticketTypeId: 1, categoryId: 5, countsTowardGroupDiscount: false },
+        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true, vatPercent: "5" },
+        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true, vatPercent: "5" },
+        { price: { id: 2, name: "Companion", code: "COMPANION", unitPrice: "4.00" }, ticketTypeId: 1, categoryId: 2, countsTowardGroupDiscount: true, vatPercent: "5" },
+        { price: { id: 3, name: "Under 2", code: "UNDER_TWO", unitPrice: "0.00" }, ticketTypeId: 1, categoryId: 5, countsTowardGroupDiscount: false, vatPercent: "5" },
       ],
       discountTiers: [{ id: 1, ticketTypeId: 1, minTickets: 3, maxTickets: null, percentage: "10.00" }], fees: [],
     });
@@ -94,8 +94,8 @@ describe("ticketing business rules", () => {
   it("replaces the automatic group discount tier with a partner entity's per-ticket-type override percentage", () => {
     const pricing = calculatePrdPurchasePricing({
       lines: [
-        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true },
-        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true },
+        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true, vatPercent: "5" },
+        { price: { id: 1, name: "Water Park Entry", code: "WATERPARK", unitPrice: "10.00" }, ticketTypeId: 1, categoryId: 1, countsTowardGroupDiscount: true, vatPercent: "5" },
       ],
       // Only 2 chargeable tickets would normally get 0% under this tier (min 3+).
       discountTiers: [{ id: 1, ticketTypeId: 1, minTickets: 3, maxTickets: null, percentage: "10.00" }], fees: [],

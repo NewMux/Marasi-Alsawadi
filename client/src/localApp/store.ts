@@ -318,7 +318,9 @@ export function previewPurchase(lines: PurchaseLineDraft[]) {
       // its ticketType (the old fixed model had no zero-priced rate row of
       // its own for "senior"/"person_of_determination"/"under_two").
       price: { id: rate.id, name: rate.name, code: rate.code, unitPrice: line.freeEntryCategory ? "0.000" : rate.unitPrice },
-      ticketTypeId: 1, categoryId: localCategoryId(line.ticketType, line.freeEntryCategory), countsTowardGroupDiscount: !line.freeEntryCategory,
+      // The offline fallback app has no per-ticket-type VAT setting (PRD
+      // Round 10) — it always charged a flat 5%, so it keeps doing that.
+      ticketTypeId: 1, categoryId: localCategoryId(line.ticketType, line.freeEntryCategory), countsTowardGroupDiscount: !line.freeEntryCategory, vatPercent: "5",
     })),
     discountTiers: data.discountTiers.filter((tier) => tier.active),
     fees: data.fees.filter((fee) => fee.active),

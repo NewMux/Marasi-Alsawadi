@@ -42,6 +42,7 @@ const MIGRATION_FILES = [
   "drizzle/migrations/0030_add_ticket_types_and_categories.sql",
   "drizzle/migrations/0031_add_visitor_category_rules.sql",
   "drizzle/migrations/0032_scope_group_discount_tiers_by_ticket_type.sql",
+  "drizzle/migrations/0033_add_per_price_vat_fields.sql",
 ];
 
 // Exported so server/_core/index.ts can run this automatically on every

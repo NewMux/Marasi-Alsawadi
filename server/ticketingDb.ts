@@ -115,6 +115,7 @@ export async function listTicketPrices(includeInactive = false) {
   return rows.map((row) => ({
     id: row.price.id, ticketTypeId: row.price.ticketTypeId, categoryId: row.price.categoryId, unitPrice: row.price.unitPrice, isActive: row.price.isActive,
     ticketTypeName: row.ticketType.name, ticketTypeCode: row.ticketType.code, ticketGroup: row.ticketType.ticketGroup,
+    ticketTypeApplyVat: row.ticketType.applyVat, ticketTypeVatPercent: row.ticketType.vatPercent,
     categoryName: row.category.name, categoryCode: row.category.code,
     categoryMaxPerBooking: row.category.maxPerBooking, categoryCountsTowardGroupDiscount: row.category.countsTowardGroupDiscount,
   }));
@@ -278,7 +279,7 @@ export async function deleteServiceRate(id: number) {
     await db.update(serviceRates).set({ isActive: false }).where(eq(serviceRates.id, id));
     return { deactivated: true };
   }
-  await db.delete(serviceRateFees).where(eq(serviceRateFees.rateId, id));
+  await db.delete(serviceRateFees).where(and(eq(serviceRateFees.rateType, "ticket_type"), eq(serviceRateFees.rateId, id)));
   await db.delete(serviceRates).where(eq(serviceRates.id, id));
   return { deactivated: false };
 }
@@ -328,19 +329,30 @@ export async function listFeeAssignments() {
   return db.select().from(serviceRateFees).where(eq(serviceRateFees.isActive, true));
 }
 
-export async function replaceFeeAssignments(feeId: number, rateIds: number[]) {
+// PRD Round 10, Section 4: a fee item's assignment list can now hold both
+// ticket types and facility types in the same call — each entry says which
+// kind of price it points at, since `rateId` alone is ambiguous between them.
+export async function replaceFeeAssignments(feeId: number, assignments: Array<{ rateType: "ticket_type" | "facility_type"; rateId: number }>) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   await db.transaction(async (tx) => {
     await tx.delete(serviceRateFees).where(eq(serviceRateFees.feeId, feeId));
-    if (rateIds.length) await tx.insert(serviceRateFees).values(rateIds.map((rateId) => ({ feeId, rateId, isActive: true })));
+    if (assignments.length) await tx.insert(serviceRateFees).values(assignments.map(({ rateType, rateId }) => ({ feeId, rateType, rateId, isActive: true })));
   });
 }
 
-export async function listApplicableTicketFees(rateId: number) {
+// PRD Round 10, Section 4: generalized from the ticket-only version so a
+// facility booking can resolve its own applicable fees the same way a
+// ticket purchase already does. "Applies globally" still only ever means
+// every ticket type (the checkbox's own label, unchanged from before this
+// round) — a facility type only picks up a fee it's explicitly assigned to.
+export async function listApplicableFees(rateType: "ticket_type" | "facility_type", rateId: number) {
   const db = await getDb(); if (!db) return [];
+  const matchCondition = rateType === "ticket_type"
+    ? or(eq(ticketFeeDefinitions.appliesGlobally, true), and(eq(serviceRateFees.rateType, "ticket_type"), eq(serviceRateFees.rateId, rateId)))
+    : and(eq(serviceRateFees.rateType, "facility_type"), eq(serviceRateFees.rateId, rateId));
   return db.selectDistinct({ fee: ticketFeeDefinitions }).from(ticketFeeDefinitions)
     .leftJoin(serviceRateFees, and(eq(serviceRateFees.feeId, ticketFeeDefinitions.id), eq(serviceRateFees.isActive, true)))
-    .where(and(eq(ticketFeeDefinitions.isActive, true), or(eq(ticketFeeDefinitions.appliesGlobally, true), eq(serviceRateFees.rateId, rateId))))
+    .where(and(eq(ticketFeeDefinitions.isActive, true), matchCondition))
     .orderBy(ticketFeeDefinitions.displayOrder, ticketFeeDefinitions.id)
     .then((rows) => rows.map((entry) => entry.fee));
 }
@@ -738,7 +750,7 @@ export async function deleteAddonService(id: number) {
 // show for it, or a booking with no matching revenue.
 export async function createFacilityBooking(data: {
   facilityTypeId: number; facilityTypeName: string; facilityCategoryId: number; facilityCategoryName: string;
-  bookingDate: string; quantity: string; facilityAmount: string;
+  bookingDate: string; quantity: string; facilityAmount: string; vatAmount: string; feeAmount: string;
   addons: Array<{ addonServiceId: number; addonServiceName: string; categoryId: number; categoryName: string; quantity: string; amount: string }>;
   customerId?: number | null; customerName?: string; paymentMethod?: "cash" | "card" | "bank" | "mixed"; notes?: string; createdBy: number;
   partnerEntity?: { id: number; name: string; discountPercentage: string } | null;
@@ -746,6 +758,14 @@ export async function createFacilityBooking(data: {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   const addonsAmountMinor = data.addons.reduce((sum, addon) => sum + moneyToMinor(addon.amount), 0);
   const facilityAmountMinor = moneyToMinor(data.facilityAmount);
+  const vatAmountMinor = moneyToMinor(data.vatAmount);
+  const feeAmountMinor = moneyToMinor(data.feeAmount);
+  // PRD Round 10: VAT and any assigned fee are on the facility line only,
+  // never on add-ons — same scope as the partner discount above it — and
+  // are recorded as part of the facility's own revenue entry, matching how
+  // a ticket purchase's revenue entry already posts its full VAT-and-fee-
+  // inclusive total, not just the base.
+  const facilityRevenueAmount = minorToMoney(facilityAmountMinor + vatAmountMinor + feeAmountMinor);
   return db.transaction(async (tx) => {
     // The booking row is inserted first, before its finance entries, so the
     // revenue/add-on finance_entries rows below can carry referenceId:
@@ -753,7 +773,7 @@ export async function createFacilityBooking(data: {
     // exactly this booking's revenue later.
     await tx.insert(facilityBookings).values({
       facilityTypeId: data.facilityTypeId, facilityTypeName: data.facilityTypeName, bookingDate: data.bookingDate, quantity: data.quantity,
-      facilityAmount: data.facilityAmount, addonsAmount: minorToMoney(addonsAmountMinor), totalAmount: minorToMoney(facilityAmountMinor + addonsAmountMinor),
+      facilityAmount: data.facilityAmount, vatAmount: data.vatAmount, feeAmount: data.feeAmount, addonsAmount: minorToMoney(addonsAmountMinor), totalAmount: minorToMoney(facilityAmountMinor + vatAmountMinor + feeAmountMinor + addonsAmountMinor),
       customerId: data.customerId ?? null, customerName: data.customerName || null, paymentMethod: data.paymentMethod || "cash", notes: data.notes || null, createdBy: data.createdBy,
       partnerEntityId: data.partnerEntity?.id ?? null, partnerEntityName: data.partnerEntity?.name ?? null, discountPercentage: data.partnerEntity?.discountPercentage ?? null,
     } as any);
@@ -761,12 +781,12 @@ export async function createFacilityBooking(data: {
     const booking = bookingRows[0]!;
 
     await tx.insert(financeEntries).values({
-      date: data.bookingDate, stream: "extras", type: "revenue", amount: data.facilityAmount,
+      date: data.bookingDate, stream: "extras", type: "revenue", amount: facilityRevenueAmount,
       description: `Facility booking — ${data.facilityTypeName}`, referenceType: "facility_booking", referenceId: booking.id, createdBy: data.createdBy,
     } as any);
     const facilityFinanceRows = await tx.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
     await tx.insert(revenueRecords).values({
-      businessDate: data.bookingDate, categoryId: data.facilityCategoryId, categoryName: data.facilityCategoryName, amount: data.facilityAmount,
+      businessDate: data.bookingDate, categoryId: data.facilityCategoryId, categoryName: data.facilityCategoryName, amount: facilityRevenueAmount,
       description: `Facility booking — ${data.facilityTypeName}`, financeEntryId: facilityFinanceRows[0]!.id, createdBy: data.createdBy,
     } as any);
 
@@ -819,20 +839,21 @@ export async function getFacilityBooking(id: number) {
 // from the facility's current rate and re-applies the booking's own
 // (unchanged) discountPercentage snapshot, then keeps the linked
 // finance_entries/revenue_records rows in sync so reports reflect the edit.
-export async function updateFacilityBookingDetails(id: number, data: { bookingDate: string; quantity: string; facilityAmount: string; totalAmount: string; customerName?: string | null }) {
+export async function updateFacilityBookingDetails(id: number, data: { bookingDate: string; quantity: string; facilityAmount: string; vatAmount: string; feeAmount: string; totalAmount: string; customerName?: string | null }) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const facilityRevenueAmount = minorToMoney(moneyToMinor(data.facilityAmount) + moneyToMinor(data.vatAmount) + moneyToMinor(data.feeAmount));
   return db.transaction(async (tx) => {
     const rows = await tx.select().from(facilityBookings).where(eq(facilityBookings.id, id)).limit(1);
     const booking = rows[0];
     if (!booking) throw new Error("Facility booking was not found");
     if (booking.status === "cancelled") throw new Error("This booking has been cancelled and can no longer be edited");
     await tx.update(facilityBookings).set({
-      bookingDate: data.bookingDate as any, quantity: data.quantity, facilityAmount: data.facilityAmount, totalAmount: data.totalAmount,
+      bookingDate: data.bookingDate as any, quantity: data.quantity, facilityAmount: data.facilityAmount, vatAmount: data.vatAmount, feeAmount: data.feeAmount, totalAmount: data.totalAmount,
       ...(data.customerName !== undefined ? { customerName: data.customerName } : {}),
     }).where(eq(facilityBookings.id, id));
-    await tx.update(financeEntries).set({ date: data.bookingDate as any, amount: data.facilityAmount }).where(and(eq(financeEntries.referenceType, "facility_booking"), eq(financeEntries.referenceId, id)));
+    await tx.update(financeEntries).set({ date: data.bookingDate as any, amount: facilityRevenueAmount }).where(and(eq(financeEntries.referenceType, "facility_booking"), eq(financeEntries.referenceId, id)));
     const financeRows = await tx.select().from(financeEntries).where(and(eq(financeEntries.referenceType, "facility_booking"), eq(financeEntries.referenceId, id))).limit(1);
-    if (financeRows[0]) await tx.update(revenueRecords).set({ businessDate: data.bookingDate as any, amount: data.facilityAmount }).where(eq(revenueRecords.financeEntryId, financeRows[0].id));
+    if (financeRows[0]) await tx.update(revenueRecords).set({ businessDate: data.bookingDate as any, amount: facilityRevenueAmount }).where(eq(revenueRecords.financeEntryId, financeRows[0].id));
     const updated = await tx.select().from(facilityBookings).where(eq(facilityBookings.id, id)).limit(1);
     return updated[0]!;
   });
@@ -1521,7 +1542,7 @@ export async function describeSettingDependents(entity: "ticket_type" | "visitor
 
   if (entity === "ticket_type") {
     push("Category pricing", await db.select({ name: visitorCategories.name }).from(ticketPrices).innerJoin(visitorCategories, eq(ticketPrices.categoryId, visitorCategories.id)).where(eq(ticketPrices.ticketTypeId, id)));
-    push("Fee items", await db.select({ name: ticketFeeDefinitions.name }).from(serviceRateFees).innerJoin(ticketFeeDefinitions, eq(serviceRateFees.feeId, ticketFeeDefinitions.id)).where(and(eq(serviceRateFees.rateId, id), eq(serviceRateFees.isActive, true))));
+    push("Fee items", await db.select({ name: ticketFeeDefinitions.name }).from(serviceRateFees).innerJoin(ticketFeeDefinitions, eq(serviceRateFees.feeId, ticketFeeDefinitions.id)).where(and(eq(serviceRateFees.rateType, "ticket_type"), eq(serviceRateFees.rateId, id), eq(serviceRateFees.isActive, true))));
     push("Partner discount rules", await db.select({ name: partnerEntities.name }).from(partnerDiscountRules).innerJoin(partnerEntities, eq(partnerDiscountRules.partnerEntityId, partnerEntities.id)).where(and(eq(partnerDiscountRules.ticketTypeId, id), eq(partnerDiscountRules.isActive, true))));
     push("Issued tickets", await countOf(db.select({ total: sql<number>`COUNT(*)` }).from(ticketPurchaseLines).where(eq(ticketPurchaseLines.ticketTypeId, id))));
   }
@@ -1537,6 +1558,7 @@ export async function describeSettingDependents(entity: "ticket_type" | "visitor
   if (entity === "expense_category") push("Expense records", await countOf(db.select({ total: sql<number>`COUNT(*)` }).from(expenseRecords).where(eq(expenseRecords.categoryId, id))));
   if (entity === "asset_category") push("Asset records", await countOf(db.select({ total: sql<number>`COUNT(*)` }).from(assetRecords).where(eq(assetRecords.categoryId, id))));
   if (entity === "facility_type") {
+    push("Fee items", await db.select({ name: ticketFeeDefinitions.name }).from(serviceRateFees).innerJoin(ticketFeeDefinitions, eq(serviceRateFees.feeId, ticketFeeDefinitions.id)).where(and(eq(serviceRateFees.rateType, "facility_type"), eq(serviceRateFees.rateId, id), eq(serviceRateFees.isActive, true))));
     push("Partner discount rules", await db.select({ name: partnerEntities.name }).from(partnerDiscountRules).innerJoin(partnerEntities, eq(partnerDiscountRules.partnerEntityId, partnerEntities.id)).where(and(eq(partnerDiscountRules.facilityTypeId, id), eq(partnerDiscountRules.isActive, true))));
     push("Bookings", await countOf(db.select({ total: sql<number>`COUNT(*)` }).from(facilityBookings).where(eq(facilityBookings.facilityTypeId, id))));
   }

@@ -20,6 +20,12 @@ export type FacilityReceiptData = {
   notes?: string | null;
   partnerEntityName?: string | null;
   discountPercentage?: string | null;
+  // PRD Round 10, Sections 1-2 and 4: facility bookings had no VAT or fee
+  // concept at all before this round — fees are one aggregate total (not
+  // itemized per fee, unlike ticket purchases), on the facility line only.
+  vatAmount?: string;
+  vatPercentage?: string;
+  feeAmount?: string;
   totalAmount: string;
 };
 
@@ -71,6 +77,8 @@ export function FacilityReceiptTicket({ data }: { data: FacilityReceiptData }) {
 
       <table><tbody>
         {data.partnerEntityName && <tr><td className="label" style={{ fontSize: 10 }}>جهة شريكة / Partner</td><td className="value" style={{ fontSize: 10 }}>{data.partnerEntityName} ({Number(data.discountPercentage || 0).toFixed(0)}%)</td></tr>}
+        {Number(data.feeAmount || 0) > 0 && <tr><td className="label" style={{ fontSize: 10 }}>رسوم / Fees</td><td className="value" style={{ fontSize: 10 }}>{omr(data.feeAmount)}</td></tr>}
+        {Number(data.vatAmount || 0) > 0 && <tr><td className="label" style={{ fontSize: 10 }}>ضريبة {Number(data.vatPercentage || 0)}٪ / VAT {Number(data.vatPercentage || 0)}%</td><td className="value" style={{ fontSize: 10 }}>{omr(data.vatAmount)}</td></tr>}
       </tbody></table>
 
       <div className="center price" style={{ marginTop: 6 }}>{omr(data.totalAmount)}</div>

@@ -149,6 +149,7 @@ export default function FacilityBookingsPage() {
           facilityAmount: pricing.facilityAmount, addons: (pricing.addons as any[]).map((addon) => ({ name: addon.addonServiceName, quantity: addon.quantity, amount: addon.amount })),
           notes: notes.trim() || null, totalAmount: pricing.totalAmount,
           partnerEntityName: (pricing as any).partnerEntity?.name || null, discountPercentage: (pricing as any).discountPercentage || null,
+          vatAmount: (pricing as any).vatAmount, vatPercentage: (pricing as any).vatPercent, feeAmount: (pricing as any).feeAmount,
         });
       }
       resetForm();
@@ -175,6 +176,12 @@ export default function FacilityBookingsPage() {
     setReprintingId(row.booking.id);
     const facility = facilityTypes.find((entry) => entry.id === row.booking.facilityTypeId);
     const quantity = Number(row.booking.quantity);
+    // PRD Round 10: the facility booking's VAT rate isn't itself snapshotted
+    // (only the resulting vatAmount is), so it's derived here from the
+    // stored amounts — vatAmount was computed on the already-discounted
+    // facilityAmount directly, with no separate discount to subtract first.
+    const facilityAmountNumber = Number(row.booking.facilityAmount || 0);
+    const vatPercentage = facilityAmountNumber > 0 ? ((Number(row.booking.vatAmount || 0) / facilityAmountNumber) * 100).toFixed(2) : "0.00";
     const data: FacilityReceiptData = {
       facilityName: row.booking.facilityTypeName, customerName: row.customer?.fullName || row.booking.customerName || t("facility.noCustomerName"),
       bookingDate: row.booking.bookingDate,
@@ -182,6 +189,7 @@ export default function FacilityBookingsPage() {
       facilityAmount: row.booking.facilityAmount, addons: (row.addons as any[]).map((addon: any) => ({ name: addon.addonServiceName, quantity: addon.quantity, amount: addon.amount })),
       notes: row.booking.notes || null, totalAmount: row.booking.totalAmount,
       partnerEntityName: row.booking.partnerEntityName || null, discountPercentage: row.booking.discountPercentage || null,
+      vatAmount: row.booking.vatAmount, vatPercentage, feeAmount: row.booking.feeAmount,
     };
     setCreated(data);
     setReprintedBookingId(row.booking.id);
@@ -367,6 +375,8 @@ export default function FacilityBookingsPage() {
             <div className="flex justify-between py-1"><span>{selectedFacility?.name}</span><span>{money(Number(pricing.facilityAmount) + Number((pricing as any).discountAmount || 0))}</span></div>
             {Number((pricing as any).discountAmount) > 0 && <div className="flex justify-between py-1"><span>{(pricing as any).partnerEntity?.name} ({Number((pricing as any).discountPercentage).toFixed(0)}%)</span><span>−{money((pricing as any).discountAmount)}</span></div>}
             {(pricing.addons as any[]).map((addon: any, index: number) => <div key={`${addon.addonServiceId}-${index}`} className="flex justify-between py-1"><span>{addon.addonServiceName}</span><span>{money(addon.amount)}</span></div>)}
+            {(pricing as any).fees?.map((fee: any) => <div key={fee.feeId} className="flex justify-between py-1"><span>{fee.label}</span><span>{money(fee.amount)}</span></div>)}
+            {Number((pricing as any).vatAmount) > 0 && <div className="flex justify-between py-1"><span>{t("tickets.vatAfterDiscount", { rate: (pricing as any).vatPercent ?? "0.00" })}</span><span>{money((pricing as any).vatAmount)}</span></div>}
           </div>}
           {bookingMode === "addonsOnly" && validAddonLines.length > 0 && <div className="mt-4 border-t border-white/15 pt-3 text-xs text-[#d6d6da]">{validAddonLines.map((line) => { const addon = addonServices.find((entry) => String(entry.id) === line.addonServiceId); return addon ? <div key={line.id} className="flex justify-between py-1"><span>{addon.name}</span><span>{money(Number(addon.rate) * (addon.pricingMethod === "fixed" ? 1 : Number(line.quantity)))}</span></div> : null; })}</div>}
         </div>
