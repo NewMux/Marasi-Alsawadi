@@ -158,11 +158,18 @@ export function TicketReceiptTicket({ data }: { data: TicketReceiptData }) {
 
       <div className="divider"/>
 
+      {/* PRD Round 12 (client feedback, 16/9): a consistent, ordered
+          breakdown across every receipt — Base Price, then the partner
+          discount (named and with its own amount, not just a floating
+          percentage), then an explicit post-discount subtotal, then VAT,
+          then the Total Amount Due already shown below. */}
       <table><tbody>
-        <tr><td className="label">المجموع قبل الضريبة / Subtotal</td><td className="value">{omr(data.baseSubtotal)}</td></tr>
-        {Number(data.discountAmount) > 0 && <tr><td className="label">الخصم / Discount</td><td className="value">−{omr(data.discountAmount)}</td></tr>}
-        {data.partnerEntityName && <tr><td className="label" style={{ fontSize: 10 }}>جهة شريكة / Partner</td><td className="value" style={{ fontSize: 10 }}>{data.partnerEntityName} ({Number(data.discountPercentage || 0).toFixed(0)}%)</td></tr>}
-        <tr><td className="label">إجمالي الضريبة / Total VAT ({Number(data.vatPercentage ?? 0)}%)</td><td className="value">{omr(data.vatAmount)}</td></tr>
+        <tr><td className="label">السعر الأساسي / Base Price</td><td className="value">{omr(data.baseSubtotal)}</td></tr>
+        {Number(data.discountAmount) > 0 && <>
+          <tr><td className="label" style={{ fontSize: 10 }}>{data.partnerEntityName ? `خصم الشريك: ${data.partnerEntityName} (${Number(data.discountPercentage || 0).toFixed(0)}%) / Partner Discount: ${data.partnerEntityName} (${Number(data.discountPercentage || 0).toFixed(0)}%)` : `خصم المجموعة (${Number(data.discountPercentage || 0).toFixed(0)}%) / Group Discount (${Number(data.discountPercentage || 0).toFixed(0)}%)`}</td><td className="value" style={{ fontSize: 10 }}>−{omr(data.discountAmount)}</td></tr>
+          <tr><td className="label">المجموع بعد الخصم / Subtotal (After Discount)</td><td className="value">{omr(Number(data.baseSubtotal) - Number(data.discountAmount))}</td></tr>
+        </>}
+        <tr><td className="label">إجمالي الضريبة / VAT ({Number(data.vatPercentage ?? 0)}%)</td><td className="value">{omr(data.vatAmount)}</td></tr>
       </tbody></table>
 
       <div className="center price" style={{ marginTop: 6 }}>{omr(data.totalAmount)}</div>

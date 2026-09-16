@@ -148,7 +148,7 @@ export default function FacilityBookingsPage() {
           durationLabel: selectedFacility.pricingMethod === "daily" ? `${quantity} ${quantity === 1 ? t("facility.day") : t("facility.daysWord")}` : selectedFacility.pricingMethod === "hourly" ? `${quantity.toFixed(2)} ${t("facility.hoursWord")}` : null,
           facilityAmount: pricing.facilityAmount, addons: (pricing.addons as any[]).map((addon) => ({ name: addon.addonServiceName, quantity: addon.quantity, amount: addon.amount })),
           notes: notes.trim() || null, totalAmount: pricing.totalAmount,
-          partnerEntityName: (pricing as any).partnerEntity?.name || null, discountPercentage: (pricing as any).discountPercentage || null,
+          partnerEntityName: (pricing as any).partnerEntity?.name || null, discountPercentage: (pricing as any).discountPercentage || null, discountAmount: (pricing as any).discountAmount,
           vatAmount: (pricing as any).vatAmount, vatPercentage: (pricing as any).vatPercent, feeAmount: (pricing as any).feeAmount,
         });
       }
@@ -182,13 +182,19 @@ export default function FacilityBookingsPage() {
     // facilityAmount directly, with no separate discount to subtract first.
     const facilityAmountNumber = Number(row.booking.facilityAmount || 0);
     const vatPercentage = facilityAmountNumber > 0 ? ((Number(row.booking.vatAmount || 0) / facilityAmountNumber) * 100).toFixed(2) : "0.00";
+    // facility_bookings only stores discountPercentage, not the raw discount
+    // amount, so a reprint has to reconstruct it: facilityAmountNumber is
+    // already post-discount, so the pre-discount base is recovered by
+    // dividing back out the percentage.
+    const discountPct = Number(row.booking.discountPercentage || 0);
+    const discountAmount = discountPct > 0 ? (facilityAmountNumber / (1 - discountPct / 100)) - facilityAmountNumber : 0;
     const data: FacilityReceiptData = {
       facilityName: row.booking.facilityTypeName, customerName: row.customer?.fullName || row.booking.customerName || t("facility.noCustomerName"),
       bookingDate: row.booking.bookingDate,
       durationLabel: facility?.pricingMethod === "daily" ? `${quantity} ${quantity === 1 ? t("facility.day") : t("facility.daysWord")}` : facility?.pricingMethod === "hourly" ? `${quantity.toFixed(2)} ${t("facility.hoursWord")}` : null,
       facilityAmount: row.booking.facilityAmount, addons: (row.addons as any[]).map((addon: any) => ({ name: addon.addonServiceName, quantity: addon.quantity, amount: addon.amount })),
       notes: row.booking.notes || null, totalAmount: row.booking.totalAmount,
-      partnerEntityName: row.booking.partnerEntityName || null, discountPercentage: row.booking.discountPercentage || null,
+      partnerEntityName: row.booking.partnerEntityName || null, discountPercentage: row.booking.discountPercentage || null, discountAmount: discountAmount.toFixed(3),
       vatAmount: row.booking.vatAmount, vatPercentage, feeAmount: row.booking.feeAmount,
     };
     setCreated(data);

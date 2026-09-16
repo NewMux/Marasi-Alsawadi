@@ -34,6 +34,7 @@ function toReceiptData(created: any): TicketReceiptData {
     visitDate: created.purchase.visitDate,
     baseSubtotal: created.purchase.baseSubtotal,
     discountAmount: created.purchase.discountAmount,
+    discountPercentage: created.purchase.discountPercentage,
     vatAmount: created.purchase.vatAmount,
     vatPercentage: "5.00",
     totalAmount: created.purchase.totalAmount,

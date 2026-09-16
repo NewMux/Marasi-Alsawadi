@@ -15,11 +15,17 @@ export type FacilityReceiptData = {
   customerName: string;
   bookingDate: string;
   durationLabel: string | null;
+  // The already-discounted facility line amount (unchanged meaning —
+  // other pricing logic elsewhere already reads this as the discounted
+  // figure). The receipt itself now shows the pre-discount base price by
+  // adding discountAmount back, since a receipt should show what
+  // discount was actually applied rather than just its percentage.
   facilityAmount: string;
   addons: FacilityReceiptAddonLine[];
   notes?: string | null;
   partnerEntityName?: string | null;
   discountPercentage?: string | null;
+  discountAmount?: string;
   // PRD Round 10, Sections 1-2 and 4: facility bookings had no VAT or fee
   // concept at all before this round — fees are one aggregate total (not
   // itemized per fee, unlike ticket purchases), on the facility line only.
@@ -66,8 +72,13 @@ export function FacilityReceiptTicket({ data }: { data: FacilityReceiptData }) {
 
       <table><tbody><tr><td className="label" style={{ fontWeight: 700, paddingBottom: 6 }}>تفاصيل الحجز / Booking Details</td></tr></tbody></table>
 
+      {/* PRD Round 12 (client feedback, 16/9): the facility line here shows
+          its pre-discount base price — the actual discount (named, with its
+          own amount) and the resulting subtotal are broken out below, the
+          same consistent Base → Discount → Subtotal → Fees → VAT → Total
+          order used on every receipt. */}
       <table style={{ marginBottom: 6 }}><tbody>
-        <tr><td className="label" style={{ fontWeight: 700 }}>{data.facilityName}</td><td className="value">{omr(data.facilityAmount)}</td></tr>
+        <tr><td className="label" style={{ fontWeight: 700 }}>{data.facilityName}</td><td className="value">{omr(Number(data.facilityAmount) + Number(data.discountAmount || 0))}</td></tr>
         {data.addons.map((addon, index) => <tr key={index}><td className="label" style={{ fontSize: 10 }}>{addon.name} ×{addon.quantity}</td><td className="value" style={{ fontSize: 10 }}>{omr(addon.amount)}</td></tr>)}
       </tbody></table>
 
@@ -76,7 +87,10 @@ export function FacilityReceiptTicket({ data }: { data: FacilityReceiptData }) {
       <div className="divider"/>
 
       <table><tbody>
-        {data.partnerEntityName && <tr><td className="label" style={{ fontSize: 10 }}>جهة شريكة / Partner</td><td className="value" style={{ fontSize: 10 }}>{data.partnerEntityName} ({Number(data.discountPercentage || 0).toFixed(0)}%)</td></tr>}
+        {Number(data.discountAmount || 0) > 0 && <>
+          <tr><td className="label" style={{ fontSize: 10 }}>{data.partnerEntityName ? `خصم الشريك: ${data.partnerEntityName} (${Number(data.discountPercentage || 0).toFixed(0)}%) / Partner Discount: ${data.partnerEntityName} (${Number(data.discountPercentage || 0).toFixed(0)}%)` : `الخصم (${Number(data.discountPercentage || 0).toFixed(0)}%) / Discount (${Number(data.discountPercentage || 0).toFixed(0)}%)`}</td><td className="value" style={{ fontSize: 10 }}>−{omr(data.discountAmount)}</td></tr>
+          <tr><td className="label" style={{ fontSize: 10 }}>المجموع بعد الخصم / Subtotal (After Discount)</td><td className="value" style={{ fontSize: 10 }}>{omr(Number(data.facilityAmount) + data.addons.reduce((sum, addon) => sum + Number(addon.amount || 0), 0))}</td></tr>
+        </>}
         {Number(data.feeAmount || 0) > 0 && <tr><td className="label" style={{ fontSize: 10 }}>رسوم / Fees</td><td className="value" style={{ fontSize: 10 }}>{omr(data.feeAmount)}</td></tr>}
         {Number(data.vatAmount || 0) > 0 && <tr><td className="label" style={{ fontSize: 10 }}>ضريبة {Number(data.vatPercentage || 0)}٪ / VAT {Number(data.vatPercentage || 0)}%</td><td className="value" style={{ fontSize: 10 }}>{omr(data.vatAmount)}</td></tr>}
       </tbody></table>
