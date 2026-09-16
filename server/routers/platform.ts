@@ -45,7 +45,7 @@ import {
   createPettyCashAllocation, listPettyCashAllocations,
   listAttachmentsForEntry, listAttachmentsForEntries, createAttachment, getAttachment, deleteAttachment,
 } from "../ticketingDb";
-import { applyFacilityDiscount, calculateFacilityFees, calculateFacilityLineAmount, calculateFacilityVat, calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE } from "../ticketingRules";
+import { applyFacilityDiscount, calculateFacilityFees, calculateFacilityLineAmount, calculateFacilityVat, calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE, percentageToBasisPoints } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
 import { publicTicketUrl, requestOrigin } from "../ticketUrl";
 import { deleteAttachmentFile, isAllowedAttachmentMimeType, saveExpenseAttachment } from "../attachments";
@@ -162,27 +162,38 @@ async function resolveFacilityBookingPricing(input: { facilityTypeId: number; qu
   // covered the facility only, silently excluding every add-on attached to
   // it. No discount ever applies to add-ons (unchanged), so VAT is simply
   // computed on each add-on's own raw amount.
-  const addons = await Promise.all(input.addons.map(async (line) => {
+  const addonsWithRate = await Promise.all(input.addons.map(async (line) => {
     const addon = await getAddonService(line.addonServiceId);
     if (!addon || !addon.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "One of the selected add-on services is no longer active" });
     const addonQuantity = addon.pricingMethod === "fixed" ? 1 : line.quantity;
     const category = await getRevenueCategory(addon.revenueCategoryId);
     if (!category) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "This add-on's revenue category is missing" });
     const amount = calculateFacilityLineAmount(String(addon.rate), addonQuantity);
+    const vatBasisPoints = percentageToBasisPoints(addon.applyVat ? String(addon.vatPercent) : "0");
     const { vatAmount: addonVatAmount } = calculateFacilityVat(amount, addon.applyVat, String(addon.vatPercent));
-    return { addonServiceId: addon.id, addonServiceName: addon.name, categoryId: category.id, categoryName: category.name, quantity: String(addonQuantity), amount, vatAmount: addonVatAmount };
+    return { addonServiceId: addon.id, addonServiceName: addon.name, categoryId: category.id, categoryName: category.name, quantity: String(addonQuantity), amount, vatAmount: addonVatAmount, vatBasisPoints };
   }));
+  const addons = addonsWithRate.map(({ vatBasisPoints, ...addon }) => addon);
   const addonsAmount = addons.reduce((sum, addon) => sum + Number(addon.amount), 0);
   const addonsVatAmount = addons.reduce((sum, addon) => sum + Number(addon.vatAmount), 0);
-  // Total VAT combines the facility line and every add-on line. The
-  // displayed rate is derived from the combined taxable base rather than
-  // reused raw from one config field, the same aggregate-derived approach
-  // already used for the ticket receipt's VAT percentage — it only differs
-  // from a flat rate when the facility and its add-ons are taxed at
-  // different rates.
   const vatAmount = (Number(facilityVatAmount) + addonsVatAmount).toFixed(3);
+  // The displayed rate is the literal shared rate when every taxed
+  // component (the facility plus each add-on) is actually configured at
+  // the same rate — true for the overwhelming majority of bookings, since
+  // add-ons default to the same 5% as everything else — and only falls
+  // back to a money-derived blended rate when they genuinely differ.
+  // Deriving from amounts unconditionally (dividing the combined VAT by
+  // the combined base) looks right but silently drifts a clean 5% into
+  // "5.01%" purely from independently baisa-rounded VAT amounts being
+  // summed and divided back out — the same class of rounding-noise bug
+  // already fixed for the ticket receipt's VAT percentage, reusing that
+  // fix's approach.
+  const facilityVatBasisPoints = percentageToBasisPoints(facility.applyVat ? String(facility.vatPercent) : "0");
+  const distinctVatBasisPoints = new Set([facilityVatBasisPoints, ...addonsWithRate.map((addon) => addon.vatBasisPoints)]);
   const taxableBase = Number(facilityAmount) + addonsAmount;
-  const vatPercent = taxableBase > 0 ? ((Number(vatAmount) / taxableBase) * 100).toFixed(2) : "0.00";
+  const vatPercent = distinctVatBasisPoints.size === 1
+    ? (distinctVatBasisPoints.values().next().value! / 100).toFixed(2)
+    : (taxableBase > 0 ? ((Number(vatAmount) / taxableBase) * 100).toFixed(2) : "0.00");
   return {
     facility, facilityCategory, facilityQuantity, facilityAmount, discountAmount, discountPercentage, partnerEntity, addons, vatAmount, vatPercent, facilityVatAmount,
     feeAmount, fees: feeBreakdown,

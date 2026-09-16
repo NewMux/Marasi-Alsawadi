@@ -181,12 +181,25 @@ export default function FacilityBookingsPage() {
     // stored amounts — vatAmount was computed on the already-discounted
     // facilityAmount directly, with no separate discount to subtract first.
     // PRD Round 13: vatAmount is now the facility line's VAT plus every
-    // add-on's own VAT combined, so the taxable base for this derived rate
-    // has to include addonsAmount too, or the displayed % would be inflated.
+    // add-on's own VAT combined. Reconstructing one flat rate by dividing
+    // that combined total by the combined base drifts a clean 5% into
+    // "5.01%" purely from independently baisa-rounded amounts being summed
+    // first — so each component's own rate is reconstructed separately
+    // (each still a single division, not a sum-of-roundings) and only
+    // blended into one derived number when they genuinely differ.
     const facilityAmountNumber = Number(row.booking.facilityAmount || 0);
     const addonsAmountNumber = Number(row.booking.addonsAmount || 0);
+    const addonVatAmountTotal = (row.addons as any[]).reduce((sum, addon) => sum + Number(addon.vatAmount || 0), 0);
+    const facilityVatAmountNumber = Number(row.booking.vatAmount || 0) - addonVatAmountTotal;
+    const componentRates = [
+      facilityAmountNumber > 0 ? ((facilityVatAmountNumber / facilityAmountNumber) * 100).toFixed(2) : null,
+      ...(row.addons as any[]).map((addon: any) => Number(addon.amount) > 0 ? ((Number(addon.vatAmount || 0) / Number(addon.amount)) * 100).toFixed(2) : null),
+    ].filter((rate): rate is string => rate !== null);
+    const distinctComponentRates = new Set(componentRates);
     const taxableBase = facilityAmountNumber + addonsAmountNumber;
-    const vatPercentage = taxableBase > 0 ? ((Number(row.booking.vatAmount || 0) / taxableBase) * 100).toFixed(2) : "0.00";
+    const vatPercentage = distinctComponentRates.size === 1
+      ? distinctComponentRates.values().next().value!
+      : (taxableBase > 0 ? ((Number(row.booking.vatAmount || 0) / taxableBase) * 100).toFixed(2) : "0.00");
     // facility_bookings only stores discountPercentage, not the raw discount
     // amount, so a reprint has to reconstruct it: facilityAmountNumber is
     // already post-discount, so the pre-discount base is recovered by

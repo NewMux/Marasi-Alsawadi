@@ -129,7 +129,7 @@ export type PrdTicketLineInput = { price: PrdPriceInput; ticketTypeId: number; c
 // precision any of those columns actually store, not just the 2 decimals
 // most of them (discount tiers, partner rules) happen to use. The result is
 // still rounded to the nearest basis point regardless of input precision.
-function percentageToBasisPoints(value: string) {
+export function percentageToBasisPoints(value: string) {
   if (!/^\d+(\.\d{1,4})?$/.test(value) || Number(value) < 0 || Number(value) > 100) throw new Error("Discount percentages must be between 0 and 100");
   return Math.round(Number(value) * 100);
 }
