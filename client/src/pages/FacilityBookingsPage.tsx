@@ -279,7 +279,7 @@ export default function FacilityBookingsPage() {
                   <div className="grid grid-cols-2 gap-3">
                     <Field label={t("common.country")}><CountryField value={customerCountry} onChange={(country) => { setCustomerPhone((current) => applyCountryDialCode(current, customerCountry, country)); setCustomerCountry(country); }}/></Field>
                     <Field label={t("customers.phoneNumber")} error={attemptedSubmit && customerInvalid && !phoneResolved ? t("common.required") : undefined}>
-                      <TextField value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} inputMode="tel" placeholder="+968 …" className={attemptedSubmit && customerInvalid && !phoneResolved ? "border-danger ring-1 ring-danger/30" : undefined}/>
+                      <TextField value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} inputMode="tel" dir="ltr" placeholder="+968 …" className={attemptedSubmit && customerInvalid && !phoneResolved ? "border-danger ring-1 ring-danger/30" : undefined}/>
                     </Field>
                   </div>
                   <p className="mt-2 text-[11px] text-subtle">{t("facility.customerOptionalHint")}</p>

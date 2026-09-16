@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Plus, Printer, Ticket, Trash2, Undo2, UserRound, Users, ChevronDown, ChevronUp } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
@@ -102,6 +102,31 @@ export default function TicketDeskPage() {
   const { data: phoneMatch, isFetching: phoneChecking } = trpc.platform.customers.findByPhone.useQuery({ phone: form.customerPhone.trim() }, { enabled: phoneLookupEnabled });
   const phoneResolved = phoneLookupEnabled && !phoneChecking;
   const isNewCustomerFlow = phoneResolved && !phoneMatch;
+  // PRD Round 11, Section 1: a new walk-in's record is saved as soon as
+  // phone/name/email are entered — before any ticket type or category is
+  // picked — so it survives an abandoned or interrupted transaction. This
+  // tracks the last-saved draft against the exact values it was saved from,
+  // so issuePurchase can reuse that same customer id only while it's still
+  // current; if the fields have since changed and a fresh save hasn't
+  // landed yet, it falls back to the existing raw-fields path unchanged.
+  const [draftCustomer, setDraftCustomer] = useState<{ id: number; name: string; phone: string; email: string } | null>(null);
+  const saveDraftCustomer = trpc.platform.customers.upsertByPhone.useMutation({
+    onSuccess: (customer: any, variables) => { if (customer) setDraftCustomer({ id: customer.id, name: variables.fullName, phone: variables.phone, email: variables.email || "" }); utils.platform.customers.search.invalidate(); },
+  });
+  useEffect(() => {
+    if (!isNewCustomerFlow) return;
+    const name = form.customerName.trim();
+    const phone = form.customerPhone.trim();
+    const email = form.customerEmail.trim();
+    if (!name || phone.length < 7) return;
+    if (draftCustomer && draftCustomer.name === name && draftCustomer.phone === phone && draftCustomer.email === email) return;
+    const timeout = setTimeout(() => {
+      saveDraftCustomer.mutate({ fullName: name, phone, email: email || undefined, nationality: form.customerCountry.trim() || undefined });
+    }, 800);
+    return () => clearTimeout(timeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isNewCustomerFlow, form.customerName, form.customerPhone, form.customerEmail, form.customerCountry]);
+  const draftMatchesCurrent = draftCustomer && draftCustomer.name === form.customerName.trim() && draftCustomer.phone === form.customerPhone.trim() && draftCustomer.email === form.customerEmail.trim();
 
   // PRD Round 7, Section 1.1: a new top-level "Other Tickets" tab, sibling
   // to Water Park — each ticket type belongs to exactly one group, and the
@@ -111,6 +136,13 @@ export default function TicketDeskPage() {
   const selectedTicketType = ticketTypesInGroup.find((type) => String(type.id) === effectiveTicketTypeId) || null;
   const priceFor = (categoryId: number) => prices.find((price) => price.ticketTypeId === Number(effectiveTicketTypeId) && price.categoryId === categoryId);
   const priceIdFor = (categoryId: number) => { const price = priceFor(categoryId); return price && price.isActive ? price.id : 0; };
+  // PRD Round 11, Section 3: only show visitor category lines actually
+  // linked (an active price cell) to the selected ticket type — e.g. "Kid's
+  // Play Area" showing only "Chargeable" instead of all six categories.
+  // With no ticket type chosen yet there's nothing to filter against, so
+  // every category still shows (matching the existing "choose a ticket type
+  // first" hint on each row).
+  const visibleVisitorCategories = effectiveTicketTypeId ? visitorCategories.filter((category) => priceFor(category.id)?.isActive) : visitorCategories;
 
   const switchGroup = (group: TicketGroup) => {
     setTicketGroup(group); setSelectedTicketTypeId(""); setCategoryQuantities({}); setGroupLines([blankGroupLine(1)]); setAttemptedSubmit(false);
@@ -142,7 +174,7 @@ export default function TicketDeskPage() {
     if (!effectiveTicketTypeId) return expectedLineCount > 0 ? [t("tickets.chooseTicketTypeFirst")] : [];
     const reasons: string[] = [];
     if (mode === "individual") {
-      for (const category of visitorCategories) {
+      for (const category of visibleVisitorCategories) {
         if (Math.floor(Number(categoryQuantities[category.id]) || 0) > 0 && !priceIdFor(category.id)) reasons.push(t("tickets.unpricedCategory", { name: category.name }));
       }
     } else {
@@ -153,7 +185,7 @@ export default function TicketDeskPage() {
       });
     }
     return reasons;
-  }, [ticketTypesInGroup.length, effectiveTicketTypeId, expectedLineCount, mode, visitorCategories, categoryQuantities, groupLines, prices, t]);
+  }, [ticketTypesInGroup.length, effectiveTicketTypeId, expectedLineCount, mode, visitorCategories, visibleVisitorCategories, categoryQuantities, groupLines, prices, t]);
   // A server-side failure here (a stale price id, a category that hit its
   // cap, anything) used to leave `pricing` silently undefined forever — the
   // preview looked identical to "still typing" with no way to tell the two
@@ -169,14 +201,14 @@ export default function TicketDeskPage() {
   }, [purchaseRows]);
   const issue = trpc.platform.tickets.purchaseCreate.useMutation({
     onSuccess: (result: any) => {
-      setCreated(result); setForm((current) => ({ ...blankForm, visitDate: current.visitDate })); setCategoryQuantities({}); setGroupLines([blankGroupLine(1)]); setAttemptedSubmit(false); setPartnerEntityId("");
+      setCreated(result); setForm((current) => ({ ...blankForm, visitDate: current.visitDate })); setCategoryQuantities({}); setGroupLines([blankGroupLine(1)]); setAttemptedSubmit(false); setPartnerEntityId(""); setDraftCustomer(null);
       utils.platform.tickets.purchaseList.invalidate(); utils.platform.customers.search.invalidate(); utils.platform.finance.invalidate();
       toast.success(`${result.lines.length} ticket${result.lines.length === 1 ? "" : "s"} issued`);
     },
     onError: (error) => toast.error(error.message),
   });
   const useMatchedCustomer = () => { if (phoneMatch) setForm((current) => ({ ...current, customerId: String(phoneMatch.id) })); };
-  const changeCustomer = () => setForm((current) => ({ ...current, customerId: "", customerName: "", customerPhone: `${COUNTRY_DIAL_CODES[current.customerCountry] || COUNTRY_DIAL_CODES[DEFAULT_COUNTRY]} `, customerEmail: "", customerCountry: DEFAULT_COUNTRY }));
+  const changeCustomer = () => { setDraftCustomer(null); setForm((current) => ({ ...current, customerId: "", customerName: "", customerPhone: `${COUNTRY_DIAL_CODES[current.customerCountry] || COUNTRY_DIAL_CODES[DEFAULT_COUNTRY]} `, customerEmail: "", customerCountry: DEFAULT_COUNTRY })); };
   const updateCategoryQuantity = (categoryId: number, value: string, maxPerBooking: number | null) => {
     const clamped = maxPerBooking && value !== "" ? String(Math.min(maxPerBooking, Math.max(0, Math.floor(Number(value) || 0)))) : value;
     setCategoryQuantities((current) => ({ ...current, [categoryId]: clamped }));
@@ -196,12 +228,17 @@ export default function TicketDeskPage() {
     if (overCapacity) return toast.error(t("tickets.overCapacity", { max: maxTicketsPerPurchase }));
     if (linesInvalid) return toast.error(mode === "group" ? t("tickets.everyGroupLineNeeds") : t("tickets.enterAtLeastOneCategory"));
     if (!pricing) return toast.error(t("tickets.waitingOnPreview"));
+    // PRD Round 11, Section 1: if the draft save already landed for exactly
+    // these values, reuse that same customer id instead of sending raw
+    // fields — otherwise the server's own inline createGuest fallback would
+    // create a second guest row for the same walk-in.
+    const resolvedCustomerId = form.customerId ? Number(form.customerId) : (draftMatchesCurrent ? draftCustomer!.id : undefined);
     issue.mutate({
-      customerId: form.customerId ? Number(form.customerId) : undefined,
-      customerName: form.customerId ? undefined : form.customerName.trim(),
-      customerPhone: form.customerId ? undefined : form.customerPhone.trim(),
-      customerEmail: form.customerId ? undefined : form.customerEmail.trim() || undefined,
-      customerNationality: form.customerId ? undefined : form.customerCountry.trim() || undefined,
+      customerId: resolvedCustomerId,
+      customerName: resolvedCustomerId ? undefined : form.customerName.trim(),
+      customerPhone: resolvedCustomerId ? undefined : form.customerPhone.trim(),
+      customerEmail: resolvedCustomerId ? undefined : form.customerEmail.trim() || undefined,
+      customerNationality: resolvedCustomerId ? undefined : form.customerCountry.trim() || undefined,
       visitDate: form.visitDate, paymentMethod: form.paymentMethod,
       notes: (mode === "group" && form.groupName.trim() ? `${t("tickets.groupNotePrefix")}: ${form.groupName.trim()}${form.notes.trim() ? " — " : ""}` : "") + form.notes.trim() || undefined,
       lines: previewLines,
@@ -261,7 +298,7 @@ export default function TicketDeskPage() {
             <div className="grid grid-cols-2 gap-3">
               <Field label={t("common.country")}><CountryField value={form.customerCountry} onChange={(country) => setForm((current) => ({ ...current, customerCountry: country, customerPhone: applyCountryDialCode(current.customerPhone, current.customerCountry, country) }))}/></Field>
               <Field label={t("customers.phoneNumber")} error={attemptedSubmit && customerInvalid && !phoneResolved ? t("common.required") : undefined}>
-                <TextField value={form.customerPhone} onChange={(event) => setForm({ ...form, customerPhone: event.target.value })} inputMode="tel" placeholder="+968 …" className={attemptedSubmit && customerInvalid && !phoneResolved ? "border-danger ring-1 ring-danger/30" : undefined}/>
+                <TextField value={form.customerPhone} onChange={(event) => setForm({ ...form, customerPhone: event.target.value })} inputMode="tel" dir="ltr" placeholder="+968 …" className={attemptedSubmit && customerInvalid && !phoneResolved ? "border-danger ring-1 ring-danger/30" : undefined}/>
               </Field>
             </div>
             {!phoneLookupEnabled && <p className="mt-2 text-xs text-muted">{t("tickets.enterPhoneToLookup")}</p>}
@@ -292,7 +329,7 @@ export default function TicketDeskPage() {
           <button onClick={() => setMode("group")} className={cx("flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-semibold transition", mode === "group" ? "bg-white shadow-sm text-ink" : "text-muted hover:text-ink")}><Users size={14}/>{t("tickets.group")}</button>
         </div>
         {mode === "group" && <div className="mb-4"><Field label={t("tickets.groupName")}><TextField value={form.groupName} onChange={(event) => setForm({ ...form, groupName: event.target.value })} placeholder="e.g. Al Falaj School Trip"/></Field></div>}
-        {mode === "individual" ? <div className="grid gap-3">{visitorCategories.map((category) => {
+        {mode === "individual" ? <div className="grid gap-3">{visibleVisitorCategories.map((category) => {
           const maxPerBooking = category.maxPerBooking ?? null;
           const price = priceFor(category.id);
           const quantity = categoryQuantities[category.id] || "";
@@ -315,7 +352,7 @@ export default function TicketDeskPage() {
           return <div key={line.id} className={cx("rounded-2xl border bg-well p-4", lineInvalid ? "border-danger" : "border-divider")}>
             <div className="mb-3 flex items-center justify-between"><b className="text-sm">{t("tickets.groupLine")} {index + 1}</b><button onClick={() => removeGroupLine(line.id)} aria-label={`Remove group line ${index + 1}`} className="rounded-full p-2 text-muted hover:bg-danger-bg hover:text-danger"><Trash2 size={14}/></button></div>
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field label={t("tickets.freeEntry")}><SelectField value={line.categoryId} onChange={(event) => updateGroupLine(line.id, { categoryId: event.target.value })}><option value="">{t("tickets.chooseCategory")}</option>{visitorCategories.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</SelectField></Field>
+              <Field label={t("tickets.freeEntry")}><SelectField value={line.categoryId} onChange={(event) => updateGroupLine(line.id, { categoryId: event.target.value })}><option value="">{t("tickets.chooseCategory")}</option>{visibleVisitorCategories.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</SelectField></Field>
               <Field label={t("tickets.quantity")} error={attemptedSubmit && (!line.quantity || line.quantity < 1) ? t("tickets.atLeastOne") : undefined}><TextField type="number" min={1} max={category?.maxPerBooking ?? undefined} value={line.quantity} onChange={(event) => updateGroupLine(line.id, { quantity: Math.max(0, Math.floor(Number(event.target.value) || 0)) })} className={attemptedSubmit && (!line.quantity || line.quantity < 1) ? "border-danger ring-1 ring-danger/30" : undefined}/></Field>
             </div>
             {price ? <p className="mt-3 text-[11px] leading-4 text-muted">{category?.name} · {money(price.unitPrice)} {t("tickets.eachOf")} — {line.quantity || 0} {t("tickets.ticketsCount")} {t("tickets.ofThisType")}{category?.maxPerBooking ? ` · ${t("tickets.maxPerBookingHint", { max: category.maxPerBooking })}` : ""}</p> : <p className="mt-3 text-[11px] leading-4 text-danger">{!effectiveTicketTypeId ? t("tickets.chooseTicketTypeFirst") : t("tickets.noPriceConfigured")}</p>}

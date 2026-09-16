@@ -146,7 +146,7 @@ export function TicketReceiptTicket({ data }: { data: TicketReceiptData }) {
         const label = lineLabel(group);
         return <div key={group.ticketNumbers[0]}>
           <table style={{ marginBottom: 6 }}><tbody>
-            <tr><td className="label" style={{ fontWeight: 700 }}>{toArabicIndic(index + 1)}) {label.ar}{group.ticketNumbers.length > 1 ? ` ×${group.ticketNumbers.length}` : ""}<br/><span style={{ fontWeight: 400, fontSize: 10 }}>{label.en}{group.ticketNumbers.length > 1 ? ` ×${group.ticketNumbers.length}` : ""}</span></td><td className="value">{ticketRangeLabel(group.ticketNumbers)}</td></tr>
+            <tr><td className="label" style={{ fontWeight: 700 }}>{index + 1}) {label.ar}{group.ticketNumbers.length > 1 ? ` ×${group.ticketNumbers.length}` : ""}<br/><span style={{ fontWeight: 400, fontSize: 10 }}>{label.en}{group.ticketNumbers.length > 1 ? ` ×${group.ticketNumbers.length}` : ""}</span></td><td className="value">{ticketRangeLabel(group.ticketNumbers)}</td></tr>
             <tr><td className="label" style={{ fontSize: 10 }}>السعر الأساسي / Base</td><td className="value" style={{ fontSize: 10 }}>{omr(group.basePrice)}</td></tr>
             {group.discountAmount > 0 && <tr><td className="label" style={{ fontSize: 10 }}>الخصم / Discount</td><td className="value" style={{ fontSize: 10 }}>−{omr(group.discountAmount)}</td></tr>}
             <tr><td className="label" style={{ fontSize: 10 }}>ضريبة {toArabicIndic(Number(group.vatPercentage ?? 0))}٪ / VAT {Number(group.vatPercentage ?? 0)}%</td><td className="value" style={{ fontSize: 10 }}>{omr(group.vatAmount)}</td></tr>

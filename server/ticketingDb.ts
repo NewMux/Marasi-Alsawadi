@@ -78,6 +78,29 @@ export async function updateTicketType(id: number, data: Partial<typeof ticketTy
   return getTicketType(id);
 }
 
+// PRD Round 11, Section 4: a retired ticket type had no way to actually be
+// removed from the list — mirrors deleteFacilityType/deleteAddonService's
+// pattern (hard-delete when nothing historical depends on it, otherwise
+// fall back to a soft retire). Issued tickets are the one dependency that
+// blocks a hard delete, since ticket_purchase_lines.ticketTypeId would be
+// left pointing at nothing; category pricing, fee assignments, partner
+// discount rules, and group discount tiers are just config for this type
+// and are cleaned up along with it.
+export async function deleteTicketType(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const issued = await db.select({ id: ticketPurchaseLines.id }).from(ticketPurchaseLines).where(eq(ticketPurchaseLines.ticketTypeId, id)).limit(1);
+  if (issued.length) {
+    await db.update(ticketTypes).set({ isActive: false }).where(eq(ticketTypes.id, id));
+    return { deactivated: true };
+  }
+  await db.delete(ticketPrices).where(eq(ticketPrices.ticketTypeId, id));
+  await db.delete(serviceRateFees).where(and(eq(serviceRateFees.rateType, "ticket_type"), eq(serviceRateFees.rateId, id)));
+  await db.delete(partnerDiscountRules).where(eq(partnerDiscountRules.ticketTypeId, id));
+  await db.delete(ticketDiscountTiers).where(eq(ticketDiscountTiers.ticketTypeId, id));
+  await db.delete(ticketTypes).where(eq(ticketTypes.id, id));
+  return { deactivated: false };
+}
+
 export async function listVisitorCategories(includeInactive = false) {
   const db = await getDb(); if (!db) return [];
   const base = db.select().from(visitorCategories).orderBy(visitorCategories.displayOrder, visitorCategories.id);
@@ -121,14 +144,21 @@ export async function listTicketPrices(includeInactive = false) {
   }));
 }
 
-export async function upsertTicketPrice(ticketTypeId: number, categoryId: number, unitPrice: string, createdBy: number) {
+// PRD Round 11, Section 3: `isActive` here means "this ticket type links to
+// this visitor category at all" — the Ticket Desk only shows a category row
+// for a selected ticket type when its price cell is active, so an
+// irrelevant combination (e.g. "Kid's Play Area" x "Retiree") can be
+// unlinked without touching its price. Defaults to active for every
+// existing/new combination, so nothing already working is hidden by this.
+export async function upsertTicketPrice(ticketTypeId: number, categoryId: number, unitPrice: string, createdBy: number, isActive?: boolean) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   const existing = await db.select().from(ticketPrices).where(and(eq(ticketPrices.ticketTypeId, ticketTypeId), eq(ticketPrices.categoryId, categoryId))).limit(1);
+  const patch: Partial<typeof ticketPrices.$inferInsert> = { unitPrice, ...(isActive !== undefined ? { isActive } : {}) };
   if (existing[0]) {
-    await db.update(ticketPrices).set({ unitPrice }).where(eq(ticketPrices.id, existing[0].id));
-    return { ...existing[0], unitPrice };
+    await db.update(ticketPrices).set(patch).where(eq(ticketPrices.id, existing[0].id));
+    return { ...existing[0], ...patch };
   }
-  await db.insert(ticketPrices).values({ ticketTypeId, categoryId, unitPrice, createdBy });
+  await db.insert(ticketPrices).values({ ticketTypeId, categoryId, createdBy, ...patch } as typeof ticketPrices.$inferInsert);
   const rows = await db.select().from(ticketPrices).orderBy(desc(ticketPrices.id)).limit(1);
   return rows[0]!;
 }
@@ -176,10 +206,16 @@ export async function updateTicketDiscountTier(id: number, data: Partial<typeof 
   return getTicketDiscountTier(id);
 }
 
+// PRD Round 11, Section 5: this is the "Remove" button's action, distinct
+// from "Retire" (ticketDiscountTiers.update with isActive: false) — it used
+// to just soft-deactivate too, so a retired tier could never actually be
+// removed from the list. A discount tier has no historical dependents (a
+// purchase snapshots its own resolved discountPercentage, never the tier's
+// id), so this can always hard-delete.
 export async function deleteTicketDiscountTier(id: number) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
-  await db.update(ticketDiscountTiers).set({ isActive: false }).where(eq(ticketDiscountTiers.id, id));
-  return { deactivated: true };
+  await db.delete(ticketDiscountTiers).where(eq(ticketDiscountTiers.id, id));
+  return { deactivated: false };
 }
 
 export async function createPrdTicketPurchase(data: {
@@ -388,6 +424,25 @@ export async function getCustomerById(id: number) {
   const db = await getDb(); if (!db) return undefined;
   const rows = await db.select().from(guests).where(eq(guests.id, id)).limit(1);
   return rows[0];
+}
+
+// PRD Round 11, Section 1: the Ticket Desk now saves a new walk-in's record
+// as soon as phone/name/email are entered, before any ticket type or
+// category is picked — so the record survives an abandoned or interrupted
+// transaction. Keyed by phone (the same exact-match lookup the desk's
+// phone-first flow already uses): a matching record is updated in place,
+// otherwise a new one is created — never a second row for the same phone.
+export async function upsertGuestByPhone(data: { fullName: string; phone: string; email?: string; nationality?: string }) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const phone = data.phone.trim();
+  const existing = await getCustomerByPhone(phone);
+  if (existing) {
+    await db.update(guests).set({ fullName: data.fullName, email: data.email || null, nationality: data.nationality || null }).where(eq(guests.id, existing.id));
+    return { ...existing, fullName: data.fullName, email: data.email || null, nationality: data.nationality || null };
+  }
+  await db.insert(guests).values({ fullName: data.fullName, phone, email: data.email || null, nationality: data.nationality || null });
+  const rows = await db.select().from(guests).orderBy(desc(guests.id)).limit(1);
+  return rows[0]!;
 }
 
 export async function createSalesTransaction(data: SalesTransactionDraft) {

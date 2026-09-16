@@ -23,9 +23,9 @@ import {
   deleteExpenseRecord, deleteTicketFee, getExpenseCategory, getExpenseRecord, getOperationalFinancialSummary, getSalesTransactionByToken,
   getServiceRate, listApplicableFees, listExpenseCategories, listExpenseRecords, listFeeAssignments, listRecentTicketScans,
   listSalesTransactionLines, listSalesTransactions, listTicketFees, recordTicketScan, replaceFeeAssignments,
-  searchCustomers, getCustomerByPhone, updateExpenseCategory, updateExpenseRecord, updateTicketFee,
+  searchCustomers, getCustomerByPhone, upsertGuestByPhone, updateExpenseCategory, updateExpenseRecord, updateTicketFee,
   createPrdTicketPurchase, listTicketDiscountTiers, getTicketDiscountTier, createTicketDiscountTier, updateTicketDiscountTier, deleteTicketDiscountTier, findOverlappingActiveTier,
-  listTicketTypes, getTicketType, getTicketTypeByCode, createTicketType, updateTicketType, listVisitorCategories, createVisitorCategory, updateVisitorCategory, listTicketPrices, upsertTicketPrice,
+  listTicketTypes, getTicketType, getTicketTypeByCode, createTicketType, updateTicketType, deleteTicketType, listVisitorCategories, createVisitorCategory, updateVisitorCategory, listTicketPrices, upsertTicketPrice,
   summariseTicketRevenueByType, describeSettingDependents,
   listPartnerEntities, getPartnerEntity, createPartnerEntity, updatePartnerEntity, deletePartnerEntity,
   listPartnerDiscountRules, createPartnerDiscountRule, updatePartnerDiscountRule, deletePartnerDiscountRule, resolveActivePartnerDiscountRule,
@@ -246,6 +246,19 @@ export const platformRouter = router({
       await logActivity(ctx.user.id, "customer.create", "guest", customer?.id, `${input.fullName}:${input.phone}`);
       return customer;
     }),
+    // PRD Round 11, Section 1: the Ticket Desk saves the walk-in's record as
+    // soon as phone/name/email are entered, before any ticket type or
+    // category is picked, so the record survives an abandoned or
+    // interrupted transaction — updating the matching phone's record rather
+    // than creating a duplicate.
+    upsertByPhone: protectedProcedure.input(z.object({
+      fullName: z.string().min(1), phone: z.string().min(3), email: z.string().email().optional().or(z.literal("")),
+      nationality: z.string().optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const customer = await upsertGuestByPhone({ ...input, email: input.email || undefined });
+      await logActivity(ctx.user.id, "customer.upsert", "guest", customer?.id, `${input.fullName}:${input.phone}`);
+      return customer;
+    }),
   }),
 
   // PRD Round 7, Section 1.2/1.3: Base Prices became a fully open,
@@ -291,6 +304,13 @@ export const platformRouter = router({
       await logActivity(ctx.user.id, "ticket_type.update", "ticket_type", id, JSON.stringify(patch));
       return type;
     }),
+    // PRD Round 11, Section 4: a retired ticket type had no way to actually
+    // be removed — mirrors facilityTypes.delete/addonServices.delete.
+    delete: superAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+      const result = await deleteTicketType(input.id);
+      await logActivity(ctx.user.id, "ticket_type.delete", "ticket_type", input.id, result.deactivated ? "retired" : "deleted");
+      return result;
+    }),
   }),
   // PRD Round 9, Section 10: what else is built on a library entry, asked
   // before the Admin retires or removes it.
@@ -328,10 +348,14 @@ export const platformRouter = router({
   ticketPrices: router({
     list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
       .query(({ input, ctx }) => listTicketPrices(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
+    // PRD Round 11, Section 3: `isActive` here means "linked" — whether this
+    // ticket type shows this visitor category at all on the Ticket Desk,
+    // independent of its price.
     set: superAdminProcedure.input(z.object({
       ticketTypeId: z.number().int().positive(), categoryId: z.number().int().positive(), unitPrice: z.string().regex(/^\d+(\.\d{1,3})?$/, "Enter an OMR amount with up to three decimals"),
+      isActive: z.boolean().optional(),
     })).mutation(async ({ input, ctx }) => {
-      const price = await upsertTicketPrice(input.ticketTypeId, input.categoryId, input.unitPrice, ctx.user.id);
+      const price = await upsertTicketPrice(input.ticketTypeId, input.categoryId, input.unitPrice, ctx.user.id, input.isActive);
       await logActivity(ctx.user.id, "ticket_price.set", "ticket_price", price.id, `${input.ticketTypeId}x${input.categoryId}:${input.unitPrice}`);
       return price;
     }),
