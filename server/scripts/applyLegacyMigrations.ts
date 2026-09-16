@@ -46,6 +46,25 @@ const MIGRATION_FILES = [
   "drizzle/migrations/0034_add_addon_service_vat_fields.sql",
 ];
 
+// A schema-object-already-exists error (duplicate column/key/table) from a
+// migration's DDL means the effect this migration exists to produce is
+// already there — the only realistic way that happens for a migration this
+// runner hasn't recorded yet is two server instances booting concurrently
+// (e.g. during a Coolify rolling redeploy) and racing to apply the same new
+// migration: DDL auto-commits per statement, so the loser lands here mid-
+// file rather than failing cleanly up front. Treating it as "this migration
+// is already applied" instead of crashing the boot lets the losing instance
+// come up rather than taking the whole deploy down. This assumes the race
+// is whole-file (the winner ran every statement, not just the one the loser
+// collided on) — true for every migration in MIGRATION_FILES today, whose
+// statements are unconditional ALTER/CREATE with no earlier step that could
+// legitimately fail independently of this one.
+const ALREADY_APPLIED_ERROR_CODES = new Set([
+  "ER_DUP_FIELDNAME", // ALTER TABLE ... ADD COLUMN — column already exists
+  "ER_DUP_KEYNAME", // ALTER TABLE ... ADD KEY/INDEX — key already exists
+  "ER_TABLE_EXISTS_ERROR", // CREATE TABLE — table already exists
+]);
+
 // Exported so server/_core/index.ts can run this automatically on every
 // server boot (PRD Round 8: the recurring "insert fails" bug reports —
 // guests, revenue_categories, expense/asset/revenue_records, and now
@@ -76,7 +95,13 @@ export async function applyLegacyMigrations(connectionString: string) {
       // executed. Hand-written migrations don't contain this marker, so the
       // split is a no-op for them.
       const statements = raw.split(/--\>\s*statement-breakpoint/g).map((part) => part.trim()).filter(Boolean);
-      for (const statement of statements) await connection.query(statement);
+      try {
+        for (const statement of statements) await connection.query(statement);
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        if (!code || !ALREADY_APPLIED_ERROR_CODES.has(code)) throw error;
+        console.warn(`skip  ${relativePath} — already applied (${code}), likely a concurrent deploy race`);
+      }
       await connection.query("INSERT INTO `_schema_migrations` (filename) VALUES (?)", [relativePath]);
       console.log(`done  ${relativePath}`);
       appliedCount += 1;
