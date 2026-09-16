@@ -805,8 +805,8 @@ export async function deleteAddonService(id: number) {
 // show for it, or a booking with no matching revenue.
 export async function createFacilityBooking(data: {
   facilityTypeId: number; facilityTypeName: string; facilityCategoryId: number; facilityCategoryName: string;
-  bookingDate: string; quantity: string; facilityAmount: string; vatAmount: string; feeAmount: string;
-  addons: Array<{ addonServiceId: number; addonServiceName: string; categoryId: number; categoryName: string; quantity: string; amount: string }>;
+  bookingDate: string; quantity: string; facilityAmount: string; vatAmount: string; facilityVatAmount: string; feeAmount: string;
+  addons: Array<{ addonServiceId: number; addonServiceName: string; categoryId: number; categoryName: string; quantity: string; amount: string; vatAmount: string }>;
   customerId?: number | null; customerName?: string; paymentMethod?: "cash" | "card" | "bank" | "mixed"; notes?: string; createdBy: number;
   partnerEntity?: { id: number; name: string; discountPercentage: string } | null;
 }) {
@@ -814,13 +814,20 @@ export async function createFacilityBooking(data: {
   const addonsAmountMinor = data.addons.reduce((sum, addon) => sum + moneyToMinor(addon.amount), 0);
   const facilityAmountMinor = moneyToMinor(data.facilityAmount);
   const vatAmountMinor = moneyToMinor(data.vatAmount);
+  const facilityVatAmountMinor = moneyToMinor(data.facilityVatAmount);
   const feeAmountMinor = moneyToMinor(data.feeAmount);
-  // PRD Round 10: VAT and any assigned fee are on the facility line only,
-  // never on add-ons — same scope as the partner discount above it — and
-  // are recorded as part of the facility's own revenue entry, matching how
-  // a ticket purchase's revenue entry already posts its full VAT-and-fee-
+  // PRD Round 10: any assigned fee is on the facility line only, never on
+  // add-ons — same scope as the partner discount above it — and is
+  // recorded as part of the facility's own revenue entry, matching how a
+  // ticket purchase's revenue entry already posts its full VAT-and-fee-
   // inclusive total, not just the base.
-  const facilityRevenueAmount = minorToMoney(facilityAmountMinor + vatAmountMinor + feeAmountMinor);
+  // PRD Round 13: VAT is no longer facility-only — data.vatAmount (stored
+  // on the booking row) is the combined facility+add-ons total, but the
+  // facility's own revenue entry must use only its own share
+  // (facilityVatAmount) since each add-on posts its own VAT-inclusive
+  // revenue entry separately below — otherwise add-on VAT would be
+  // double-counted into the facility's revenue line.
+  const facilityRevenueAmount = minorToMoney(facilityAmountMinor + facilityVatAmountMinor + feeAmountMinor);
   return db.transaction(async (tx) => {
     // The booking row is inserted first, before its finance entries, so the
     // revenue/add-on finance_entries rows below can carry referenceId:
@@ -846,17 +853,21 @@ export async function createFacilityBooking(data: {
     } as any);
 
     for (const addon of data.addons) {
+      // PRD Round 13: an add-on's own revenue entry is now VAT-inclusive,
+      // matching how the facility line's revenue entry already includes
+      // its VAT above — the actual amount collected, not just the base.
+      const addonRevenueAmount = minorToMoney(moneyToMinor(addon.amount) + moneyToMinor(addon.vatAmount));
       await tx.insert(financeEntries).values({
-        date: data.bookingDate, stream: "extras", type: "revenue", amount: addon.amount,
+        date: data.bookingDate, stream: "extras", type: "revenue", amount: addonRevenueAmount,
         description: `Facility booking add-on — ${addon.addonServiceName}`, referenceType: "facility_booking_addon", referenceId: booking.id, createdBy: data.createdBy,
       } as any);
       const addonFinanceRows = await tx.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
       await tx.insert(revenueRecords).values({
-        businessDate: data.bookingDate, categoryId: addon.categoryId, categoryName: addon.categoryName, amount: addon.amount,
+        businessDate: data.bookingDate, categoryId: addon.categoryId, categoryName: addon.categoryName, amount: addonRevenueAmount,
         description: `Facility booking add-on — ${addon.addonServiceName}`, financeEntryId: addonFinanceRows[0]!.id, createdBy: data.createdBy,
       } as any);
       await tx.insert(facilityBookingAddons).values({
-        bookingId: booking.id, addonServiceId: addon.addonServiceId, addonServiceName: addon.addonServiceName, quantity: addon.quantity, amount: addon.amount,
+        bookingId: booking.id, addonServiceId: addon.addonServiceId, addonServiceName: addon.addonServiceName, quantity: addon.quantity, amount: addon.amount, vatAmount: addon.vatAmount,
       } as any);
     }
     return booking;
@@ -948,7 +959,7 @@ export async function cancelFacilityBooking(id: number, cancelledBy: number, rea
 // original facilityAmount is never touched again after creation.
 export async function addFacilityBookingAddons(data: {
   bookingId: number; businessDate: string; createdBy: number;
-  addons: Array<{ addonServiceId: number; addonServiceName: string; categoryId: number; categoryName: string; quantity: string; amount: string }>;
+  addons: Array<{ addonServiceId: number; addonServiceName: string; categoryId: number; categoryName: string; quantity: string; amount: string; vatAmount: string }>;
 }) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   return db.transaction(async (tx) => {
@@ -957,24 +968,34 @@ export async function addFacilityBookingAddons(data: {
     if (!booking) throw new Error("Facility booking was not found");
     if (booking.status === "cancelled") throw new Error("This booking has been cancelled and can no longer be changed");
     let addonsAmountMinor = moneyToMinor(String(booking.addonsAmount));
+    // PRD Round 13: each add-on now carries its own VAT, so the booking's
+    // running vatAmount (facility + every add-on's VAT) has to accumulate
+    // here too, not just addonsAmount.
+    let vatAmountMinor = moneyToMinor(String(booking.vatAmount));
     for (const addon of data.addons) {
+      const addonRevenueAmount = minorToMoney(moneyToMinor(addon.amount) + moneyToMinor(addon.vatAmount));
       await tx.insert(financeEntries).values({
-        date: data.businessDate, stream: "extras", type: "revenue", amount: addon.amount,
+        date: data.businessDate, stream: "extras", type: "revenue", amount: addonRevenueAmount,
         description: `Facility booking add-on — ${addon.addonServiceName}`, referenceType: "facility_booking_addon", referenceId: data.bookingId, createdBy: data.createdBy,
       } as any);
       const financeRows = await tx.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
       await tx.insert(revenueRecords).values({
-        businessDate: data.businessDate, categoryId: addon.categoryId, categoryName: addon.categoryName, amount: addon.amount,
+        businessDate: data.businessDate, categoryId: addon.categoryId, categoryName: addon.categoryName, amount: addonRevenueAmount,
         description: `Facility booking add-on — ${addon.addonServiceName}`, financeEntryId: financeRows[0]!.id, createdBy: data.createdBy,
       } as any);
       await tx.insert(facilityBookingAddons).values({
-        bookingId: data.bookingId, addonServiceId: addon.addonServiceId, addonServiceName: addon.addonServiceName, quantity: addon.quantity, amount: addon.amount,
+        bookingId: data.bookingId, addonServiceId: addon.addonServiceId, addonServiceName: addon.addonServiceName, quantity: addon.quantity, amount: addon.amount, vatAmount: addon.vatAmount,
       } as any);
       addonsAmountMinor += moneyToMinor(addon.amount);
+      vatAmountMinor += moneyToMinor(addon.vatAmount);
     }
     const addonsAmount = minorToMoney(addonsAmountMinor);
-    const totalAmount = minorToMoney(moneyToMinor(String(booking.facilityAmount)) + addonsAmountMinor);
-    await tx.update(facilityBookings).set({ addonsAmount, totalAmount }).where(eq(facilityBookings.id, data.bookingId));
+    const vatAmount = minorToMoney(vatAmountMinor);
+    // Previously dropped the booking's own vatAmount/feeAmount entirely
+    // when recomputing totalAmount here — fixed to include both, matching
+    // how create/updateFacilityBookingDetails already compute it.
+    const totalAmount = minorToMoney(moneyToMinor(String(booking.facilityAmount)) + vatAmountMinor + moneyToMinor(String(booking.feeAmount)) + addonsAmountMinor);
+    await tx.update(facilityBookings).set({ addonsAmount, vatAmount, totalAmount }).where(eq(facilityBookings.id, data.bookingId));
     const updatedRows = await tx.select().from(facilityBookings).where(eq(facilityBookings.id, data.bookingId)).limit(1);
     return updatedRows[0]!;
   });

@@ -706,6 +706,12 @@ export const addonServices = mysqlTable("addon_services", {
   pricingMethod: mysqlEnum("pricingMethod", ["per_person", "fixed", "hourly"]).notNull(),
   rate: decimal("rate", { precision: 12, scale: 3 }).notNull(),
   revenueCategoryId: int("revenueCategoryId").notNull(),
+  // PRD Round 13 (client feedback): same direct VAT field as ticket types
+  // and facility types — add-ons had no VAT concept at all before this
+  // round, so a facility booking's VAT line silently excluded them.
+  // Defaulting on/5% matches what the other two already charge.
+  applyVat: boolean("applyVat").default(true).notNull(),
+  vatPercent: decimal("vatPercent", { precision: 5, scale: 2 }).default("5.00").notNull(),
   isActive: boolean("isActive").default(true).notNull(),
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -724,8 +730,10 @@ export const facilityBookings = mysqlTable("facility_bookings", {
   // PRD Round 10: VAT on the facility line's own rate, using its facility
   // type's VAT setting at the time of booking — snapshotted the same way
   // discountPercentage already is, so a later edit to the facility type's
-  // VAT rate never reshapes an already-confirmed booking. Never applied to
-  // add-ons, matching how the partner discount already excludes them.
+  // VAT rate never reshapes an already-confirmed booking.
+  // PRD Round 13: now the facility line's VAT plus every add-on line's own
+  // VAT combined — add-ons never had a VAT rate to apply before this round.
+  // The partner discount still excludes add-ons; only VAT was extended.
   vatAmount: decimal("vatAmount", { precision: 12, scale: 3 }).default("0").notNull(),
   // PRD Round 10, Section 4: a Fee Item can now be assigned to a facility
   // type — this is the aggregate charge from every fee that applied, on
@@ -769,6 +777,11 @@ export const facilityBookingAddons = mysqlTable("facility_booking_addons", {
   addonServiceName: varchar("addonServiceName", { length: 160 }).notNull(),
   quantity: decimal("quantity", { precision: 10, scale: 2 }).notNull(),
   amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
+  // PRD Round 13: snapshot of the VAT actually charged on this line at the
+  // time it was attached, using the add-on's own applyVat/vatPercent —
+  // mirrors how facility_bookings.vatAmount already snapshots the facility
+  // line's VAT, so a later rate change never reshapes a confirmed booking.
+  vatAmount: decimal("vatAmount", { precision: 12, scale: 3 }).default("0").notNull(),
 });
 export type FacilityBookingAddon = typeof facilityBookingAddons.$inferSelect;
 

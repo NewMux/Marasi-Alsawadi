@@ -180,8 +180,13 @@ export default function FacilityBookingsPage() {
     // (only the resulting vatAmount is), so it's derived here from the
     // stored amounts — vatAmount was computed on the already-discounted
     // facilityAmount directly, with no separate discount to subtract first.
+    // PRD Round 13: vatAmount is now the facility line's VAT plus every
+    // add-on's own VAT combined, so the taxable base for this derived rate
+    // has to include addonsAmount too, or the displayed % would be inflated.
     const facilityAmountNumber = Number(row.booking.facilityAmount || 0);
-    const vatPercentage = facilityAmountNumber > 0 ? ((Number(row.booking.vatAmount || 0) / facilityAmountNumber) * 100).toFixed(2) : "0.00";
+    const addonsAmountNumber = Number(row.booking.addonsAmount || 0);
+    const taxableBase = facilityAmountNumber + addonsAmountNumber;
+    const vatPercentage = taxableBase > 0 ? ((Number(row.booking.vatAmount || 0) / taxableBase) * 100).toFixed(2) : "0.00";
     // facility_bookings only stores discountPercentage, not the raw discount
     // amount, so a reprint has to reconstruct it: facilityAmountNumber is
     // already post-discount, so the pre-discount base is recovered by

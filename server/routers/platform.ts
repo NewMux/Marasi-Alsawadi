@@ -151,24 +151,40 @@ async function resolveFacilityBookingPricing(input: { facilityTypeId: number; qu
     if (rule) discountPercentage = String(rule.discountPercentage);
   }
   const { discountedAmount: facilityAmount, discountAmount } = applyFacilityDiscount(fullFacilityAmount, discountPercentage);
-  // PRD Round 10, Sections 1-2: VAT on the facility line's own rate — never
-  // on add-ons, same scope as the partner discount just above — using this
-  // facility type's own apply-toggle and rate (facility bookings had no VAT
-  // concept at all before this round).
-  const { vatAmount } = calculateFacilityVat(facilityAmount, facility.applyVat, String(facility.vatPercent));
+  // PRD Round 10, Sections 1-2: VAT on the facility line's own rate — using
+  // this facility type's own apply-toggle and rate (facility bookings had
+  // no VAT concept at all before this round).
+  const { vatAmount: facilityVatAmount } = calculateFacilityVat(facilityAmount, facility.applyVat, String(facility.vatPercent));
   const facilityFees = (await listApplicableFees("facility_type", facility.id)).map((fee: any) => ({ ...fee, value: String(fee.value) }));
   const { feeAmount, fees: feeBreakdown } = calculateFacilityFees(facilityAmount, facilityFees);
+  // PRD Round 13 (client feedback): each add-on now carries its own VAT
+  // apply-toggle and rate too — a facility booking's VAT line previously
+  // covered the facility only, silently excluding every add-on attached to
+  // it. No discount ever applies to add-ons (unchanged), so VAT is simply
+  // computed on each add-on's own raw amount.
   const addons = await Promise.all(input.addons.map(async (line) => {
     const addon = await getAddonService(line.addonServiceId);
     if (!addon || !addon.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "One of the selected add-on services is no longer active" });
     const addonQuantity = addon.pricingMethod === "fixed" ? 1 : line.quantity;
     const category = await getRevenueCategory(addon.revenueCategoryId);
     if (!category) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "This add-on's revenue category is missing" });
-    return { addonServiceId: addon.id, addonServiceName: addon.name, categoryId: category.id, categoryName: category.name, quantity: String(addonQuantity), amount: calculateFacilityLineAmount(String(addon.rate), addonQuantity) };
+    const amount = calculateFacilityLineAmount(String(addon.rate), addonQuantity);
+    const { vatAmount: addonVatAmount } = calculateFacilityVat(amount, addon.applyVat, String(addon.vatPercent));
+    return { addonServiceId: addon.id, addonServiceName: addon.name, categoryId: category.id, categoryName: category.name, quantity: String(addonQuantity), amount, vatAmount: addonVatAmount };
   }));
   const addonsAmount = addons.reduce((sum, addon) => sum + Number(addon.amount), 0);
+  const addonsVatAmount = addons.reduce((sum, addon) => sum + Number(addon.vatAmount), 0);
+  // Total VAT combines the facility line and every add-on line. The
+  // displayed rate is derived from the combined taxable base rather than
+  // reused raw from one config field, the same aggregate-derived approach
+  // already used for the ticket receipt's VAT percentage — it only differs
+  // from a flat rate when the facility and its add-ons are taxed at
+  // different rates.
+  const vatAmount = (Number(facilityVatAmount) + addonsVatAmount).toFixed(3);
+  const taxableBase = Number(facilityAmount) + addonsAmount;
+  const vatPercent = taxableBase > 0 ? ((Number(vatAmount) / taxableBase) * 100).toFixed(2) : "0.00";
   return {
-    facility, facilityCategory, facilityQuantity, facilityAmount, discountAmount, discountPercentage, partnerEntity, addons, vatAmount, vatPercent: facility.applyVat ? String(facility.vatPercent) : "0",
+    facility, facilityCategory, facilityQuantity, facilityAmount, discountAmount, discountPercentage, partnerEntity, addons, vatAmount, vatPercent, facilityVatAmount,
     feeAmount, fees: feeBreakdown,
     addonsAmount: addonsAmount.toFixed(3), totalAmount: (Number(facilityAmount) + Number(vatAmount) + Number(feeAmount) + addonsAmount).toFixed(3),
   };
@@ -458,19 +474,26 @@ export const platformRouter = router({
 
   addonServices: router({
     list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listAddonServices(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
+    // PRD Round 13 (client feedback): same direct VAT field as ticket types
+    // and facility types — add-ons had no VAT concept at all before this
+    // round, so a facility booking's VAT line silently excluded them.
     create: superAdminProcedure.input(z.object({
       name: z.string().trim().min(1).max(160), code: z.string().min(2).max(32),
       pricingMethod: z.enum(["per_person", "fixed", "hourly"]), rate: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals"),
+      applyVat: z.boolean().default(true), vatPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).default("5.00"),
     })).mutation(async ({ input, ctx }) => {
+      if (Number(input.vatPercent) > 100) throw new TRPCError({ code: "BAD_REQUEST", message: "VAT rate cannot exceed 100" });
       const category = await findOrCreateRevenueCategoryForFacility(input.name, normalizeRateCode(input.code), ctx.user.id);
-      const addon = await createAddonService({ name: input.name, code: normalizeRateCode(input.code), pricingMethod: input.pricingMethod, rate: input.rate, revenueCategoryId: category.id, createdBy: ctx.user.id } as any);
+      const addon = await createAddonService({ name: input.name, code: normalizeRateCode(input.code), pricingMethod: input.pricingMethod, rate: input.rate, applyVat: input.applyVat, vatPercent: input.vatPercent, revenueCategoryId: category.id, createdBy: ctx.user.id } as any);
       await logActivity(ctx.user.id, "addon_service.create", "addon_service", addon.id, JSON.stringify(input));
       return addon;
     }),
     update: superAdminProcedure.input(z.object({
       id: z.number().int().positive(), name: z.string().trim().min(1).max(160).optional(), code: z.string().min(2).max(32).optional(),
       pricingMethod: z.enum(["per_person", "fixed", "hourly"]).optional(), rate: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals").optional(), isActive: z.boolean().optional(),
+      applyVat: z.boolean().optional(), vatPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
     })).mutation(async ({ input, ctx }) => {
+      if (input.vatPercent !== undefined && Number(input.vatPercent) > 100) throw new TRPCError({ code: "BAD_REQUEST", message: "VAT rate cannot exceed 100" });
       const { id, code, ...rest } = input;
       const addon = await updateAddonService(id, { ...rest, code: code ? normalizeRateCode(code) : undefined });
       if (!addon) throw new TRPCError({ code: "NOT_FOUND", message: "Add-on service was not found" });
@@ -524,7 +547,7 @@ export const platformRouter = router({
         : null;
       const booking = await createFacilityBooking({
         facilityTypeId: resolved.facility.id, facilityTypeName: resolved.facility.name, facilityCategoryId: resolved.facilityCategory.id, facilityCategoryName: resolved.facilityCategory.name,
-        bookingDate: input.bookingDate, quantity: String(resolved.facilityQuantity), facilityAmount: resolved.facilityAmount, vatAmount: resolved.vatAmount, feeAmount: resolved.feeAmount, addons: resolved.addons,
+        bookingDate: input.bookingDate, quantity: String(resolved.facilityQuantity), facilityAmount: resolved.facilityAmount, vatAmount: resolved.vatAmount, facilityVatAmount: resolved.facilityVatAmount, feeAmount: resolved.feeAmount, addons: resolved.addons,
         customerId: customer?.id ?? null, customerName: customer?.fullName || input.customerName?.trim(), paymentMethod: input.paymentMethod, notes: input.notes?.trim(), createdBy: ctx.user.id,
         partnerEntity: resolved.partnerEntity && resolved.discountPercentage ? { ...resolved.partnerEntity, discountPercentage: resolved.discountPercentage } : null,
       });
@@ -550,9 +573,16 @@ export const platformRouter = router({
       if (facility.pricingMethod !== "fixed" && !(quantity > 0)) throw new TRPCError({ code: "BAD_REQUEST", message: "Enter a valid duration" });
       const fullFacilityAmount = calculateFacilityLineAmount(String(facility.rate), quantity);
       const { discountedAmount: facilityAmount } = applyFacilityDiscount(fullFacilityAmount, booking.discountPercentage as any);
-      const { vatAmount } = calculateFacilityVat(facilityAmount, facility.applyVat, String(facility.vatPercent));
+      const { vatAmount: facilityVatAmount } = calculateFacilityVat(facilityAmount, facility.applyVat, String(facility.vatPercent));
       const facilityFees = (await listApplicableFees("facility_type", facility.id)).map((fee: any) => ({ ...fee, value: String(fee.value) }));
       const { feeAmount } = calculateFacilityFees(facilityAmount, facilityFees);
+      // PRD Round 13: only the facility line's VAT is recomputed here — its
+      // add-ons are untouched by a date/duration edit, so their already-
+      // snapshotted VAT (persisted per line on facility_booking_addons) is
+      // added back in rather than being dropped from the booking total.
+      const existingAddons = await listFacilityBookingAddons(booking.id);
+      const addonsVatAmount = (existingAddons as any[]).reduce((sum, addon) => sum + Number(addon.vatAmount || 0), 0);
+      const vatAmount = (Number(facilityVatAmount) + addonsVatAmount).toFixed(3);
       const totalAmount = (Number(facilityAmount) + Number(vatAmount) + Number(feeAmount) + Number(booking.addonsAmount)).toFixed(3);
       const updated = await updateFacilityBookingDetails(input.id, { bookingDate: input.bookingDate, quantity: String(quantity), facilityAmount, vatAmount, feeAmount, totalAmount, customerName: input.customerName !== undefined ? (input.customerName || null) : undefined });
       await logActivity(ctx.user.id, "facility_booking.update", "facility_booking", input.id, `${input.bookingDate}:${totalAmount}`);
@@ -584,7 +614,9 @@ export const platformRouter = router({
         const quantity = addon.pricingMethod === "fixed" ? 1 : line.quantity;
         const category = await getRevenueCategory(addon.revenueCategoryId);
         if (!category) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "This add-on's revenue category is missing" });
-        return { addonServiceId: addon.id, addonServiceName: addon.name, categoryId: category.id, categoryName: category.name, quantity: String(quantity), amount: calculateFacilityLineAmount(String(addon.rate), quantity) };
+        const amount = calculateFacilityLineAmount(String(addon.rate), quantity);
+        const { vatAmount } = calculateFacilityVat(amount, addon.applyVat, String(addon.vatPercent));
+        return { addonServiceId: addon.id, addonServiceName: addon.name, categoryId: category.id, categoryName: category.name, quantity: String(quantity), amount, vatAmount };
       }));
       const updated = await addFacilityBookingAddons({ bookingId: booking.id, businessDate: input.businessDate, addons, createdBy: ctx.user.id });
       await logActivity(ctx.user.id, "facility_booking.add_addon", "facility_booking", booking.id, addons.map((a) => a.addonServiceId).join(","));
