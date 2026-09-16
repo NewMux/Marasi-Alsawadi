@@ -37,6 +37,14 @@ function derivedVatPercentage(vatAmount: unknown, basePrice: unknown, discountAm
 function toReceiptData(created: any, ticketTypeById: Map<number, any>): TicketReceiptData {
   const firstLine = created.lines[0];
   const ticketGroup: TicketGroup = firstLine?.ticketTypeId ? (ticketTypeById.get(firstLine.ticketTypeId)?.ticketGroup || "water_park") : "water_park";
+  // Derived from the purchase's aggregate amounts, not any single ticket's
+  // own baisa-rounded amounts — a single ticket in a large group can be too
+  // small to divide evenly (e.g. 5% of a 2.250 discounted line is 0.1125,
+  // which rounds to 0.113 baisa and back-derives to "5.02%"), while the
+  // purchase total's much larger amounts divide back out exactly. Every
+  // line in one purchase shares the same ticket type's rate today, so this
+  // one figure is reused for every line instead of re-deriving it per line.
+  const vatPercentage = derivedVatPercentage(created.purchase.vatAmount, created.purchase.baseSubtotal, created.purchase.discountAmount);
   return {
     customerName: created.customer.fullName,
     customerPhone: created.customer.phone || "",
@@ -45,7 +53,7 @@ function toReceiptData(created: any, ticketTypeById: Map<number, any>): TicketRe
     baseSubtotal: created.purchase.baseSubtotal,
     discountAmount: created.purchase.discountAmount,
     vatAmount: created.purchase.vatAmount,
-    vatPercentage: derivedVatPercentage(created.purchase.vatAmount, created.purchase.baseSubtotal, created.purchase.discountAmount),
+    vatPercentage,
     totalAmount: created.purchase.totalAmount,
     partnerEntityName: created.purchase.partnerEntityName || null,
     discountPercentage: created.purchase.discountPercentage,
@@ -53,7 +61,7 @@ function toReceiptData(created: any, ticketTypeById: Map<number, any>): TicketRe
       ticketNumber: line.ticketNumber, label: line.label,
       ticketType: line.ticketType ?? null, freeEntryCategory: line.freeEntryCategory ?? null,
       basePrice: line.basePrice, discountAmount: line.discountAmount, vatAmount: line.vatAmount,
-      vatPercentage: derivedVatPercentage(line.vatAmount, line.basePrice, line.discountAmount),
+      vatPercentage,
       totalAmount: line.totalAmount,
     })),
   };
