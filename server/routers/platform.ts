@@ -537,9 +537,11 @@ export const platformRouter = router({
     // PRD Round 14, Section 5: staff-facing warning before double-booking a
     // facility on a date that already has an unpaid or paid booking — the
     // client calls this as the facility+date are picked, before Create.
-    checkConflict: protectedProcedure.input(z.object({ facilityTypeId: z.number().int().positive(), bookingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) })).query(async ({ input }) => {
+    checkConflict: protectedProcedure.input(z.object({
+      facilityTypeId: z.number().int().positive(), fromDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), toDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    })).query(async ({ input }) => {
       await autoCancelOverdueFacilityBookings();
-      const conflict = await findFacilityBookingConflict(input.facilityTypeId, input.bookingDate);
+      const conflict = await findFacilityBookingConflict(input.facilityTypeId, input.fromDate, input.toDate);
       if (!conflict) return null;
       const settings = await getFacilityBookingSettings();
       const hoursRemaining = conflict.booking.status === "booking" && settings.autoCancelEnabled

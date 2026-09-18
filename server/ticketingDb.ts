@@ -942,13 +942,34 @@ export async function updateFacilityBookingSettings(data: { autoCancelEnabled?: 
 // PRD Round 14, Section 5: warn staff before double-booking a facility on a
 // date that already has an unpaid or paid booking, rather than silently
 // allowing it — cancelled bookings never block a new one.
-export async function findFacilityBookingConflict(facilityTypeId: number, bookingDate: string) {
+// Client feedback (Round 14 follow-up): the conflict check was comparing
+// bookings by exact bookingDate equality — but for a "daily" facility,
+// bookingDate is only the reservation's start; the actual reserved period
+// runs bookingDate..bookingDate+(quantity-1) days. Two bookings entered on
+// different days can still reserve overlapping periods (and two bookings
+// whose start dates happen to differ were never flagged even when their
+// ranges overlapped), so this now computes each existing booking's real
+// end date from its own quantity and does a proper range-overlap test
+// against the new booking's [fromDate, toDate] — not a same-day check.
+function addDays(date: string | Date, days: number) {
+  const base = new Date(typeof date === "string" ? date : date.toISOString().slice(0, 10));
+  base.setUTCDate(base.getUTCDate() + days);
+  return base.toISOString().slice(0, 10);
+}
+
+export async function findFacilityBookingConflict(facilityTypeId: number, fromDate: string, toDate: string) {
   const db = await getDb(); if (!db) return undefined;
-  const rows = await db.select({ booking: facilityBookings, customer: guests }).from(facilityBookings)
+  const facility = await getFacilityType(facilityTypeId);
+  const candidates = await db.select({ booking: facilityBookings, customer: guests }).from(facilityBookings)
     .leftJoin(guests, eq(facilityBookings.customerId, guests.id))
-    .where(and(eq(facilityBookings.facilityTypeId, facilityTypeId), sql`${facilityBookings.bookingDate} = ${bookingDate}`, sql`${facilityBookings.status} != 'cancelled'`))
-    .orderBy(desc(facilityBookings.id)).limit(1);
-  return rows[0];
+    .where(and(eq(facilityBookings.facilityTypeId, facilityTypeId), sql`${facilityBookings.status} != 'cancelled'`, sql`${facilityBookings.bookingDate} <= ${toDate}`))
+    .orderBy(desc(facilityBookings.id));
+  for (const candidate of candidates) {
+    const start = typeof candidate.booking.bookingDate === "string" ? candidate.booking.bookingDate : (candidate.booking.bookingDate as unknown as Date).toISOString().slice(0, 10);
+    const end = facility?.pricingMethod === "daily" ? addDays(start, Number(candidate.booking.quantity) - 1) : start;
+    if (start <= toDate && fromDate <= end) return candidate;
+  }
+  return undefined;
 }
 
 const cancellers = alias(users, "cancellers");

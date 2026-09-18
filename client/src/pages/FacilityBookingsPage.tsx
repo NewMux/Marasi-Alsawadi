@@ -155,7 +155,7 @@ export default function FacilityBookingsPage() {
       utils.platform.facilityBookings.list.invalidate(); utils.platform.finance.invalidate(); toast.success(t("facility.bookingConfirmed"));
       if (pricing && selectedFacility) {
         setCreated({
-          facilityName: selectedFacility.name, customerName: (data.customer as any)?.fullName || customerName.trim(), bookingDate,
+          facilityName: selectedFacility.name, customerName: (data.customer as any)?.fullName || customerName.trim(), bookingDate: (data.booking as any).bookingDate,
           durationLabel: selectedFacility.pricingMethod === "daily" ? `${quantity} ${quantity === 1 ? t("facility.day") : t("facility.daysWord")}` : selectedFacility.pricingMethod === "hourly" ? `${quantity.toFixed(2)} ${t("facility.hoursWord")}` : null,
           facilityAmount: pricing.facilityAmount, addons: (pricing.addons as any[]).map((addon) => ({ name: addon.addonServiceName, quantity: addon.quantity, amount: addon.amount })),
           notes: notes.trim() || null, totalAmount: pricing.totalAmount,
@@ -195,13 +195,14 @@ export default function FacilityBookingsPage() {
       bankAmount: paymentMethodForPayment === "mixed" ? (mixedPaymentForPayment.bank || "0") : undefined,
     });
   };
-  // PRD Round 14, Section 5: warn staff before double-booking a facility on
-  // a date that already has an unpaid or paid booking — checked as soon as
-  // both the facility and date are picked, same debounce-free pattern as
-  // the phone lookup above.
+  // PRD Round 14, Section 5 (fixed per client follow-up): must compare the
+  // actual reservation period, not the standalone "Date" field — for a
+  // daily facility that's the From/To range, not a single day.
+  const conflictFromDate = selectedFacility?.pricingMethod === "daily" ? fromDate : bookingDate;
+  const conflictToDate = selectedFacility?.pricingMethod === "daily" ? toDate : bookingDate;
   const { data: bookingConflict } = trpc.platform.facilityBookings.checkConflict.useQuery(
-    { facilityTypeId: Number(facilityTypeId) || 0, bookingDate },
-    { enabled: bookingMode === "new" && Boolean(facilityTypeId && bookingDate) },
+    { facilityTypeId: Number(facilityTypeId) || 0, fromDate: conflictFromDate, toDate: conflictToDate },
+    { enabled: bookingMode === "new" && Boolean(facilityTypeId && conflictFromDate && conflictToDate) },
   );
   const startEdit = (booking: any) => { setEditingBookingId(booking.id); setEditDate(toIsoDateString(booking.bookingDate)); setEditQuantity(String(booking.quantity)); setEditCustomerName(booking.customerName || ""); };
   // PRD Round 6, item 3: reprint a past facility booking's receipt — data
@@ -282,7 +283,13 @@ export default function FacilityBookingsPage() {
       if (matchedCustomerUnconfirmed && !customerId) return toast.error(t("tickets.confirmMatchedCustomer"));
       if (customerInvalid) return toast.error(t("tickets.selectCustomerOrWalkIn"));
       create.mutate({
-        facilityTypeId: Number(facilityTypeId), bookingDate,
+        // Client feedback (Round 14 follow-up): a daily facility's actual
+        // reservation start is fromDate — the standalone "Date" field below
+        // was a second, disconnected date that defaulted to today and was
+        // never kept in sync, so a multi-day booking's stored bookingDate
+        // (and thus every downstream conflict check) had no real relation
+        // to the period actually being reserved.
+        facilityTypeId: Number(facilityTypeId), bookingDate: selectedFacility?.pricingMethod === "daily" ? fromDate : bookingDate,
         quantity: selectedFacility?.pricingMethod === "fixed" ? 1 : quantity,
         addons: validAddonLines.map((line) => ({ addonServiceId: Number(line.addonServiceId), quantity: Number(line.quantity) })),
         customerId: customerId ? Number(customerId) : undefined,
@@ -338,7 +345,7 @@ export default function FacilityBookingsPage() {
                 <Field label={t("facility.toTime")}><TextField type="time" value={toTime} onChange={(event) => setToTime(event.target.value)}/></Field>
               </div>}
               {selectedFacility && selectedFacility.pricingMethod !== "fixed" && <p className="-mt-2 text-[11px] text-subtle">{selectedFacility.pricingMethod === "daily" ? `${quantity} ${quantity === 1 ? t("facility.day") : t("facility.daysWord")}` : `${quantity.toFixed(2)} ${t("facility.hoursWord")}`} · {t("facility.rateNotEditable")}</p>}
-              <Field label={t("common.date")}><DateField value={bookingDate} onChange={setBookingDate}/></Field>
+              {selectedFacility?.pricingMethod !== "daily" && <Field label={t("common.date")}><DateField value={bookingDate} onChange={setBookingDate}/></Field>}
               {bookingConflict && <div className="rounded-2xl bg-danger-bg px-4 py-3 text-xs text-danger">
                 <b className="block font-semibold">{t("facility.conflictWarning")}</b>
                 <span className="mt-1 block">
