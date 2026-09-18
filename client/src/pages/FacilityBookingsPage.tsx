@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { applyCountryDialCode, COUNTRY_DIAL_CODES, DEFAULT_COUNTRY } from "@/lib/countries";
 import { useT, type TranslationKey } from "@/lib/i18n";
+import { blankMixedPaymentValues, isMixedPaymentValid, MixedPaymentFields, type MixedPaymentValues } from "@/components/MixedPaymentFields";
 
 const today = new Date().toISOString().slice(0, 10);
 const money = (value: unknown) => `OMR ${Number(value || 0).toLocaleString("en-OM", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
@@ -91,6 +92,10 @@ export default function FacilityBookingsPage() {
   const [editCustomerName, setEditCustomerName] = useState("");
   const [cancelingBooking, setCancelingBooking] = useState<any>(null);
   const [cancelReason, setCancelReason] = useState("");
+  const [payingBooking, setPayingBooking] = useState<any>(null);
+  const [paymentMethodForPayment, setPaymentMethodForPayment] = useState<"cash" | "card" | "bank" | "mixed">("cash");
+  const [mixedPaymentForPayment, setMixedPaymentForPayment] = useState<MixedPaymentValues>(blankMixedPaymentValues);
+  const [paymentAttempted, setPaymentAttempted] = useState(false);
 
   // PRD Round 4, Section 9.3: same phone-first lookup as Ticket Desk — a
   // booking can still be created with no customer attached (leave the phone
@@ -101,7 +106,13 @@ export default function FacilityBookingsPage() {
   const { data: phoneMatch, isFetching: phoneChecking } = trpc.platform.customers.findByPhone.useQuery({ phone: customerPhone.trim() }, { enabled: phoneLookupEnabled });
   const phoneResolved = phoneLookupEnabled && !phoneChecking;
   const isNewCustomerFlow = phoneResolved && !phoneMatch;
-  const customerInvalid = phoneEntered && (!phoneResolved || (isNewCustomerFlow && !customerName.trim()));
+  // PRD Round 14, Section 1: same gap as Ticket Desk — a matched phone was
+  // never actually required to be confirmed via "Use this customer" before
+  // submitting, which reached the server with no customerId and no name
+  // (the name field only renders for isNewCustomerFlow, which a match never
+  // is) and surfaced the server's raw zod validation error.
+  const matchedCustomerUnconfirmed = phoneEntered && !isNewCustomerFlow && Boolean(phoneMatch);
+  const customerInvalid = phoneEntered && (!phoneResolved || (isNewCustomerFlow && !customerName.trim()) || matchedCustomerUnconfirmed);
   const useMatchedCustomer = () => { if (phoneMatch) setCustomerId(String(phoneMatch.id)); };
   const changeCustomer = () => { setCustomerId(""); setCustomerName(""); setCustomerPhone(`${COUNTRY_DIAL_CODES[customerCountry] || COUNTRY_DIAL_CODES[DEFAULT_COUNTRY]} `); setCustomerEmail(""); setCustomerCountry(DEFAULT_COUNTRY); };
 
@@ -150,6 +161,7 @@ export default function FacilityBookingsPage() {
           notes: notes.trim() || null, totalAmount: pricing.totalAmount,
           partnerEntityName: (pricing as any).partnerEntity?.name || null, discountPercentage: (pricing as any).discountPercentage || null, discountAmount: (pricing as any).discountAmount,
           vatAmount: (pricing as any).vatAmount, vatPercentage: (pricing as any).vatPercent, feeAmount: (pricing as any).feeAmount,
+          paymentStatus: "booking", paymentMethod,
         });
       }
       resetForm();
@@ -168,6 +180,29 @@ export default function FacilityBookingsPage() {
     onSuccess: () => { utils.platform.facilityBookings.list.invalidate(); utils.platform.finance.invalidate(); toast.success(t("facility.bookingCancelled")); },
     onError: (error) => toast.error(error.message),
   });
+  const addPayment = trpc.platform.facilityBookings.addPayment.useMutation({
+    onSuccess: () => { utils.platform.facilityBookings.list.invalidate(); utils.platform.finance.invalidate(); toast.success(t("facility.paymentRecorded")); setPayingBooking(null); },
+    onError: (error) => toast.error(error.message),
+  });
+  const confirmAddPayment = () => {
+    if (!payingBooking) return;
+    setPaymentAttempted(true);
+    if (paymentMethodForPayment === "mixed" && !isMixedPaymentValid(mixedPaymentForPayment, payingBooking.totalAmount)) return toast.error(t("tickets.mixedMismatch"));
+    addPayment.mutate({
+      bookingId: payingBooking.id, paymentMethod: paymentMethodForPayment, businessDate: today,
+      cashAmount: paymentMethodForPayment === "mixed" ? (mixedPaymentForPayment.cash || "0") : undefined,
+      cardAmount: paymentMethodForPayment === "mixed" ? (mixedPaymentForPayment.card || "0") : undefined,
+      bankAmount: paymentMethodForPayment === "mixed" ? (mixedPaymentForPayment.bank || "0") : undefined,
+    });
+  };
+  // PRD Round 14, Section 5: warn staff before double-booking a facility on
+  // a date that already has an unpaid or paid booking — checked as soon as
+  // both the facility and date are picked, same debounce-free pattern as
+  // the phone lookup above.
+  const { data: bookingConflict } = trpc.platform.facilityBookings.checkConflict.useQuery(
+    { facilityTypeId: Number(facilityTypeId) || 0, bookingDate },
+    { enabled: bookingMode === "new" && Boolean(facilityTypeId && bookingDate) },
+  );
   const startEdit = (booking: any) => { setEditingBookingId(booking.id); setEditDate(toIsoDateString(booking.bookingDate)); setEditQuantity(String(booking.quantity)); setEditCustomerName(booking.customerName || ""); };
   // PRD Round 6, item 3: reprint a past facility booking's receipt — data
   // (booking + addons) is already returned by facilityBookings.list, so this
@@ -214,6 +249,8 @@ export default function FacilityBookingsPage() {
       notes: row.booking.notes || null, totalAmount: row.booking.totalAmount,
       partnerEntityName: row.booking.partnerEntityName || null, discountPercentage: row.booking.discountPercentage || null, discountAmount: discountAmount.toFixed(3),
       vatAmount: row.booking.vatAmount, vatPercentage, feeAmount: row.booking.feeAmount,
+      paymentStatus: row.booking.status === "booking" ? "booking" : "confirmed",
+      paymentMethod: row.booking.paymentMethod, cashAmount: row.booking.cashAmount, cardAmount: row.booking.cardAmount, bankAmount: row.booking.bankAmount,
     };
     setCreated(data);
     setReprintedBookingId(row.booking.id);
@@ -242,6 +279,7 @@ export default function FacilityBookingsPage() {
     if (bookingMode === "new") {
       if (facilityInvalid) return toast.error(t("facility.chooseFacility"));
       if (quantityInvalid) return toast.error(t("facility.enterQuantity"));
+      if (matchedCustomerUnconfirmed && !customerId) return toast.error(t("tickets.confirmMatchedCustomer"));
       if (customerInvalid) return toast.error(t("tickets.selectCustomerOrWalkIn"));
       create.mutate({
         facilityTypeId: Number(facilityTypeId), bookingDate,
@@ -266,7 +304,10 @@ export default function FacilityBookingsPage() {
   const printReceipt = async (width: "80" | "58") => {
     if (created && (await printFacilityReceiptViaAgent(created))) { toast.success(t("tickets.sentToPrinter")); return; }
     setReceiptWidth(width);
-    window.setTimeout(() => window.print(), 0);
+    // PRD Round 14, Section 4: see the matching comment in
+    // TicketDeskPage.tsx's printReceipt — a bare setTimeout(fn, 0) can
+    // print before the width-class change has actually painted.
+    requestAnimationFrame(() => requestAnimationFrame(() => window.print()));
     if (created) toast.message(t("tickets.printAgentNotFound"));
   };
 
@@ -298,6 +339,14 @@ export default function FacilityBookingsPage() {
               </div>}
               {selectedFacility && selectedFacility.pricingMethod !== "fixed" && <p className="-mt-2 text-[11px] text-subtle">{selectedFacility.pricingMethod === "daily" ? `${quantity} ${quantity === 1 ? t("facility.day") : t("facility.daysWord")}` : `${quantity.toFixed(2)} ${t("facility.hoursWord")}`} · {t("facility.rateNotEditable")}</p>}
               <Field label={t("common.date")}><DateField value={bookingDate} onChange={setBookingDate}/></Field>
+              {bookingConflict && <div className="rounded-2xl bg-danger-bg px-4 py-3 text-xs text-danger">
+                <b className="block font-semibold">{t("facility.conflictWarning")}</b>
+                <span className="mt-1 block">
+                  {t("facility.conflictReference")} #{bookingConflict.referenceNumber} — {bookingConflict.customerName || t("facility.noCustomerName")} —{" "}
+                  {bookingConflict.status === "booking" ? t("facility.statusBookingPill") : t("facility.statusConfirmedPill")}
+                  {bookingConflict.status === "booking" && bookingConflict.hoursRemaining !== null && ` (${t("facility.hoursRemaining", { hours: Math.round(bookingConflict.hoursRemaining) })})`}
+                </span>
+              </div>}
               <div className="rounded-2xl border border-divider bg-well p-4">
                 {customerId ? <div className="flex items-center justify-between gap-3"><div><span className="block text-xs font-semibold text-success">{t("tickets.savedSelected")}</span><span className="mt-1 block text-xs text-muted">{t("tickets.idPrefix")} {customerId}</span></div><SecondaryButton onClick={changeCustomer}>{t("tickets.change")}</SecondaryButton></div> : <>
                   <div className="grid grid-cols-2 gap-3">
@@ -308,7 +357,7 @@ export default function FacilityBookingsPage() {
                   </div>
                   <p className="mt-2 text-[11px] text-subtle">{t("facility.customerOptionalHint")}</p>
                   {phoneLookupEnabled && phoneChecking && <p className="mt-2 text-xs text-muted">{t("tickets.checkingPhone")}</p>}
-                  {phoneResolved && phoneMatch && <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl bg-success-bg px-4 py-3"><div className="min-w-0"><span className="block text-xs font-semibold text-success">{t("tickets.existingCustomerFound")}</span><span className="mt-1 block truncate text-xs text-muted">{phoneMatch.fullName}{phoneMatch.email ? ` · ${phoneMatch.email}` : ""}</span></div><SecondaryButton onClick={useMatchedCustomer}>{t("tickets.useThisCustomer")}</SecondaryButton></div>}
+                  {phoneResolved && phoneMatch && <div className={cx("mt-3 flex items-center justify-between gap-3 rounded-2xl px-4 py-3", attemptedSubmit && matchedCustomerUnconfirmed ? "bg-danger-bg ring-1 ring-danger/30" : "bg-success-bg")}><div className="min-w-0"><span className={cx("block text-xs font-semibold", attemptedSubmit && matchedCustomerUnconfirmed ? "text-danger" : "text-success")}>{attemptedSubmit && matchedCustomerUnconfirmed ? t("tickets.confirmMatchedCustomer") : t("tickets.existingCustomerFound")}</span><span className="mt-1 block truncate text-xs text-muted">{phoneMatch.fullName}{phoneMatch.email ? ` · ${phoneMatch.email}` : ""}</span></div><SecondaryButton onClick={useMatchedCustomer}>{t("tickets.useThisCustomer")}</SecondaryButton></div>}
                   {isNewCustomerFlow && <div className="mt-3 grid gap-3">
                     <Field label={t("tickets.fullName")} error={attemptedSubmit && customerInvalid && !customerName.trim() ? t("common.required") : undefined}><TextField value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Customer full name" className={attemptedSubmit && customerInvalid && !customerName.trim() ? "border-danger ring-1 ring-danger/30" : undefined}/></Field>
                     <Field label={t("tickets.email")}><TextField type="email" value={customerEmail} onChange={(event) => setCustomerEmail(event.target.value)} placeholder="name@example.com"/></Field>
@@ -331,9 +380,9 @@ export default function FacilityBookingsPage() {
         <Surface>
           <div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("facility.bookingsList")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("facility.bookingsListHint")}</p></div><StatusPill>{bookingRows.length}</StatusPill></div>
           <SearchField value={bookingListQuery} onChange={setBookingListQuery} placeholder={t("facility.findBookingPlaceholder")}/>
-          <div className="mt-4">{bookingsLoading ? <LoadingState/> : bookingRows.length ? <div className="divide-y divide-divider">{(bookingRows as any[]).slice(0, 30).map((row: any) => { const expanded = expandedBookingId === row.booking.id; const cancelled = row.booking.status === "cancelled"; const editing = editingBookingId === row.booking.id; const rowFacility = facilityTypes.find((entry) => entry.id === row.booking.facilityTypeId); return <div key={row.booking.id} className="py-3">
+          <div className="mt-4">{bookingsLoading ? <LoadingState/> : bookingRows.length ? <div className="divide-y divide-divider">{(bookingRows as any[]).slice(0, 30).map((row: any) => { const expanded = expandedBookingId === row.booking.id; const cancelled = row.booking.status === "cancelled"; const awaitingPayment = row.booking.status === "booking"; const editing = editingBookingId === row.booking.id; const rowFacility = facilityTypes.find((entry) => entry.id === row.booking.facilityTypeId); return <div key={row.booking.id} className="py-3">
             <button onClick={() => { setExpandedBookingId(expanded ? null : row.booking.id); setRowAddonServiceId(""); setRowAddonQuantity("1"); setEditingBookingId(null); }} className="grid w-full grid-cols-[1fr_.7fr_.6fr] items-center gap-3 rounded-xl px-2 py-1.5 text-left hover:bg-fill">
-              <div className="min-w-0"><div className="flex items-center gap-2"><span className="truncate text-sm font-medium">{row.booking.facilityTypeName}</span>{cancelled && <StatusPill tone="danger">{t("facility.statusCancelledPill")}</StatusPill>}</div><div className="mt-1 truncate text-xs text-muted">{row.customer?.fullName || row.booking.customerName || t("facility.noCustomerName")}</div></div>
+              <div className="min-w-0"><div className="flex items-center gap-2"><span className="truncate text-sm font-medium">{row.booking.facilityTypeName}</span>{cancelled && <StatusPill tone="danger">{t("facility.statusCancelledPill")}</StatusPill>}{awaitingPayment && <StatusPill tone="warning">{t("facility.statusBookingPill")}</StatusPill>}</div><div className="mt-1 truncate text-xs text-muted">{row.customer?.fullName || row.booking.customerName || t("facility.noCustomerName")}</div></div>
               <span className="text-xs text-muted">{dateLabel(row.booking.bookingDate)}</span>
               <b className={cx("text-right text-sm", cancelled && "text-muted line-through")}>{money(row.booking.totalAmount)}</b>
             </button>
@@ -343,12 +392,15 @@ export default function FacilityBookingsPage() {
                 <div className="flex justify-between"><span className="text-muted">{row.booking.facilityTypeName}</span><span>{money(row.booking.facilityAmount)}</span></div>
                 {(row.addons as any[]).map((addon: any) => <div key={addon.id} className="flex justify-between"><span className="text-muted">{addon.addonServiceName} ×{addon.quantity}</span><span>{money(addon.amount)}</span></div>)}
                 {row.booking.notes && <div className="mt-1 text-muted">{row.booking.notes}</div>}
-                <div className="mt-1.5 flex justify-between border-t border-divider pt-1.5 font-semibold"><span>{t("common.total")}</span><span>{money(row.booking.totalAmount)}</span></div>
+                <div className="mt-1.5 flex justify-between border-t border-divider pt-1.5 font-semibold"><span>{awaitingPayment ? t("facility.amountDue") : t("common.total")}</span><span>{money(row.booking.totalAmount)}</span></div>
                 <div className="flex justify-between text-muted"><span>{t("tickets.paymentMethod")}</span><span className="capitalize">{t(`tickets.${row.booking.paymentMethod || "cash"}` as TranslationKey)}</span></div>
-                {cancelled && row.booking.cancelReason && <div className="mt-1 text-danger">{t("facility.cancelReasonNote")}: {row.booking.cancelReason}</div>}
+                {awaitingPayment && <div className="mt-1 font-semibold text-warning">{t("facility.statusBookingHint")}</div>}
+                {cancelled && <div className="mt-1 text-danger">{row.booking.cancelKind === "auto" ? t("facility.cancelledAutoNote") : t("facility.cancelledManualNote", { name: row.cancelledByName || t("facility.staffFallback") })}</div>}
+                {cancelled && row.booking.cancelKind !== "auto" && row.booking.cancelReason && <div className="mt-1 text-danger">{t("facility.cancelReasonNote")}: {row.booking.cancelReason}</div>}
               </div>
               <div className="mt-4 flex flex-wrap gap-2 border-t border-divider pt-4">
                 <SecondaryButton onClick={() => reprintBooking(row)} disabled={reprintingId === row.booking.id}><Printer size={14} className="mr-1.5"/>{t("facility.reprintReceipt")}</SecondaryButton>
+                {awaitingPayment && <PrimaryButton onClick={() => { setPaymentMethodForPayment(row.booking.paymentMethod || "cash"); setMixedPaymentForPayment(blankMixedPaymentValues); setPaymentAttempted(false); setPayingBooking(row.booking); }}>{t("facility.addPayment")}</PrimaryButton>}
                 {!cancelled && <SecondaryButton onClick={() => (editing ? setEditingBookingId(null) : startEdit(row.booking))}><Pencil size={14} className="mr-1.5"/>{t("facility.editBooking")}</SecondaryButton>}
                 {!cancelled && <SecondaryButton onClick={() => { setCancelReason(""); setCancelingBooking(row.booking); }} className="text-danger hover:bg-danger-bg"><Ban size={14} className="mr-1.5"/>{t("facility.cancelBooking")}</SecondaryButton>}
               </div>
@@ -414,6 +466,15 @@ export default function FacilityBookingsPage() {
         <DialogHeader><DialogTitle>{t("facility.confirmCancelBooking")}</DialogTitle></DialogHeader>
         <Field label={t("tickets.cancelReasonLabel")}><Textarea value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} placeholder={t("tickets.cancelReasonPlaceholder")} className="min-h-[86px] rounded-xl border-line bg-well"/></Field>
         <DialogFooter><SecondaryButton onClick={() => setCancelingBooking(null)}>{t("common.close")}</SecondaryButton><PrimaryButton onClick={confirmCancelBooking} pending={cancelBooking.isPending}>{t("facility.confirmCancelBookingAction")}</PrimaryButton></DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={Boolean(payingBooking)} onOpenChange={(open) => { if (!open) setPayingBooking(null); }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>{t("facility.addPayment")}</DialogTitle></DialogHeader>
+        {payingBooking && <div className="rounded-2xl bg-well p-4 text-sm"><span className="text-muted">{t("facility.amountDue")}</span><b className="ml-2">{money(payingBooking.totalAmount)}</b></div>}
+        <Field label={t("tickets.paymentMethod")}><SelectField value={paymentMethodForPayment} onChange={(event) => setPaymentMethodForPayment(event.target.value as typeof paymentMethodForPayment)}><option value="cash">{t("tickets.cash")}</option><option value="card">{t("tickets.card")}</option><option value="bank">{t("tickets.bank")}</option><option value="mixed">{t("tickets.mixed")}</option></SelectField></Field>
+        {paymentMethodForPayment === "mixed" && payingBooking && <MixedPaymentFields values={mixedPaymentForPayment} onChange={setMixedPaymentForPayment} total={payingBooking.totalAmount} attempted={paymentAttempted}/>}
+        <DialogFooter><SecondaryButton onClick={() => setPayingBooking(null)}>{t("common.close")}</SecondaryButton><PrimaryButton onClick={confirmAddPayment} pending={addPayment.isPending}>{t("facility.confirmPayment")}</PrimaryButton></DialogFooter>
       </DialogContent>
     </Dialog>
   </>;

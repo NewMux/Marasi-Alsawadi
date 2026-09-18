@@ -49,6 +49,18 @@ export function minorToMoney(value: number) {
   return (value / 1000).toFixed(3);
 }
 
+// PRD Round 14, Section 6: whenever "Mixed" is the chosen payment method,
+// the staff-entered Cash/Card/Bank split must add up to the transaction
+// total before the payment can be confirmed — shared by both the ticket
+// purchase and facility booking payment paths so the rule can't drift
+// between them. Amounts are optional individually (a split can leave a
+// method at zero) but must together sum exactly to totalAmount.
+export function validateMixedPaymentBreakdown(totalAmount: string, breakdown: { cashAmount?: string; cardAmount?: string; bankAmount?: string }) {
+  const toMinor = (value?: string) => moneyToMinor(value?.trim() || "0");
+  const sum = toMinor(breakdown.cashAmount) + toMinor(breakdown.cardAmount) + toMinor(breakdown.bankAmount);
+  if (sum !== moneyToMinor(totalAmount)) throw new Error("Cash, card, and bank amounts must add up to the total");
+}
+
 function percentageToScaled(value: string) {
   if (!/^\d+(\.\d{1,4})?$/.test(value) || Number(value) <= 0 || Number(value) > 100) {
     throw new Error("Percentage fees must be greater than 0 and no more than 100");

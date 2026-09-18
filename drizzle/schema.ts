@@ -224,6 +224,12 @@ export const ticketPurchases = mysqlTable("ticket_purchases", {
   feeTotal: decimal("feeTotal", { precision: 12, scale: 3 }).default("0").notNull(),
   totalAmount: decimal("totalAmount", { precision: 12, scale: 3 }).notNull(),
   paymentMethod: mysqlEnum("paymentMethod", ["cash", "card", "bank", "mixed"]).default("cash").notNull(),
+  // PRD Round 14, Section 6: only ever set when paymentMethod is "mixed" —
+  // the staff-entered split that must sum to totalAmount, so the receipt
+  // can show the exact breakdown instead of one combined "Mixed" line.
+  cashAmount: decimal("cashAmount", { precision: 12, scale: 3 }),
+  cardAmount: decimal("cardAmount", { precision: 12, scale: 3 }),
+  bankAmount: decimal("bankAmount", { precision: 12, scale: 3 }),
   notes: text("notes"),
   issuedBy: int("issuedBy").notNull(),
   status: mysqlEnum("status", ["issued", "refunded"]).default("issued").notNull(),
@@ -761,14 +767,47 @@ export const facilityBookings = mysqlTable("facility_bookings", {
   // PRD Round 4, Section 9.4: cancelling a booking must reverse its revenue —
   // the booking row itself is never deleted (kept for record-keeping), only
   // its linked finance_entries/revenue_records rows are removed.
-  status: mysqlEnum("status", ["confirmed", "cancelled"]).default("confirmed").notNull(),
+  // PRD Round 14, Section 5: "confirmed" now only means paid — a brand new
+  // booking starts as "booking" (awaiting payment, no revenue posted at
+  // all yet) and only becomes "confirmed" once Add Payment actually runs.
+  // Default stays "confirmed" for any pre-existing insert path that never
+  // sets status explicitly; every write from this round always sets it.
+  status: mysqlEnum("status", ["booking", "confirmed", "cancelled"]).default("confirmed").notNull(),
   cancelledAt: timestamp("cancelledAt"),
   cancelledBy: int("cancelledBy"),
   cancelReason: text("cancelReason"),
+  // Distinguishes a staff-initiated cancel from the auto-cancellation sweep
+  // (Stage 3) — the client explicitly wants "Cancelled automatically
+  // (unpaid)" shown differently from "Cancelled manually by [staff name]".
+  cancelKind: mysqlEnum("cancelKind", ["manual", "auto"]),
+  // Stage 2 (Add Payment): when and who actually recorded the payment —
+  // separate from createdBy/createdAt, which is when the booking (Stage 1)
+  // was first made, possibly well before payment.
+  paidAt: timestamp("paidAt"),
+  paidBy: int("paidBy"),
+  // PRD Round 14, Section 6: same mixed-payment breakdown as ticket_purchases
+  // — set on whichever event actually moved the money (Add Payment for a
+  // facility booking, since createFacilityBooking itself never posts
+  // revenue any more).
+  cashAmount: decimal("cashAmount", { precision: 12, scale: 3 }),
+  cardAmount: decimal("cardAmount", { precision: 12, scale: 3 }),
+  bankAmount: decimal("bankAmount", { precision: 12, scale: 3 }),
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 export type FacilityBooking = typeof facilityBookings.$inferSelect;
+
+// PRD Round 14, Section 5, Stage 3: one global on/off toggle plus the
+// auto-cancellation window (24/48/72h), Admin-configurable from Commercial
+// Settings rather than hardcoded — a singleton row, same pattern as
+// ticket_number_sequences.
+export const facilityBookingSettings = mysqlTable("facility_booking_settings", {
+  id: int("id").primaryKey().default(1),
+  autoCancelEnabled: boolean("autoCancelEnabled").default(false).notNull(),
+  autoCancelHours: int("autoCancelHours").default(24).notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type FacilityBookingSettings = typeof facilityBookingSettings.$inferSelect;
 
 export const facilityBookingAddons = mysqlTable("facility_booking_addons", {
   id: int("id").autoincrement().primaryKey(),

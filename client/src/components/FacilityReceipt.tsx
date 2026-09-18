@@ -33,6 +33,17 @@ export type FacilityReceiptData = {
   vatPercentage?: string;
   feeAmount?: string;
   totalAmount: string;
+  // PRD Round 14, Section 5: a booking now prints one of two receipts
+  // depending on stage — Stage 1 ("booking") shows the amount still owed,
+  // Stage 2 ("confirmed") shows PAID. Omitted entirely for a pre-Round-14
+  // reprint of pricing that predates this field, which prints unchanged.
+  paymentStatus?: "booking" | "confirmed";
+  // PRD Round 14, Section 6: only present when paymentMethod is "mixed" —
+  // same exact Cash/Card/Bank split shown on the ticket receipt.
+  paymentMethod?: "cash" | "card" | "bank" | "mixed";
+  cashAmount?: string | null;
+  cardAmount?: string | null;
+  bankAmount?: string | null;
 };
 
 function omr(value: unknown) {
@@ -95,8 +106,25 @@ export function FacilityReceiptTicket({ data }: { data: FacilityReceiptData }) {
         {Number(data.vatAmount || 0) > 0 && <tr><td className="label" style={{ fontSize: 10 }}>ضريبة {Number(data.vatPercentage || 0)}٪ / VAT {Number(data.vatPercentage || 0)}%</td><td className="value" style={{ fontSize: 10 }}>{omr(data.vatAmount)}</td></tr>}
       </tbody></table>
 
+      {data.paymentStatus && <>
+        <div className="center price-note" style={{ fontWeight: 700 }}>
+          {data.paymentStatus === "booking" ? "الحالة: حجز - بانتظار الدفع / Status: Booking – Awaiting Payment" : "الحالة: مؤكد - مدفوع / Status: Confirmed – Paid"}
+        </div>
+      </>}
       <div className="center price" style={{ marginTop: 6 }}>{omr(data.totalAmount)}</div>
-      <div className="center price-note">المبلغ الإجمالي المستحق / Total Amount Due</div>
+      <div className="center price-note">
+        {data.paymentStatus === "confirmed" ? "مدفوع بالكامل / PAID" : "المبلغ الإجمالي المستحق / Total Amount Due"}
+      </div>
+
+      {data.paymentMethod === "mixed" && (Number(data.cashAmount || 0) + Number(data.cardAmount || 0) + Number(data.bankAmount || 0)) > 0 && <>
+        <div className="divider"/>
+        <table><tbody>
+          <tr><td className="label" style={{ fontWeight: 700, paddingBottom: 4 }} colSpan={2}>طريقة الدفع / Payment Breakdown</td></tr>
+          {Number(data.cashAmount || 0) > 0 && <tr><td className="label" style={{ fontSize: 10 }}>نقدًا / Cash</td><td className="value" style={{ fontSize: 10 }}>{omr(data.cashAmount)}</td></tr>}
+          {Number(data.cardAmount || 0) > 0 && <tr><td className="label" style={{ fontSize: 10 }}>بطاقة / Card</td><td className="value" style={{ fontSize: 10 }}>{omr(data.cardAmount)}</td></tr>}
+          {Number(data.bankAmount || 0) > 0 && <tr><td className="label" style={{ fontSize: 10 }}>تحويل بنكي / Bank Transfer</td><td className="value" style={{ fontSize: 10 }}>{omr(data.bankAmount)}</td></tr>}
+        </tbody></table>
+      </>}
 
       <div className="divider"/>
 

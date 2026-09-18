@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateOperationalNet, calculatePrdPurchasePricing, calculateTicketPricing, calculateTicketTotal, decideGateEntry, extractTicketToken, formatPrdTicketNumber, formatTicketNumber, isPositiveMoney, STARTING_TICKET_NUMBER } from "./ticketingRules";
+import { calculateOperationalNet, calculatePrdPurchasePricing, calculateTicketPricing, calculateTicketTotal, decideGateEntry, extractTicketToken, formatPrdTicketNumber, formatTicketNumber, isPositiveMoney, STARTING_TICKET_NUMBER, validateMixedPaymentBreakdown } from "./ticketingRules";
 
 describe("ticketing business rules", () => {
   it("formats a standard, year-based sequential transaction number", () => {
@@ -170,5 +170,16 @@ describe("ticketing business rules", () => {
     expect(decideGateEntry("checked_in", "2026-08-24", "2026-08-24")).toEqual({ allowed: false, reason: "already_checked_in" });
     expect(decideGateEntry("paid", "2026-08-23", "2026-08-24")).toEqual({ allowed: false, reason: "expired" });
     expect(decideGateEntry("voided", "2026-08-24", "2026-08-24")).toEqual({ allowed: false, reason: "voided" });
+  });
+
+  it("accepts a mixed-payment breakdown that sums exactly to the total, in either amount or field order", () => {
+    expect(() => validateMixedPaymentBreakdown("100.000", { cashAmount: "40.000", cardAmount: "30.000", bankAmount: "30.000" })).not.toThrow();
+    expect(() => validateMixedPaymentBreakdown("100.000", { cashAmount: "100.000", cardAmount: "0", bankAmount: "0" })).not.toThrow();
+    expect(() => validateMixedPaymentBreakdown("0.003", { cashAmount: "0.001", cardAmount: "0.001", bankAmount: "0.001" })).not.toThrow();
+  });
+
+  it("rejects a mixed-payment breakdown that doesn't sum to the total", () => {
+    expect(() => validateMixedPaymentBreakdown("100.000", { cashAmount: "40.000", cardAmount: "30.000", bankAmount: "29.999" })).toThrow("add up to the total");
+    expect(() => validateMixedPaymentBreakdown("100.000", {})).toThrow("add up to the total");
   });
 });

@@ -32,6 +32,7 @@ import {
   listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
   listAddonServices, getAddonService, createAddonService, updateAddonService, deleteAddonService,
   findOrCreateRevenueCategoryForFacility, createFacilityBooking, listFacilityBookings, listFacilityBookingAddons, getFacilityBooking, addFacilityBookingAddons, updateFacilityBookingDetails, cancelFacilityBooking,
+  addFacilityBookingPayment, autoCancelOverdueFacilityBookings, findFacilityBookingConflict, getFacilityBookingSettings, updateFacilityBookingSettings, getUserDisplayName,
   listPrdTicketPurchases, listPrdTicketLines, getCustomerById, refundPrdTicketPurchase,
   listExpenseAdjustments, createExpenseAdjustment, createExpenseTransfer, getExpenseCategoryBalances,
   listRevenueCategories, createRevenueCategory, updateRevenueCategory, deleteRevenueCategory, getRevenueCategory,
@@ -521,14 +522,33 @@ export const platformRouter = router({
   facilityBookings: router({
     catalog: protectedProcedure.query(async () => ({ facilityTypes: await listFacilityTypes(false), addonServices: await listAddonServices(false), partnerEntities: await listPartnerEntities(false) })),
     list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional(), query: z.string().optional() }).optional()).query(async ({ input }) => {
+      await autoCancelOverdueFacilityBookings();
       const rows = await listFacilityBookings(input?.from, input?.to, input?.query);
-      return Promise.all((rows as any[]).map(async (row) => ({ booking: row.booking, customer: row.customer, addons: await listFacilityBookingAddons(row.booking.id) })));
+      return Promise.all((rows as any[]).map(async (row) => ({ booking: row.booking, customer: row.customer, cancelledByName: row.cancelledByName, addons: await listFacilityBookingAddons(row.booking.id) })));
     }),
     get: protectedProcedure.input(z.object({ id: z.number().int().positive() })).query(async ({ input }) => {
+      await autoCancelOverdueFacilityBookings();
       const booking = await getFacilityBooking(input.id);
       if (!booking) throw new TRPCError({ code: "NOT_FOUND", message: "Facility booking was not found" });
       const customer = booking.customerId ? await getCustomerById(booking.customerId) : null;
-      return { booking, customer, addons: await listFacilityBookingAddons(booking.id) };
+      const cancelledByName = booking.cancelledBy ? await getUserDisplayName(booking.cancelledBy) : null;
+      return { booking, customer, cancelledByName, addons: await listFacilityBookingAddons(booking.id) };
+    }),
+    // PRD Round 14, Section 5: staff-facing warning before double-booking a
+    // facility on a date that already has an unpaid or paid booking — the
+    // client calls this as the facility+date are picked, before Create.
+    checkConflict: protectedProcedure.input(z.object({ facilityTypeId: z.number().int().positive(), bookingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) })).query(async ({ input }) => {
+      await autoCancelOverdueFacilityBookings();
+      const conflict = await findFacilityBookingConflict(input.facilityTypeId, input.bookingDate);
+      if (!conflict) return null;
+      const settings = await getFacilityBookingSettings();
+      const hoursRemaining = conflict.booking.status === "booking" && settings.autoCancelEnabled
+        ? Math.max(0, settings.autoCancelHours - (Date.now() - new Date(conflict.booking.createdAt).getTime()) / 3_600_000)
+        : null;
+      return {
+        referenceNumber: conflict.booking.id, customerName: conflict.customer?.fullName || conflict.booking.customerName || null,
+        status: conflict.booking.status, hoursRemaining,
+      };
     }),
     preview: protectedProcedure.input(z.object({
       facilityTypeId: z.number().int().positive(), quantity: z.number().positive(),
@@ -632,6 +652,32 @@ export const platformRouter = router({
       const updated = await addFacilityBookingAddons({ bookingId: booking.id, businessDate: input.businessDate, addons, createdBy: ctx.user.id });
       await logActivity(ctx.user.id, "facility_booking.add_addon", "facility_booking", booking.id, addons.map((a) => a.addonServiceId).join(","));
       return { booking: updated, addons: await listFacilityBookingAddons(booking.id) };
+    }),
+    // PRD Round 14, Section 5, Stage 2: the only place revenue is ever
+    // posted for a booking now — dated to when payment actually happened,
+    // not the original booking date.
+    addPayment: protectedProcedure.input(z.object({
+      bookingId: z.number().int().positive(), paymentMethod: z.enum(["cash", "card", "bank", "mixed"]),
+      businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      cashAmount: z.string().optional(), cardAmount: z.string().optional(), bankAmount: z.string().optional(),
+    }).refine((input) => input.paymentMethod !== "mixed" || (input.cashAmount !== undefined && input.cardAmount !== undefined && input.bankAmount !== undefined), { message: "Enter the cash, card, and bank amounts for a mixed payment" })
+    ).mutation(async ({ input, ctx }) => {
+      const updated = await addFacilityBookingPayment({
+        bookingId: input.bookingId, paymentMethod: input.paymentMethod, cashAmount: input.cashAmount, cardAmount: input.cardAmount, bankAmount: input.bankAmount,
+        businessDate: input.businessDate, paidBy: ctx.user.id,
+      }).catch((error: Error) => {
+        throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
+      });
+      await logActivity(ctx.user.id, "facility_booking.add_payment", "facility_booking", input.bookingId, `${input.paymentMethod}:${updated.totalAmount}`);
+      return { booking: updated, addons: await listFacilityBookingAddons(updated.id) };
+    }),
+    settings: router({
+      get: protectedProcedure.query(async () => getFacilityBookingSettings()),
+      update: superAdminProcedure.input(z.object({ autoCancelEnabled: z.boolean().optional(), autoCancelHours: z.number().int().positive().optional() })).mutation(async ({ input, ctx }) => {
+        const updated = await updateFacilityBookingSettings(input);
+        await logActivity(ctx.user.id, "facility_booking_settings.update", "facility_booking_settings", 1, JSON.stringify(input));
+        return updated;
+      }),
     }),
   }),
 
@@ -763,14 +809,23 @@ export const platformRouter = router({
       customerEmail: z.string().email().optional(), customerNationality: z.string().max(64).optional(), visitDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       lines: z.array(prdLineInput).min(1).max(MAX_TICKETS_PER_PURCHASE), paymentMethod: z.enum(["cash", "card", "bank", "mixed"]).default("cash"), notes: z.string().max(1000).optional(),
       partnerEntityId: z.number().int().positive().optional(),
-    }).refine((input) => Boolean(input.customerId || (input.customerName && input.customerPhone)), { message: "Select an existing customer or provide name and phone" })).mutation(async ({ input, ctx }) => {
+      // PRD Round 14, Section 6: only meaningful (and required) when
+      // paymentMethod is "mixed" — the exact Cash/Card/Bank split, validated
+      // against the resolved total in createPrdTicketPurchase itself since
+      // the total isn't known until pricing is resolved here.
+      cashAmount: z.string().optional(), cardAmount: z.string().optional(), bankAmount: z.string().optional(),
+    }).refine((input) => Boolean(input.customerId || (input.customerName && input.customerPhone)), { message: "Select an existing customer or provide name and phone" })
+      .refine((input) => input.paymentMethod !== "mixed" || (input.cashAmount !== undefined && input.cardAmount !== undefined && input.bankAmount !== undefined), { message: "Enter the cash, card, and bank amounts for a mixed payment" })
+    ).mutation(async ({ input, ctx }) => {
       const customer = input.customerId ? await getCustomerById(input.customerId) : await createGuest({ fullName: input.customerName!, phone: input.customerPhone!, email: input.customerEmail, nationality: input.customerNationality });
       if (!customer) throw new TRPCError({ code: "NOT_FOUND", message: "Customer record was not found" });
       const resolved = await resolvePrdPricing(input.lines, input.partnerEntityId);
       const result = await createPrdTicketPurchase({
-        customerId: customer.id, visitDate: input.visitDate, lines: resolved.lines, discountTiers: resolved.tiers.map((tier) => ({ ...tier, percentage: String(tier.percentage), maxTickets: tier.maxTickets === null ? null : Number(tier.maxTickets) })), fees: resolved.fees, paymentMethod: input.paymentMethod, notes: input.notes?.trim(), issuedBy: ctx.user.id,
+        customerId: customer.id, visitDate: input.visitDate, lines: resolved.lines, discountTiers: resolved.tiers.map((tier) => ({ ...tier, percentage: String(tier.percentage), maxTickets: tier.maxTickets === null ? null : Number(tier.maxTickets) })), fees: resolved.fees, paymentMethod: input.paymentMethod,
+        cashAmount: input.cashAmount, cardAmount: input.cardAmount, bankAmount: input.bankAmount,
+        notes: input.notes?.trim(), issuedBy: ctx.user.id,
         overrideDiscountByTicketType: resolved.overrideDiscountByTicketType, partnerEntity: resolved.partnerEntity,
-      });
+      }).catch((error: Error) => { throw new TRPCError({ code: "BAD_REQUEST", message: error.message }); });
       await createFinanceEntry({ date: input.visitDate, stream: "aqua_park", type: "revenue", amount: result.purchase.totalAmount, description: `Ticket purchase – ${customer.fullName}`, referenceId: result.purchase.id, referenceType: "prd_ticket_purchase", createdBy: ctx.user.id } as any);
       await logActivity(ctx.user.id, "prd_ticket_purchase.issue", "ticket_purchase", result.purchase.id, `${result.lines.map((line) => line.ticketNumber).join(",")}:${result.purchase.totalAmount}`);
       return { ...result, customer };

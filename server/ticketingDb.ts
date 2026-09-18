@@ -1,12 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import {
-  addonServices, assetAdjustments, assetCategories, assetRecords, attachments, expenseAdjustments, expenseCategories, expenseRecords, facilityBookingAddons, facilityBookings, facilityTypes, guests, partnerEntities, partnerDiscountRules, pettyCashAllocations, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
+  addonServices, assetAdjustments, assetCategories, assetRecords, attachments, expenseAdjustments, expenseCategories, expenseRecords, facilityBookingAddons, facilityBookings, facilityBookingSettings, facilityTypes, guests, partnerEntities, partnerDiscountRules, pettyCashAllocations, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
   serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers, ticketTypes, visitorCategories, ticketPrices,
   ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries, users,
 } from "../drizzle/schema";
 import { getDb } from "./db";
-import { calculateOperationalNet, calculatePrdPurchasePricing, decideGateEntry, formatPrdTicketNumber, formatTicketNumber, minorToMoney, moneyToMinor, type PrdDiscountTierInput, type PrdTicketLineInput } from "./ticketingRules";
+import { calculateOperationalNet, calculatePrdPurchasePricing, decideGateEntry, formatPrdTicketNumber, formatTicketNumber, minorToMoney, moneyToMinor, validateMixedPaymentBreakdown, type PrdDiscountTierInput, type PrdTicketLineInput } from "./ticketingRules";
 
 export type SalesTransactionDraft = {
   customerId: number;
@@ -225,6 +226,7 @@ export async function createPrdTicketPurchase(data: {
   discountTiers: PrdDiscountTierInput[];
   fees: Array<{ id: number; name: string; code: string; calculationType: "fixed" | "percentage"; value: string; applicationBasis: "per_ticket" | "per_transaction"; displayOrder: number }>;
   paymentMethod: "cash" | "card" | "bank" | "mixed";
+  cashAmount?: string; cardAmount?: string; bankAmount?: string;
   notes?: string;
   issuedBy: number;
   overrideDiscountByTicketType?: Record<string, string>;
@@ -232,6 +234,7 @@ export async function createPrdTicketPurchase(data: {
 }) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   const pricing = calculatePrdPurchasePricing({ lines: data.lines, discountTiers: data.discountTiers, fees: data.fees, overrideDiscountByTicketType: data.overrideDiscountByTicketType });
+  if (data.paymentMethod === "mixed") validateMixedPaymentBreakdown(pricing.totalAmount, data);
   return db.transaction(async (tx) => {
     await tx.insert(ticketNumberSequences).values({ id: 1, lastNumber: 0 }).onDuplicateKeyUpdate({ set: { id: 1 } });
     await tx.update(ticketNumberSequences).set({ lastNumber: sql`${ticketNumberSequences.lastNumber} + ${data.lines.length}` }).where(eq(ticketNumberSequences.id, 1));
@@ -242,7 +245,9 @@ export async function createPrdTicketPurchase(data: {
       customerId: data.customerId, visitDate: data.visitDate as any, chargeableTicketCount: pricing.chargeableTicketCount,
       discountPercentage: pricing.discountPercentage, baseSubtotal: pricing.baseSubtotal, discountAmount: pricing.discountAmount,
       vatAmount: pricing.vatAmount, feeTotal: pricing.feeTotal, totalAmount: pricing.totalAmount,
-      paymentMethod: data.paymentMethod, notes: data.notes || null, issuedBy: data.issuedBy,
+      paymentMethod: data.paymentMethod,
+      cashAmount: data.paymentMethod === "mixed" ? data.cashAmount || "0" : null, cardAmount: data.paymentMethod === "mixed" ? data.cardAmount || "0" : null, bankAmount: data.paymentMethod === "mixed" ? data.bankAmount || "0" : null,
+      notes: data.notes || null, issuedBy: data.issuedBy,
       partnerEntityId: data.partnerEntity?.id ?? null, partnerEntityName: data.partnerEntity?.name ?? null,
     } as any);
     const purchaseRows = await tx.select().from(ticketPurchases).orderBy(desc(ticketPurchases.id)).limit(1);
@@ -803,6 +808,12 @@ export async function deleteAddonService(id: number) {
 // createPettyCashSpendWithExpense's all-or-nothing pattern, since a failure
 // partway through must never leave a finance_entries row with nothing to
 // show for it, or a booking with no matching revenue.
+// PRD Round 14, Section 5: a booking no longer posts revenue at creation —
+// it's saved as "booking" (awaiting payment) and stays that way, with the
+// facility+add-on line items recorded but no finance_entries/revenue_records
+// at all, until addFacilityBookingPayment (Stage 2) actually runs. That
+// keeps a called-and-reserved-but-never-paid booking from ever inflating
+// revenue, matching Stage 3's "nothing to reverse" auto-cancel guarantee.
 export async function createFacilityBooking(data: {
   facilityTypeId: number; facilityTypeName: string; facilityCategoryId: number; facilityCategoryName: string;
   bookingDate: string; quantity: string; facilityAmount: string; vatAmount: string; facilityVatAmount: string; feeAmount: string;
@@ -814,58 +825,19 @@ export async function createFacilityBooking(data: {
   const addonsAmountMinor = data.addons.reduce((sum, addon) => sum + moneyToMinor(addon.amount), 0);
   const facilityAmountMinor = moneyToMinor(data.facilityAmount);
   const vatAmountMinor = moneyToMinor(data.vatAmount);
-  const facilityVatAmountMinor = moneyToMinor(data.facilityVatAmount);
   const feeAmountMinor = moneyToMinor(data.feeAmount);
-  // PRD Round 10: any assigned fee is on the facility line only, never on
-  // add-ons — same scope as the partner discount above it — and is
-  // recorded as part of the facility's own revenue entry, matching how a
-  // ticket purchase's revenue entry already posts its full VAT-and-fee-
-  // inclusive total, not just the base.
-  // PRD Round 13: VAT is no longer facility-only — data.vatAmount (stored
-  // on the booking row) is the combined facility+add-ons total, but the
-  // facility's own revenue entry must use only its own share
-  // (facilityVatAmount) since each add-on posts its own VAT-inclusive
-  // revenue entry separately below — otherwise add-on VAT would be
-  // double-counted into the facility's revenue line.
-  const facilityRevenueAmount = minorToMoney(facilityAmountMinor + facilityVatAmountMinor + feeAmountMinor);
   return db.transaction(async (tx) => {
-    // The booking row is inserted first, before its finance entries, so the
-    // revenue/add-on finance_entries rows below can carry referenceId:
-    // booking.id — required for cancelFacilityBooking to find and reverse
-    // exactly this booking's revenue later.
     await tx.insert(facilityBookings).values({
       facilityTypeId: data.facilityTypeId, facilityTypeName: data.facilityTypeName, bookingDate: data.bookingDate, quantity: data.quantity,
       facilityAmount: data.facilityAmount, vatAmount: data.vatAmount, feeAmount: data.feeAmount, addonsAmount: minorToMoney(addonsAmountMinor), totalAmount: minorToMoney(facilityAmountMinor + vatAmountMinor + feeAmountMinor + addonsAmountMinor),
       customerId: data.customerId ?? null, customerName: data.customerName || null, paymentMethod: data.paymentMethod || "cash", notes: data.notes || null, createdBy: data.createdBy,
       partnerEntityId: data.partnerEntity?.id ?? null, partnerEntityName: data.partnerEntity?.name ?? null, discountPercentage: data.partnerEntity?.discountPercentage ?? null,
+      status: "booking",
     } as any);
     const bookingRows = await tx.select().from(facilityBookings).orderBy(desc(facilityBookings.id)).limit(1);
     const booking = bookingRows[0]!;
 
-    await tx.insert(financeEntries).values({
-      date: data.bookingDate, stream: "extras", type: "revenue", amount: facilityRevenueAmount,
-      description: `Facility booking — ${data.facilityTypeName}`, referenceType: "facility_booking", referenceId: booking.id, createdBy: data.createdBy,
-    } as any);
-    const facilityFinanceRows = await tx.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
-    await tx.insert(revenueRecords).values({
-      businessDate: data.bookingDate, categoryId: data.facilityCategoryId, categoryName: data.facilityCategoryName, amount: facilityRevenueAmount,
-      description: `Facility booking — ${data.facilityTypeName}`, financeEntryId: facilityFinanceRows[0]!.id, createdBy: data.createdBy,
-    } as any);
-
     for (const addon of data.addons) {
-      // PRD Round 13: an add-on's own revenue entry is now VAT-inclusive,
-      // matching how the facility line's revenue entry already includes
-      // its VAT above — the actual amount collected, not just the base.
-      const addonRevenueAmount = minorToMoney(moneyToMinor(addon.amount) + moneyToMinor(addon.vatAmount));
-      await tx.insert(financeEntries).values({
-        date: data.bookingDate, stream: "extras", type: "revenue", amount: addonRevenueAmount,
-        description: `Facility booking add-on — ${addon.addonServiceName}`, referenceType: "facility_booking_addon", referenceId: booking.id, createdBy: data.createdBy,
-      } as any);
-      const addonFinanceRows = await tx.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
-      await tx.insert(revenueRecords).values({
-        businessDate: data.bookingDate, categoryId: addon.categoryId, categoryName: addon.categoryName, amount: addonRevenueAmount,
-        description: `Facility booking add-on — ${addon.addonServiceName}`, financeEntryId: addonFinanceRows[0]!.id, createdBy: data.createdBy,
-      } as any);
       await tx.insert(facilityBookingAddons).values({
         bookingId: booking.id, addonServiceId: addon.addonServiceId, addonServiceName: addon.addonServiceName, quantity: addon.quantity, amount: addon.amount, vatAmount: addon.vatAmount,
       } as any);
@@ -873,6 +845,113 @@ export async function createFacilityBooking(data: {
     return booking;
   });
 }
+
+// PRD Round 14, Section 5, Stage 2: revenue is posted only now, dated to
+// the actual payment date (not the original booking date) — the facility
+// line and every add-on each get their own VAT-inclusive revenue entry,
+// the same split createFacilityBooking used to post immediately before
+// this round.
+export async function addFacilityBookingPayment(data: { bookingId: number; paymentMethod: "cash" | "card" | "bank" | "mixed"; cashAmount?: string; cardAmount?: string; bankAmount?: string; businessDate: string; paidBy: number }) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  return db.transaction(async (tx) => {
+    const rows = await tx.select().from(facilityBookings).where(eq(facilityBookings.id, data.bookingId)).limit(1);
+    const booking = rows[0];
+    if (!booking) throw new Error("Facility booking was not found");
+    if (booking.status === "cancelled") throw new Error("This booking has been cancelled and can no longer be paid");
+    if (booking.status === "confirmed") throw new Error("This booking has already been paid");
+    if (data.paymentMethod === "mixed") validateMixedPaymentBreakdown(String(booking.totalAmount), data);
+    const facility = await tx.select().from(facilityTypes).where(eq(facilityTypes.id, booking.facilityTypeId)).limit(1);
+    const facilityCategoryId = facility[0]?.revenueCategoryId;
+    if (!facilityCategoryId) throw new Error("This booking's facility revenue category is missing");
+    const facilityCategory = await tx.select().from(revenueCategories).where(eq(revenueCategories.id, facilityCategoryId)).limit(1);
+    if (!facilityCategory[0]) throw new Error("This booking's facility revenue category is missing");
+
+    const addons = await tx.select().from(facilityBookingAddons).where(eq(facilityBookingAddons.bookingId, booking.id));
+    const addonsVatAmountMinor = addons.reduce((sum, addon) => sum + moneyToMinor(String(addon.vatAmount)), 0);
+    const facilityVatAmountMinor = moneyToMinor(String(booking.vatAmount)) - addonsVatAmountMinor;
+    const facilityRevenueAmount = minorToMoney(moneyToMinor(String(booking.facilityAmount)) + facilityVatAmountMinor + moneyToMinor(String(booking.feeAmount)));
+
+    await tx.insert(financeEntries).values({
+      date: data.businessDate, stream: "extras", type: "revenue", amount: facilityRevenueAmount,
+      description: `Facility booking — ${booking.facilityTypeName}`, referenceType: "facility_booking", referenceId: booking.id, createdBy: data.paidBy,
+    } as any);
+    const facilityFinanceRows = await tx.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
+    await tx.insert(revenueRecords).values({
+      businessDate: data.businessDate, categoryId: facilityCategory[0].id, categoryName: facilityCategory[0].name, amount: facilityRevenueAmount,
+      description: `Facility booking — ${booking.facilityTypeName}`, financeEntryId: facilityFinanceRows[0]!.id, createdBy: data.paidBy,
+    } as any);
+
+    for (const addon of addons) {
+      const addonCategory = await tx.select().from(addonServices).where(eq(addonServices.id, addon.addonServiceId)).limit(1);
+      const addonCategoryId = addonCategory[0]?.revenueCategoryId;
+      const addonCategoryRow = addonCategoryId ? await tx.select().from(revenueCategories).where(eq(revenueCategories.id, addonCategoryId)).limit(1) : [];
+      if (!addonCategoryRow[0]) continue;
+      const addonRevenueAmount = minorToMoney(moneyToMinor(String(addon.amount)) + moneyToMinor(String(addon.vatAmount)));
+      await tx.insert(financeEntries).values({
+        date: data.businessDate, stream: "extras", type: "revenue", amount: addonRevenueAmount,
+        description: `Facility booking add-on — ${addon.addonServiceName}`, referenceType: "facility_booking_addon", referenceId: booking.id, createdBy: data.paidBy,
+      } as any);
+      const addonFinanceRows = await tx.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
+      await tx.insert(revenueRecords).values({
+        businessDate: data.businessDate, categoryId: addonCategoryRow[0].id, categoryName: addonCategoryRow[0].name, amount: addonRevenueAmount,
+        description: `Facility booking add-on — ${addon.addonServiceName}`, financeEntryId: addonFinanceRows[0]!.id, createdBy: data.paidBy,
+      } as any);
+    }
+
+    await tx.update(facilityBookings).set({
+      status: "confirmed", paymentMethod: data.paymentMethod, paidAt: new Date(), paidBy: data.paidBy,
+      cashAmount: data.paymentMethod === "mixed" ? data.cashAmount || "0" : null, cardAmount: data.paymentMethod === "mixed" ? data.cardAmount || "0" : null, bankAmount: data.paymentMethod === "mixed" ? data.bankAmount || "0" : null,
+    } as any).where(eq(facilityBookings.id, booking.id));
+    const updated = await tx.select().from(facilityBookings).where(eq(facilityBookings.id, booking.id)).limit(1);
+    return updated[0]!;
+  });
+}
+
+// PRD Round 14, Section 5, Stage 3: a lazy sweep rather than a real
+// scheduler — this codebase has no background-job infrastructure, so
+// every list/get call self-heals any booking that's aged past the
+// Admin-configured window instead, the same "no manual step" philosophy
+// applyLegacyMigrations already uses for schema migrations.
+export async function autoCancelOverdueFacilityBookings() {
+  const db = await getDb(); if (!db) return;
+  const settingsRows = await db.select().from(facilityBookingSettings).where(eq(facilityBookingSettings.id, 1)).limit(1);
+  const settings = settingsRows[0];
+  if (!settings?.autoCancelEnabled) return;
+  const cutoff = new Date(Date.now() - settings.autoCancelHours * 3_600_000);
+  const overdue = await db.select({ id: facilityBookings.id }).from(facilityBookings)
+    .where(and(eq(facilityBookings.status, "booking"), sql`${facilityBookings.createdAt} < ${cutoff}`));
+  for (const row of overdue) {
+    await db.update(facilityBookings).set({
+      status: "cancelled", cancelledAt: new Date(), cancelKind: "auto", cancelReason: "Cancelled automatically (unpaid)",
+    } as any).where(eq(facilityBookings.id, row.id));
+  }
+}
+
+export async function getFacilityBookingSettings() {
+  const db = await getDb(); if (!db) return { id: 1, autoCancelEnabled: false, autoCancelHours: 24 };
+  const rows = await db.select().from(facilityBookingSettings).where(eq(facilityBookingSettings.id, 1)).limit(1);
+  return rows[0] || { id: 1, autoCancelEnabled: false, autoCancelHours: 24 };
+}
+
+export async function updateFacilityBookingSettings(data: { autoCancelEnabled?: boolean; autoCancelHours?: number }) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(facilityBookingSettings).set(data as any).where(eq(facilityBookingSettings.id, 1));
+  return getFacilityBookingSettings();
+}
+
+// PRD Round 14, Section 5: warn staff before double-booking a facility on a
+// date that already has an unpaid or paid booking, rather than silently
+// allowing it — cancelled bookings never block a new one.
+export async function findFacilityBookingConflict(facilityTypeId: number, bookingDate: string) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select({ booking: facilityBookings, customer: guests }).from(facilityBookings)
+    .leftJoin(guests, eq(facilityBookings.customerId, guests.id))
+    .where(and(eq(facilityBookings.facilityTypeId, facilityTypeId), sql`${facilityBookings.bookingDate} = ${bookingDate}`, sql`${facilityBookings.status} != 'cancelled'`))
+    .orderBy(desc(facilityBookings.id)).limit(1);
+  return rows[0];
+}
+
+const cancellers = alias(users, "cancellers");
 
 export async function listFacilityBookings(from?: string, to?: string, query?: string) {
   const db = await getDb(); if (!db) return [];
@@ -883,8 +962,9 @@ export async function listFacilityBookings(from?: string, to?: string, query?: s
     const pattern = `%${query.trim()}%`;
     conditions.push(or(sql`LOWER(${facilityBookings.customerName}) LIKE LOWER(${pattern})`, sql`LOWER(${facilityBookings.facilityTypeName}) LIKE LOWER(${pattern})`, sql`${guests.phone} LIKE ${pattern}`));
   }
-  const base = db.select({ booking: facilityBookings, customer: guests }).from(facilityBookings)
+  const base = db.select({ booking: facilityBookings, customer: guests, cancelledByName: cancellers.name }).from(facilityBookings)
     .leftJoin(guests, eq(facilityBookings.customerId, guests.id))
+    .leftJoin(cancellers, eq(facilityBookings.cancelledBy, cancellers.id))
     .orderBy(desc(facilityBookings.bookingDate), desc(facilityBookings.id));
   return conditions.length ? base.where(and(...conditions)) : base;
 }
@@ -898,6 +978,16 @@ export async function getFacilityBooking(id: number) {
   const db = await getDb(); if (!db) return undefined;
   const rows = await db.select().from(facilityBookings).where(eq(facilityBookings.id, id)).limit(1);
   return rows[0];
+}
+
+// Used to resolve facility_bookings.cancelledBy into a display name for
+// "Cancelled manually by [staff name]" (PRD Round 14, Section 5, Stage 3) —
+// a one-off lookup rather than a join everywhere getFacilityBooking is
+// already called for other purposes (edit/cancel/add-addon validation).
+export async function getUserDisplayName(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const rows = await db.select({ name: users.name }).from(users).where(eq(users.id, id)).limit(1);
+  return rows[0]?.name || undefined;
 }
 
 // PRD Round 4, Section 9.2: edit an existing (confirmed) booking's date and,
@@ -944,7 +1034,7 @@ export async function cancelFacilityBooking(id: number, cancelledBy: number, rea
     const financeEntryIds = financeRows.map((row) => row.id);
     if (financeEntryIds.length) await tx.delete(revenueRecords).where(inArray(revenueRecords.financeEntryId, financeEntryIds));
     await tx.delete(financeEntries).where(and(inArray(financeEntries.referenceType, referenceTypes), eq(financeEntries.referenceId, id)));
-    await tx.update(facilityBookings).set({ status: "cancelled", cancelledAt: new Date(), cancelledBy, cancelReason: reason || null } as any).where(eq(facilityBookings.id, id));
+    await tx.update(facilityBookings).set({ status: "cancelled", cancelledAt: new Date(), cancelledBy, cancelReason: reason || null, cancelKind: "manual" } as any).where(eq(facilityBookings.id, id));
     const updated = await tx.select().from(facilityBookings).where(eq(facilityBookings.id, id)).limit(1);
     return updated[0]!;
   });
@@ -972,17 +1062,25 @@ export async function addFacilityBookingAddons(data: {
     // running vatAmount (facility + every add-on's VAT) has to accumulate
     // here too, not just addonsAmount.
     let vatAmountMinor = moneyToMinor(String(booking.vatAmount));
+    // PRD Round 14, Section 5: a still-unpaid ("booking") booking must never
+    // post revenue — an add-on logged against it just grows the amount due,
+    // and gets its own revenue entry later when addFacilityBookingPayment
+    // runs. An add-on logged against an already-paid ("confirmed") booking
+    // is a later on-site upsell and still posts immediately, unchanged.
+    const postRevenueNow = booking.status === "confirmed";
     for (const addon of data.addons) {
-      const addonRevenueAmount = minorToMoney(moneyToMinor(addon.amount) + moneyToMinor(addon.vatAmount));
-      await tx.insert(financeEntries).values({
-        date: data.businessDate, stream: "extras", type: "revenue", amount: addonRevenueAmount,
-        description: `Facility booking add-on — ${addon.addonServiceName}`, referenceType: "facility_booking_addon", referenceId: data.bookingId, createdBy: data.createdBy,
-      } as any);
-      const financeRows = await tx.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
-      await tx.insert(revenueRecords).values({
-        businessDate: data.businessDate, categoryId: addon.categoryId, categoryName: addon.categoryName, amount: addonRevenueAmount,
-        description: `Facility booking add-on — ${addon.addonServiceName}`, financeEntryId: financeRows[0]!.id, createdBy: data.createdBy,
-      } as any);
+      if (postRevenueNow) {
+        const addonRevenueAmount = minorToMoney(moneyToMinor(addon.amount) + moneyToMinor(addon.vatAmount));
+        await tx.insert(financeEntries).values({
+          date: data.businessDate, stream: "extras", type: "revenue", amount: addonRevenueAmount,
+          description: `Facility booking add-on — ${addon.addonServiceName}`, referenceType: "facility_booking_addon", referenceId: data.bookingId, createdBy: data.createdBy,
+        } as any);
+        const financeRows = await tx.select().from(financeEntries).orderBy(desc(financeEntries.id)).limit(1);
+        await tx.insert(revenueRecords).values({
+          businessDate: data.businessDate, categoryId: addon.categoryId, categoryName: addon.categoryName, amount: addonRevenueAmount,
+          description: `Facility booking add-on — ${addon.addonServiceName}`, financeEntryId: financeRows[0]!.id, createdBy: data.createdBy,
+        } as any);
+      }
       await tx.insert(facilityBookingAddons).values({
         bookingId: data.bookingId, addonServiceId: addon.addonServiceId, addonServiceName: addon.addonServiceName, quantity: addon.quantity, amount: addon.amount, vatAmount: addon.vatAmount,
       } as any);

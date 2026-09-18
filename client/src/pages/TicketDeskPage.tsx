@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { printViaAgent } from "@/lib/printAgent";
 import { applyCountryDialCode, COUNTRY_DIAL_CODES, DEFAULT_COUNTRY } from "@/lib/countries";
 import { useT } from "@/lib/i18n";
+import { blankMixedPaymentValues, isMixedPaymentValid, MixedPaymentFields, type MixedPaymentValues } from "@/components/MixedPaymentFields";
 
 const today = new Date().toISOString().slice(0, 10);
 const money = (value: unknown) => `OMR ${Number(value || 0).toLocaleString("en-OM", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
@@ -57,6 +58,8 @@ function toReceiptData(created: any, ticketTypeById: Map<number, any>): TicketRe
     totalAmount: created.purchase.totalAmount,
     partnerEntityName: created.purchase.partnerEntityName || null,
     discountPercentage: created.purchase.discountPercentage,
+    paymentMethod: created.purchase.paymentMethod,
+    cashAmount: created.purchase.cashAmount, cardAmount: created.purchase.cardAmount, bankAmount: created.purchase.bankAmount,
     lines: created.lines.map((line: any) => ({
       ticketNumber: line.ticketNumber, label: line.label,
       ticketType: line.ticketType ?? null, freeEntryCategory: line.freeEntryCategory ?? null,
@@ -79,6 +82,7 @@ export default function TicketDeskPage() {
   const [categoryQuantities, setCategoryQuantities] = useState<Record<number, string>>({});
   const [groupLines, setGroupLines] = useState<GroupLine[]>([blankGroupLine(1)]);
   const [attemptedSubmit, setAttemptedSubmit] = useState(false);
+  const [mixedPayment, setMixedPayment] = useState<MixedPaymentValues>(blankMixedPaymentValues);
   const [created, setCreated] = useState<any>(null);
   const [receiptWidth, setReceiptWidth] = useState<"80" | "58">("80");
   const [reprintingId, setReprintingId] = useState<number | null>(null);
@@ -127,6 +131,17 @@ export default function TicketDeskPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isNewCustomerFlow, form.customerName, form.customerPhone, form.customerEmail, form.customerCountry]);
   const draftMatchesCurrent = draftCustomer && draftCustomer.name === form.customerName.trim() && draftCustomer.phone === form.customerPhone.trim() && draftCustomer.email === form.customerEmail.trim();
+  // PRD Round 14, Section 2: the debounced auto-save above already covers
+  // this, but staff wanted an explicit manual action too — a clear, on-
+  // demand confirmation rather than trusting a background save happened.
+  const saveCustomerNow = () => {
+    const name = form.customerName.trim();
+    const phone = form.customerPhone.trim();
+    if (!name || phone.length < 7) return toast.error(t("tickets.enterNameAndPhoneToSave"));
+    saveDraftCustomer.mutate({ fullName: name, phone, email: form.customerEmail.trim() || undefined, nationality: form.customerCountry.trim() || undefined }, {
+      onSuccess: () => toast.success(t("tickets.customerSaved")),
+    });
+  };
 
   // PRD Round 7, Section 1.1: a new top-level "Other Tickets" tab, sibling
   // to Water Park — each ticket type belongs to exactly one group, and the
@@ -199,14 +214,25 @@ export default function TicketDeskPage() {
     (purchaseRows as any[]).forEach((row) => { const id = row.purchase.id; const current = map.get(id) || { ...row, lines: [] }; if (row.line) current.lines.push(row.line); map.set(id, current); });
     return Array.from(map.values());
   }, [purchaseRows]);
+  // PRD Round 14, Section 3: the transaction just issued must stay fully
+  // visible — visitor lines, customer, everything — until staff explicitly
+  // start a new one, instead of the form silently clearing itself right
+  // after issue. Kept separate from `created` (which reprintPurchase below
+  // also sets, for an unrelated past purchase) so reprinting something from
+  // history never hides an in-progress new purchase's own Confirm button.
+  const [justIssued, setJustIssued] = useState(false);
   const issue = trpc.platform.tickets.purchaseCreate.useMutation({
     onSuccess: (result: any) => {
-      setCreated(result); setForm((current) => ({ ...blankForm, visitDate: current.visitDate })); setCategoryQuantities({}); setGroupLines([blankGroupLine(1)]); setAttemptedSubmit(false); setPartnerEntityId(""); setDraftCustomer(null);
+      setCreated(result); setJustIssued(true);
       utils.platform.tickets.purchaseList.invalidate(); utils.platform.customers.search.invalidate(); utils.platform.finance.invalidate();
       toast.success(`${result.lines.length} ticket${result.lines.length === 1 ? "" : "s"} issued`);
     },
     onError: (error) => toast.error(error.message),
   });
+  const resetForNewTicket = () => {
+    setCreated(null); setJustIssued(false);
+    setForm((current) => ({ ...blankForm, visitDate: current.visitDate })); setCategoryQuantities({}); setGroupLines([blankGroupLine(1)]); setAttemptedSubmit(false); setPartnerEntityId(""); setDraftCustomer(null); setMixedPayment(blankMixedPaymentValues);
+  };
   const useMatchedCustomer = () => { if (phoneMatch) setForm((current) => ({ ...current, customerId: String(phoneMatch.id) })); };
   const changeCustomer = () => { setDraftCustomer(null); setForm((current) => ({ ...current, customerId: "", customerName: "", customerPhone: `${COUNTRY_DIAL_CODES[current.customerCountry] || COUNTRY_DIAL_CODES[DEFAULT_COUNTRY]} `, customerEmail: "", customerCountry: DEFAULT_COUNTRY })); };
   const updateCategoryQuantity = (categoryId: number, value: string, maxPerBooking: number | null) => {
@@ -217,17 +243,27 @@ export default function TicketDeskPage() {
   const addGroupLine = () => setGroupLines((current) => [...current, blankGroupLine(Math.max(...current.map((line) => line.id), 0) + 1)]);
   const removeGroupLine = (id: number) => setGroupLines((current) => current.length === 1 ? current : current.filter((line) => line.id !== id));
 
-  const customerInvalid = !form.customerId && (!phoneResolved || (isNewCustomerFlow && !form.customerName.trim()));
+  // PRD Round 14, Section 1: a phone that matched an existing customer was
+  // never actually required to be confirmed via "Use this customer" — only
+  // the "not yet resolved" and "new customer, no name" cases were guarded.
+  // Staff could type a matching phone, skip that button, and hit issue with
+  // no customerId and no name (isNewCustomerFlow is false for a match, so
+  // the name field never even renders), which the server's zod schema then
+  // rejected with its raw validation error.
+  const matchedCustomerUnconfirmed = !isNewCustomerFlow && Boolean(phoneMatch);
+  const customerInvalid = !form.customerId && (!phoneResolved || (isNewCustomerFlow && !form.customerName.trim()) || matchedCustomerUnconfirmed);
   const linesInvalid = previewLines.length !== expectedLineCount || expectedLineCount === 0;
   const overCapacity = expectedLineCount > maxTicketsPerPurchase;
 
   const issuePurchase = () => {
     setAttemptedSubmit(true);
     if (!effectiveTicketTypeId) return toast.error(t("tickets.chooseTicketType"));
+    if (matchedCustomerUnconfirmed && !form.customerId) return toast.error(t("tickets.confirmMatchedCustomer"));
     if (customerInvalid) return toast.error(t("tickets.selectCustomerOrWalkIn"));
     if (overCapacity) return toast.error(t("tickets.overCapacity", { max: maxTicketsPerPurchase }));
     if (linesInvalid) return toast.error(mode === "group" ? t("tickets.everyGroupLineNeeds") : t("tickets.enterAtLeastOneCategory"));
     if (!pricing) return toast.error(t("tickets.waitingOnPreview"));
+    if (form.paymentMethod === "mixed" && !isMixedPaymentValid(mixedPayment, pricing.totalAmount)) return toast.error(t("tickets.mixedMismatch"));
     // PRD Round 11, Section 1: if the draft save already landed for exactly
     // these values, reuse that same customer id instead of sending raw
     // fields — otherwise the server's own inline createGuest fallback would
@@ -240,6 +276,9 @@ export default function TicketDeskPage() {
       customerEmail: resolvedCustomerId ? undefined : form.customerEmail.trim() || undefined,
       customerNationality: resolvedCustomerId ? undefined : form.customerCountry.trim() || undefined,
       visitDate: form.visitDate, paymentMethod: form.paymentMethod,
+      cashAmount: form.paymentMethod === "mixed" ? (mixedPayment.cash || "0") : undefined,
+      cardAmount: form.paymentMethod === "mixed" ? (mixedPayment.card || "0") : undefined,
+      bankAmount: form.paymentMethod === "mixed" ? (mixedPayment.bank || "0") : undefined,
       notes: (mode === "group" && form.groupName.trim() ? `${t("tickets.groupNotePrefix")}: ${form.groupName.trim()}${form.notes.trim() ? " — " : ""}` : "") + form.notes.trim() || undefined,
       lines: previewLines,
       partnerEntityId: partnerEntityId ? Number(partnerEntityId) : undefined,
@@ -248,7 +287,17 @@ export default function TicketDeskPage() {
   const printReceipt = async (width: "80" | "58") => {
     if (created && (await printViaAgent(toReceiptData(created, ticketTypeById)))) { toast.success(t("tickets.sentToPrinter")); return; }
     setReceiptWidth(width);
-    window.setTimeout(() => window.print(), 0);
+    // PRD Round 14, Section 4: setReceiptWidth is an async React state
+    // update that swaps the receipt's CSS width class — a bare
+    // setTimeout(fn, 0) can fire before that class change has actually
+    // been painted (most likely the very first time this session switches
+    // to 58mm, before the browser has laid out that width at all), so
+    // window.print() would snapshot a still-mid-reflow page. Two nested
+    // rAFs guarantee a full layout+paint cycle has completed first — the
+    // standard fix for "print/screenshot a DOM change right after setting
+    // it" races, and it's why simply printing again (now already settled)
+    // has always looked fine.
+    requestAnimationFrame(() => requestAnimationFrame(() => window.print()));
     if (created) toast.message(t("tickets.printAgentNotFound"));
   };
   const reprintPurchase = async (entry: any) => {
@@ -303,11 +352,15 @@ export default function TicketDeskPage() {
             </div>
             {!phoneLookupEnabled && <p className="mt-2 text-xs text-muted">{t("tickets.enterPhoneToLookup")}</p>}
             {phoneLookupEnabled && phoneChecking && <p className="mt-2 text-xs text-muted">{t("tickets.checkingPhone")}</p>}
-            {phoneResolved && phoneMatch && <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl bg-success-bg px-4 py-3"><div className="min-w-0"><span className="block text-xs font-semibold text-success">{t("tickets.existingCustomerFound")}</span><span className="mt-1 block truncate text-xs text-muted">{phoneMatch.fullName}{phoneMatch.email ? ` · ${phoneMatch.email}` : ""}{phoneMatch.nationality ? ` · ${phoneMatch.nationality}` : ""}</span></div><SecondaryButton onClick={useMatchedCustomer}>{t("tickets.useThisCustomer")}</SecondaryButton></div>}
+            {phoneResolved && phoneMatch && <div className={cx("mt-3 flex items-center justify-between gap-3 rounded-2xl px-4 py-3", attemptedSubmit && matchedCustomerUnconfirmed ? "bg-danger-bg ring-1 ring-danger/30" : "bg-success-bg")}><div className="min-w-0"><span className={cx("block text-xs font-semibold", attemptedSubmit && matchedCustomerUnconfirmed ? "text-danger" : "text-success")}>{attemptedSubmit && matchedCustomerUnconfirmed ? t("tickets.confirmMatchedCustomer") : t("tickets.existingCustomerFound")}</span><span className="mt-1 block truncate text-xs text-muted">{phoneMatch.fullName}{phoneMatch.email ? ` · ${phoneMatch.email}` : ""}{phoneMatch.nationality ? ` · ${phoneMatch.nationality}` : ""}</span></div><SecondaryButton onClick={useMatchedCustomer}>{t("tickets.useThisCustomer")}</SecondaryButton></div>}
             {isNewCustomerFlow && <div className="mt-5 grid gap-4">
               <div className="flex items-center gap-2 rounded-xl bg-well px-3 py-2 text-[11px] font-semibold uppercase tracking-[.14em] text-subtle">{t("tickets.newWalkIn")}</div>
               <Field label={t("tickets.fullName")} error={attemptedSubmit && customerInvalid && !form.customerName.trim() ? t("common.required") : undefined}><TextField value={form.customerName} onChange={(event) => setForm({ ...form, customerName: event.target.value })} placeholder="Customer full name" className={attemptedSubmit && customerInvalid && !form.customerName.trim() ? "border-danger ring-1 ring-danger/30" : undefined}/></Field>
               <Field label={t("tickets.email")}><TextField type="email" value={form.customerEmail} onChange={(event) => setForm({ ...form, customerEmail: event.target.value })} placeholder="name@example.com"/></Field>
+              <div className="flex items-center gap-3">
+                <SecondaryButton onClick={saveCustomerNow} disabled={saveDraftCustomer.isPending}>{saveDraftCustomer.isPending ? t("tickets.saving") : t("tickets.saveCustomer")}</SecondaryButton>
+                {draftMatchesCurrent && <span className="text-xs font-medium text-success">{t("tickets.customerSavedHint")}</span>}
+              </div>
             </div>}
           </>}
         </Surface>
@@ -360,10 +413,15 @@ export default function TicketDeskPage() {
         })}<SecondaryButton onClick={addGroupLine}><Plus size={15} className="mr-2"/>{t("tickets.addGroupLine")}</SecondaryButton></div>}
         </>}
         <div className="mt-5 grid gap-3 sm:grid-cols-2"><Field label={t("tickets.visitDate")}><DateField value={form.visitDate} onChange={(value) => setForm({ ...form, visitDate: value })}/></Field><Field label={t("tickets.paymentMethod")}><SelectField value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value as FormState["paymentMethod"] })}><option value="cash">{t("tickets.cash")}</option><option value="card">{t("tickets.card")}</option><option value="bank">{t("tickets.bank")}</option><option value="mixed">{t("tickets.mixed")}</option></SelectField></Field></div>
+        {form.paymentMethod === "mixed" && <div className="mt-3"><MixedPaymentFields values={mixedPayment} onChange={setMixedPayment} total={pricing?.totalAmount || "0"} attempted={attemptedSubmit}/></div>}
         {partnerEntities.length > 0 && <div className="mt-3"><Field label={t("tickets.partnerEntity")} hint={t("tickets.partnerEntityHint")}><SelectField value={partnerEntityId} onChange={(event) => setPartnerEntityId(event.target.value)}><option value="">{t("tickets.noPartnerEntity")}</option>{partnerEntities.map((entity) => <option key={entity.id} value={entity.id}>{entity.name}</option>)}</SelectField></Field></div>}
         <div className="mt-5 rounded-[22px] bg-navy p-5 text-white"><div className="flex items-start justify-between gap-3"><div><div className="text-[10px] font-semibold uppercase tracking-[.16em] text-teal-tint">{t("tickets.pricePreview")}</div><div className="mt-2 font-serif text-4xl tracking-[-.05em]">{money(pricing?.totalAmount || 0)}</div></div><StatusPill tone={previewError ? "danger" : pricing && !blockingReasons.length ? "success" : "neutral"}>{previewError ? t("tickets.previewErrorPill") : pricing && !blockingReasons.length ? t("tickets.readyPill") : t("tickets.completeLines")}</StatusPill></div>{previewError && <div className="mt-3 rounded-xl bg-danger/20 p-3 text-[11px] leading-4 text-white">{t("tickets.previewFailed", { message: previewError.message })}</div>}{(blockingReasons.length > 0 || partnerDiscountMissing) && <div className="mt-3 space-y-1.5 rounded-xl bg-white/10 p-3 text-[11px] leading-4 text-[#ffd9b0]">{pricing && blockingReasons.length > 0 && <div>{t("tickets.partialPreview", { priced: previewLines.length, total: expectedLineCount })}</div>}{blockingReasons.map((reason) => <div key={reason}>{reason}</div>)}{partnerDiscountMissing && <div>{t("tickets.partnerNoRule", { name: pricing?.partnerEntity?.name || "" })}</div>}</div>}{pricing && <div className="mt-4 border-t border-white/15 pt-3 text-xs text-[#d6d6da]"><div className="flex justify-between py-1"><span>{t("tickets.baseSubtotal")}</span><span>{money(pricing.baseSubtotal)}</span></div><div className="flex justify-between py-1"><span>{partnerEntityId ? partnerEntities.find((entity) => String(entity.id) === partnerEntityId)?.name : t("tickets.groupDiscount")} ({pricing.discountPercentage}%)</span><span>−{money(pricing.discountAmount)}</span></div><div className="flex justify-between py-1"><span>{t("tickets.vatAfterDiscount", { rate: pricing.vatPercentage ?? "0.00" })}</span><span>{money(pricing.vatAmount)}</span></div>{pricing.fees?.map((fee: any) => <div key={fee.code} className="flex justify-between py-1"><span>{fee.label}</span><span>{money(fee.amount)}</span></div>)}{mode === "individual" && <div className="mt-2 border-t border-white/15 pt-2">{pricing.lines.map((line: any, index: number) => <div key={`${line.priceId}-${index}`} className="flex justify-between py-1"><span>{line.label}</span><span>{money(line.totalAmount)}</span></div>)}</div>}</div>}</div>
         <div className="mt-5"><Field label={t("tickets.note")}><Textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} placeholder={t("tickets.notePlaceholder")} className="min-h-[86px] rounded-xl border-line bg-well"/></Field></div>
-        <div className="mt-5 flex flex-wrap gap-2 border-t border-divider pt-5"><PrimaryButton onClick={issuePurchase} pending={issue.isPending}>{t("tickets.confirmIssue")} <Ticket size={15} className="ml-2"/></PrimaryButton>{created && <><SecondaryButton onClick={() => printReceipt("80")}><Printer size={14} className="mr-2"/>{t("tickets.print80")}</SecondaryButton><SecondaryButton onClick={() => printReceipt("58")}><Printer size={14} className="mr-2"/>{t("tickets.print58")}</SecondaryButton></>}</div>
+        <div className="mt-5 flex flex-wrap gap-2 border-t border-divider pt-5">
+          {!justIssued && <PrimaryButton onClick={issuePurchase} pending={issue.isPending}>{t("tickets.confirmIssue")} <Ticket size={15} className="ml-2"/></PrimaryButton>}
+          {created && <><SecondaryButton onClick={() => printReceipt("80")}><Printer size={14} className="mr-2"/>{t("tickets.print80")}</SecondaryButton><SecondaryButton onClick={() => printReceipt("58")}><Printer size={14} className="mr-2"/>{t("tickets.print58")}</SecondaryButton></>}
+          {justIssued && <PrimaryButton onClick={resetForNewTicket}><Plus size={15} className="mr-2"/>{t("tickets.newTicket")}</PrimaryButton>}
+        </div>
         {created && <div className="mt-5 rounded-2xl border border-[#cbead5] bg-[#effaf2] p-4"><StatusPill tone="success">{t("tickets.purchaseReady")}</StatusPill><div className="mt-2 font-mono text-lg font-semibold text-ink">{created.lines.length > 3 ? `#${created.lines[0].ticketNumber}–#${created.lines[created.lines.length - 1].ticketNumber} (×${created.lines.length})` : created.lines.map((line: any) => line.ticketNumber).join(" · ")}</div><p className="mt-1 text-xs leading-5 text-muted">{t("tickets.purchaseReadyHint")}</p></div>}
       </Surface>
     </div>

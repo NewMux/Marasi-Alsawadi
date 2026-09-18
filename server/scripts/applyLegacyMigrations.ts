@@ -44,6 +44,8 @@ const MIGRATION_FILES = [
   "drizzle/migrations/0032_scope_group_discount_tiers_by_ticket_type.sql",
   "drizzle/migrations/0033_add_per_price_vat_fields.sql",
   "drizzle/migrations/0034_add_addon_service_vat_fields.sql",
+  "drizzle/migrations/0035_facility_booking_payment_stages.sql",
+  "drizzle/migrations/0036_add_mixed_payment_breakdown.sql",
 ];
 
 // A schema-object-already-exists error (duplicate column/key/table) from a
@@ -102,7 +104,18 @@ export async function applyLegacyMigrations(connectionString: string) {
         if (!code || !ALREADY_APPLIED_ERROR_CODES.has(code)) throw error;
         console.warn(`skip  ${relativePath} — already applied (${code}), likely a concurrent deploy race`);
       }
-      await connection.query("INSERT INTO `_schema_migrations` (filename) VALUES (?)", [relativePath]);
+      try {
+        await connection.query("INSERT INTO `_schema_migrations` (filename) VALUES (?)", [relativePath]);
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        // The DDL race above can be won by a concurrent instance between
+        // this one's last ALTER/CREATE statement and this INSERT — that
+        // instance's own INSERT already recorded the migration as applied,
+        // so this one hitting the same primary key here is the same
+        // "already applied" race, just one statement later.
+        if (code !== "ER_DUP_ENTRY") throw error;
+        console.warn(`skip  ${relativePath} — tracking row already inserted (${code}), likely a concurrent deploy race`);
+      }
       console.log(`done  ${relativePath}`);
       appliedCount += 1;
     }

@@ -43,6 +43,13 @@ export type TicketReceiptData = {
   // display the entity name and the discount applied, for easy review".
   partnerEntityName?: string | null;
   discountPercentage?: string | null;
+  // PRD Round 14, Section 6: only present when paymentMethod is "mixed" —
+  // the receipt must show the exact Cash/Card/Bank split, not one combined
+  // "Mixed" line.
+  paymentMethod?: "cash" | "card" | "bank" | "mixed";
+  cashAmount?: string | null;
+  cardAmount?: string | null;
+  bankAmount?: string | null;
 };
 
 const arabicIndicDigits = ["٠", "١", "٢", "٣", "٤", "٥", "٦", "٧", "٨", "٩"];
@@ -174,6 +181,16 @@ export function TicketReceiptTicket({ data }: { data: TicketReceiptData }) {
 
       <div className="center price" style={{ marginTop: 6 }}>{omr(data.totalAmount)}</div>
       <div className="center price-note">المبلغ الإجمالي المستحق / Total Amount Due</div>
+
+      {data.paymentMethod === "mixed" && (Number(data.cashAmount || 0) + Number(data.cardAmount || 0) + Number(data.bankAmount || 0)) > 0 && <>
+        <div className="divider"/>
+        <table><tbody>
+          <tr><td className="label" style={{ fontWeight: 700, paddingBottom: 4 }} colSpan={2}>طريقة الدفع / Payment Breakdown</td></tr>
+          {Number(data.cashAmount || 0) > 0 && <tr><td className="label" style={{ fontSize: 10 }}>نقدًا / Cash</td><td className="value" style={{ fontSize: 10 }}>{omr(data.cashAmount)}</td></tr>}
+          {Number(data.cardAmount || 0) > 0 && <tr><td className="label" style={{ fontSize: 10 }}>بطاقة / Card</td><td className="value" style={{ fontSize: 10 }}>{omr(data.cardAmount)}</td></tr>}
+          {Number(data.bankAmount || 0) > 0 && <tr><td className="label" style={{ fontSize: 10 }}>تحويل بنكي / Bank Transfer</td><td className="value" style={{ fontSize: 10 }}>{omr(data.bankAmount)}</td></tr>}
+        </tbody></table>
+      </>}
 
       <div className="divider"/>
 
