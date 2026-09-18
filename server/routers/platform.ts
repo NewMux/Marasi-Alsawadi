@@ -32,7 +32,7 @@ import {
   listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
   listAddonServices, getAddonService, createAddonService, updateAddonService, deleteAddonService,
   findOrCreateRevenueCategoryForFacility, createFacilityBooking, listFacilityBookings, listFacilityBookingAddons, getFacilityBooking, addFacilityBookingAddons, updateFacilityBookingDetails, cancelFacilityBooking,
-  addFacilityBookingPayment, autoCancelOverdueFacilityBookings, findFacilityBookingConflict, getFacilityBookingSettings, updateFacilityBookingSettings, getUserDisplayName,
+  addFacilityBookingPayment, autoCancelOverdueFacilityBookings, findFacilityBookingConflict, listFacilityBookingsForFacility, getFacilityBookingSettings, updateFacilityBookingSettings, getUserDisplayName,
   listPrdTicketPurchases, listPrdTicketLines, getCustomerById, refundPrdTicketPurchase,
   listExpenseAdjustments, createExpenseAdjustment, createExpenseTransfer, getExpenseCategoryBalances,
   listRevenueCategories, createRevenueCategory, updateRevenueCategory, deleteRevenueCategory, getRevenueCategory,
@@ -552,6 +552,23 @@ export const platformRouter = router({
         status: conflict.booking.status, hoursRemaining,
       };
     }),
+    // PRD Round 14 follow-up, item 2: the visual availability calendar
+    // (daily facilities) and timeline (hourly facilities) both highlight
+    // days/slots from this same list — the New Booking screen fetches it
+    // once the facility is chosen, before any date is picked.
+    listForFacility: protectedProcedure.input(z.object({ facilityTypeId: z.number().int().positive() })).query(async ({ input }) => {
+      await autoCancelOverdueFacilityBookings();
+      const bookings = await listFacilityBookingsForFacility(input.facilityTypeId);
+      const settings = await getFacilityBookingSettings();
+      return bookings.map((row) => ({
+        referenceNumber: row.booking.id, start: row.start, end: row.end, startTime: row.booking.startTime,
+        quantity: row.booking.quantity, customerName: row.customer?.fullName || row.booking.customerName || null,
+        status: row.booking.status,
+        hoursRemaining: row.booking.status === "booking" && settings.autoCancelEnabled
+          ? Math.max(0, settings.autoCancelHours - (Date.now() - new Date(row.booking.createdAt).getTime()) / 3_600_000)
+          : null,
+      }));
+    }),
     preview: protectedProcedure.input(z.object({
       facilityTypeId: z.number().int().positive(), quantity: z.number().positive(),
       addons: z.array(z.object({ addonServiceId: z.number().int().positive(), quantity: z.number().positive() })).default([]),
@@ -562,6 +579,10 @@ export const platformRouter = router({
     }),
     create: protectedProcedure.input(z.object({
       facilityTypeId: z.number().int().positive(), bookingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      // PRD Round 14 follow-up, item 2: an hourly facility's actual start
+      // time, so the availability timeline can show real booked ranges
+      // instead of only a duration with no time-of-day.
+      startTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
       quantity: z.number().positive(),
       addons: z.array(z.object({ addonServiceId: z.number().int().positive(), quantity: z.number().positive() })).default([]),
       customerId: z.number().int().positive().optional(), customerName: z.string().max(160).optional(),
@@ -580,7 +601,7 @@ export const platformRouter = router({
         : null;
       const booking = await createFacilityBooking({
         facilityTypeId: resolved.facility.id, facilityTypeName: resolved.facility.name, facilityCategoryId: resolved.facilityCategory.id, facilityCategoryName: resolved.facilityCategory.name,
-        bookingDate: input.bookingDate, quantity: String(resolved.facilityQuantity), facilityAmount: resolved.facilityAmount, vatAmount: resolved.vatAmount, facilityVatAmount: resolved.facilityVatAmount, feeAmount: resolved.feeAmount, addons: resolved.addons,
+        bookingDate: input.bookingDate, startTime: input.startTime, quantity: String(resolved.facilityQuantity), facilityAmount: resolved.facilityAmount, vatAmount: resolved.vatAmount, facilityVatAmount: resolved.facilityVatAmount, feeAmount: resolved.feeAmount, addons: resolved.addons,
         customerId: customer?.id ?? null, customerName: customer?.fullName || input.customerName?.trim(), paymentMethod: input.paymentMethod, notes: input.notes?.trim(), createdBy: ctx.user.id,
         partnerEntity: resolved.partnerEntity && resolved.discountPercentage ? { ...resolved.partnerEntity, discountPercentage: resolved.discountPercentage } : null,
       });

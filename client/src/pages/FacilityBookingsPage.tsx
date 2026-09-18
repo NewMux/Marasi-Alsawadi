@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Ban, Pencil, Plus, Printer, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
-import { CountryField, DateField, EmptyState, Field, LoadingState, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, toIsoDateString, cx } from "@/components/MarasiUI";
+import { CountryField, DateField, EmptyState, Field, LoadingState, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, toIsoDateLocal, toIsoDateString, cx } from "@/components/MarasiUI";
+import { BookingInfoList, HourlyAvailabilityTimeline, useDailyAvailability, type FacilityAvailabilityBooking } from "@/components/FacilityAvailability";
 import { FacilityReceipt, type FacilityReceiptData } from "@/components/FacilityReceipt";
 import { printFacilityReceiptViaAgent } from "@/lib/printAgent";
 import { Textarea } from "@/components/ui/textarea";
@@ -147,7 +148,7 @@ export default function FacilityBookingsPage() {
   const resetForm = () => {
     setFacilityTypeId(""); setFromDate(today); setToDate(today); setFromTime("09:00"); setToTime("17:00");
     setCustomerId(""); setCustomerName(""); setCustomerPhone(`${COUNTRY_DIAL_CODES[DEFAULT_COUNTRY]} `); setCustomerEmail(""); setCustomerCountry(DEFAULT_COUNTRY); setPaymentMethod("cash");
-    setNotes(""); setAddonLines([]); setAttemptedSubmit(false); setExistingBookingId(""); setExistingBookingQuery(""); setPartnerEntityId("");
+    setNotes(""); setAddonLines([]); setAttemptedSubmit(false); setExistingBookingId(""); setExistingBookingQuery(""); setPartnerEntityId(""); setDayInfo(null);
   };
 
   const create = trpc.platform.facilityBookings.create.useMutation({
@@ -204,6 +205,19 @@ export default function FacilityBookingsPage() {
     { facilityTypeId: Number(facilityTypeId) || 0, fromDate: conflictFromDate, toDate: conflictToDate },
     { enabled: bookingMode === "new" && Boolean(facilityTypeId && conflictFromDate && conflictToDate) },
   );
+  // PRD Round 14 follow-up, item 2: visual availability calendar/timeline —
+  // fetched as soon as a facility is picked, before any date is chosen, so
+  // the From/To calendar can highlight already-booked days immediately.
+  const { data: facilityAvailabilityRaw = [] } = trpc.platform.facilityBookings.listForFacility.useQuery(
+    { facilityTypeId: Number(facilityTypeId) || 0 },
+    { enabled: bookingMode === "new" && Boolean(facilityTypeId) },
+  );
+  const facilityAvailability = facilityAvailabilityRaw as FacilityAvailabilityBooking[];
+  const dailyAvailability = useDailyAvailability(facilityAvailability);
+  const [dayInfo, setDayInfo] = useState<FacilityAvailabilityBooking[] | null>(null);
+  const showDayInfo = (date: Date) => setDayInfo(dailyAvailability.byDate.get(toIsoDateLocal(date)) || null);
+  const dayHasBooking = (date: Date) => dailyAvailability.byDate.has(toIsoDateLocal(date));
+  const dayInfoFooter = dayInfo && <div className="border-t border-divider"><BookingInfoList bookings={dayInfo}/></div>;
   const startEdit = (booking: any) => { setEditingBookingId(booking.id); setEditDate(toIsoDateString(booking.bookingDate)); setEditQuantity(String(booking.quantity)); setEditCustomerName(booking.customerName || ""); };
   // PRD Round 6, item 3: reprint a past facility booking's receipt — data
   // (booking + addons) is already returned by facilityBookings.list, so this
@@ -290,6 +304,7 @@ export default function FacilityBookingsPage() {
         // (and thus every downstream conflict check) had no real relation
         // to the period actually being reserved.
         facilityTypeId: Number(facilityTypeId), bookingDate: selectedFacility?.pricingMethod === "daily" ? fromDate : bookingDate,
+        startTime: selectedFacility?.pricingMethod === "hourly" ? fromTime : undefined,
         quantity: selectedFacility?.pricingMethod === "fixed" ? 1 : quantity,
         addons: validAddonLines.map((line) => ({ addonServiceId: Number(line.addonServiceId), quantity: Number(line.quantity) })),
         customerId: customerId ? Number(customerId) : undefined,
@@ -331,14 +346,26 @@ export default function FacilityBookingsPage() {
           <div className="mt-5 grid gap-4">
             {bookingMode === "new" ? <>
               <Field label={t("facility.facility")} error={attemptedSubmit && facilityInvalid ? t("common.required") : undefined}>
-                <SelectField value={facilityTypeId} onChange={(event) => setFacilityTypeId(event.target.value)} className={attemptedSubmit && facilityInvalid ? "border-danger ring-1 ring-danger/30" : undefined}>
+                <SelectField value={facilityTypeId} onChange={(event) => { setFacilityTypeId(event.target.value); setDayInfo(null); }} className={attemptedSubmit && facilityInvalid ? "border-danger ring-1 ring-danger/30" : undefined}>
                   <option value="">{t("facility.chooseFacility")}</option>
                   {facilityTypes.map((facility) => <option key={facility.id} value={facility.id}>{facility.name} — {money(facility.rate)} {t(facilityMethodLabelKey[facility.pricingMethod])}</option>)}
                 </SelectField>
               </Field>
               {selectedFacility?.pricingMethod === "daily" && <div className="grid grid-cols-2 gap-3">
-                <Field label={t("facility.fromDate")} error={attemptedSubmit && quantityInvalid ? t("common.required") : undefined}><DateField value={fromDate} onChange={setFromDate}/></Field>
-                <Field label={t("facility.toDate")}><DateField value={toDate} min={fromDate} onChange={setToDate}/></Field>
+                <Field label={t("facility.fromDate")} error={attemptedSubmit && quantityInvalid ? t("common.required") : undefined}>
+                  <DateField
+                    value={fromDate} onChange={setFromDate}
+                    modifiers={{ booked: dailyAvailability.bookedDates }} modifiersClassNames={{ booked: "bg-danger-bg text-danger" }}
+                    onDayClick={showDayInfo} keepOpenWhen={dayHasBooking} footer={dayInfoFooter}
+                  />
+                </Field>
+                <Field label={t("facility.toDate")}>
+                  <DateField
+                    value={toDate} min={fromDate} onChange={setToDate}
+                    modifiers={{ booked: dailyAvailability.bookedDates }} modifiersClassNames={{ booked: "bg-danger-bg text-danger" }}
+                    onDayClick={showDayInfo} keepOpenWhen={dayHasBooking} footer={dayInfoFooter}
+                  />
+                </Field>
               </div>}
               {selectedFacility?.pricingMethod === "hourly" && <div className="grid grid-cols-2 gap-3">
                 <Field label={t("facility.fromTime")} error={attemptedSubmit && quantityInvalid ? t("common.required") : undefined}><TextField type="time" value={fromTime} onChange={(event) => setFromTime(event.target.value)}/></Field>
@@ -346,6 +373,7 @@ export default function FacilityBookingsPage() {
               </div>}
               {selectedFacility && selectedFacility.pricingMethod !== "fixed" && <p className="-mt-2 text-[11px] text-subtle">{selectedFacility.pricingMethod === "daily" ? `${quantity} ${quantity === 1 ? t("facility.day") : t("facility.daysWord")}` : `${quantity.toFixed(2)} ${t("facility.hoursWord")}`} · {t("facility.rateNotEditable")}</p>}
               {selectedFacility?.pricingMethod !== "daily" && <Field label={t("common.date")}><DateField value={bookingDate} onChange={setBookingDate}/></Field>}
+              {selectedFacility?.pricingMethod === "hourly" && bookingDate && <HourlyAvailabilityTimeline bookings={facilityAvailability} date={bookingDate}/>}
               {bookingConflict && <div className="rounded-2xl bg-danger-bg px-4 py-3 text-xs text-danger">
                 <b className="block font-semibold">{t("facility.conflictWarning")}</b>
                 <span className="mt-1 block">

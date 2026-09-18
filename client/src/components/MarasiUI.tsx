@@ -98,7 +98,26 @@ export function formatDateDmy(value: string | Date | undefined | null): string {
   return date ? `${String(date.getDate()).padStart(2, "0")}/${String(date.getMonth() + 1).padStart(2, "0")}/${date.getFullYear()}` : "";
 }
 
-export function DateField({ value, onChange, min, max, placeholder = "DD/MM/YYYY", className, disabled }: { value: string; onChange: (iso: string) => void; min?: string; max?: string; placeholder?: string; className?: string; disabled?: boolean }) {
+export function DateField({
+  value, onChange, min, max, placeholder = "DD/MM/YYYY", className, disabled,
+  modifiers, modifiersClassNames, onDayClick, keepOpenWhen, footer,
+}: {
+  value: string; onChange: (iso: string) => void; min?: string; max?: string; placeholder?: string; className?: string; disabled?: boolean;
+  // Generic passthrough to the underlying react-day-picker Calendar, so a
+  // consumer (e.g. the facility booking availability calendar) can
+  // highlight specific days and react to clicks without DateField itself
+  // knowing anything about what those days mean.
+  modifiers?: Record<string, Date[]>;
+  modifiersClassNames?: Record<string, string>;
+  onDayClick?: (date: Date) => void;
+  // When true for the clicked day, the popover stays open and the date is
+  // NOT selected — lets a consumer show details for a day (e.g. an
+  // already-booked one) without that click being treated as picking it.
+  keepOpenWhen?: (date: Date) => boolean;
+  // Extra content rendered inside the popover, below the calendar grid —
+  // used for a small "here's what's booked" details panel.
+  footer?: ReactNode;
+}) {
   const [open, setOpen] = useState(false);
   const selected = parseIsoDateLocal(value);
   return <Popover open={open} onOpenChange={setOpen}>
@@ -109,7 +128,14 @@ export function DateField({ value, onChange, min, max, placeholder = "DD/MM/YYYY
       </button>
     </PopoverTrigger>
     <PopoverContent className="w-auto p-0" align="start">
-      <Calendar mode="single" selected={selected} defaultMonth={selected} onSelect={(date) => { if (date) { onChange(toIsoDateLocal(date)); setOpen(false); } }} disabled={(date) => (min ? toIsoDateLocal(date) < min : false) || (max ? toIsoDateLocal(date) > max : false)} autoFocus/>
+      <Calendar
+        mode="single" selected={selected} defaultMonth={selected}
+        onSelect={(date) => { if (date && !keepOpenWhen?.(date)) { onChange(toIsoDateLocal(date)); setOpen(false); } }}
+        onDayClick={onDayClick}
+        modifiers={modifiers} modifiersClassNames={modifiersClassNames}
+        disabled={(date) => (min ? toIsoDateLocal(date) < min : false) || (max ? toIsoDateLocal(date) > max : false)} autoFocus
+      />
+      {footer}
     </PopoverContent>
   </Popover>;
 }

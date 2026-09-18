@@ -816,7 +816,7 @@ export async function deleteAddonService(id: number) {
 // revenue, matching Stage 3's "nothing to reverse" auto-cancel guarantee.
 export async function createFacilityBooking(data: {
   facilityTypeId: number; facilityTypeName: string; facilityCategoryId: number; facilityCategoryName: string;
-  bookingDate: string; quantity: string; facilityAmount: string; vatAmount: string; facilityVatAmount: string; feeAmount: string;
+  bookingDate: string; startTime?: string | null; quantity: string; facilityAmount: string; vatAmount: string; facilityVatAmount: string; feeAmount: string;
   addons: Array<{ addonServiceId: number; addonServiceName: string; categoryId: number; categoryName: string; quantity: string; amount: string; vatAmount: string }>;
   customerId?: number | null; customerName?: string; paymentMethod?: "cash" | "card" | "bank" | "mixed"; notes?: string; createdBy: number;
   partnerEntity?: { id: number; name: string; discountPercentage: string } | null;
@@ -828,7 +828,7 @@ export async function createFacilityBooking(data: {
   const feeAmountMinor = moneyToMinor(data.feeAmount);
   return db.transaction(async (tx) => {
     await tx.insert(facilityBookings).values({
-      facilityTypeId: data.facilityTypeId, facilityTypeName: data.facilityTypeName, bookingDate: data.bookingDate, quantity: data.quantity,
+      facilityTypeId: data.facilityTypeId, facilityTypeName: data.facilityTypeName, bookingDate: data.bookingDate, startTime: data.startTime || null, quantity: data.quantity,
       facilityAmount: data.facilityAmount, vatAmount: data.vatAmount, feeAmount: data.feeAmount, addonsAmount: minorToMoney(addonsAmountMinor), totalAmount: minorToMoney(facilityAmountMinor + vatAmountMinor + feeAmountMinor + addonsAmountMinor),
       customerId: data.customerId ?? null, customerName: data.customerName || null, paymentMethod: data.paymentMethod || "cash", notes: data.notes || null, createdBy: data.createdBy,
       partnerEntityId: data.partnerEntity?.id ?? null, partnerEntityName: data.partnerEntity?.name ?? null, discountPercentage: data.partnerEntity?.discountPercentage ?? null,
@@ -957,19 +957,28 @@ function addDays(date: string | Date, days: number) {
   return base.toISOString().slice(0, 10);
 }
 
-export async function findFacilityBookingConflict(facilityTypeId: number, fromDate: string, toDate: string) {
-  const db = await getDb(); if (!db) return undefined;
+// Client feedback (Round 14 follow-up, item 2): the visual availability
+// calendar/timeline uses this exact same list — every non-cancelled
+// booking for one facility, each with its real [start, end] reservation
+// range already computed — so the calendar's highlighting and the
+// conflict check below it can never disagree about what's booked.
+export async function listFacilityBookingsForFacility(facilityTypeId: number) {
+  const db = await getDb(); if (!db) return [];
   const facility = await getFacilityType(facilityTypeId);
-  const candidates = await db.select({ booking: facilityBookings, customer: guests }).from(facilityBookings)
+  const rows = await db.select({ booking: facilityBookings, customer: guests }).from(facilityBookings)
     .leftJoin(guests, eq(facilityBookings.customerId, guests.id))
-    .where(and(eq(facilityBookings.facilityTypeId, facilityTypeId), sql`${facilityBookings.status} != 'cancelled'`, sql`${facilityBookings.bookingDate} <= ${toDate}`))
+    .where(and(eq(facilityBookings.facilityTypeId, facilityTypeId), sql`${facilityBookings.status} != 'cancelled'`))
     .orderBy(desc(facilityBookings.id));
-  for (const candidate of candidates) {
-    const start = typeof candidate.booking.bookingDate === "string" ? candidate.booking.bookingDate : (candidate.booking.bookingDate as unknown as Date).toISOString().slice(0, 10);
-    const end = facility?.pricingMethod === "daily" ? addDays(start, Number(candidate.booking.quantity) - 1) : start;
-    if (start <= toDate && fromDate <= end) return candidate;
-  }
-  return undefined;
+  return rows.map((row) => {
+    const start = typeof row.booking.bookingDate === "string" ? row.booking.bookingDate : (row.booking.bookingDate as unknown as Date).toISOString().slice(0, 10);
+    const end = facility?.pricingMethod === "daily" ? addDays(start, Number(row.booking.quantity) - 1) : start;
+    return { ...row, start, end };
+  });
+}
+
+export async function findFacilityBookingConflict(facilityTypeId: number, fromDate: string, toDate: string) {
+  const candidates = await listFacilityBookingsForFacility(facilityTypeId);
+  return candidates.find((candidate) => candidate.start <= toDate && fromDate <= candidate.end);
 }
 
 const cancellers = alias(users, "cancellers");

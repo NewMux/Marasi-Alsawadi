@@ -730,6 +730,11 @@ export const facilityBookings = mysqlTable("facility_bookings", {
   facilityTypeId: int("facilityTypeId").notNull(),
   facilityTypeName: varchar("facilityTypeName", { length: 160 }).notNull(),
   bookingDate: date("bookingDate").notNull(),
+  // PRD Round 14 follow-up (visual availability): an "hourly" facility's
+  // quantity was only ever a duration (e.g. "2 hours") with no record of
+  // WHEN in the day it started, so no timeline of actually-booked time
+  // ranges could be shown. Null for daily/fixed facilities.
+  startTime: varchar("startTime", { length: 5 }),
   quantity: decimal("quantity", { precision: 10, scale: 2 }).notNull(),
   facilityAmount: decimal("facilityAmount", { precision: 12, scale: 3 }).notNull(),
   addonsAmount: decimal("addonsAmount", { precision: 12, scale: 3 }).default("0").notNull(),
