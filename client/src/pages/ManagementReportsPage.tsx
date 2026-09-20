@@ -38,8 +38,18 @@ export default function ManagementReportsPage() {
   // PRD Round 9, Section 11: the combined ticket figure stays the headline;
   // this is the per-ticket-type detail behind it, expandable alongside.
   const [showTicketBreakdown, setShowTicketBreakdown] = useState(false);
+  const [ticketTypeFilter, setTicketTypeFilter] = useState("");
   const { data: ticketRevenue = [] } = trpc.platform.finance.ticketRevenueByType.useQuery(input);
   const ticketRevenueTotal = (ticketRevenue as any[]).reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
+  const filteredTicketRevenue = (ticketRevenue as any[]).filter((row) => row.ticketTypeName?.toLowerCase().includes(ticketTypeFilter.trim().toLowerCase()));
+  // PRD Round 15, Section 7.2: the Facility Type equivalent — its own
+  // breakdown, own combined total (always the full unfiltered list, so the
+  // filter below only narrows which rows the table shows), own filter.
+  const [showFacilityBreakdown, setShowFacilityBreakdown] = useState(false);
+  const [facilityTypeFilter, setFacilityTypeFilter] = useState("");
+  const { data: facilityRevenue = [] } = trpc.platform.finance.facilityRevenueByType.useQuery(input);
+  const facilityRevenueTotal = (facilityRevenue as any[]).reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
+  const filteredFacilityRevenue = (facilityRevenue as any[]).filter((row) => row.facilityTypeName?.toLowerCase().includes(facilityTypeFilter.trim().toLowerCase()));
   const { data: finance = [] } = trpc.platform.finance.list.useQuery(input);
   const { data: expenseCategories = [] } = trpc.platform.finance.expenseCategories.list.useQuery({ includeInactive: false });
   const { data: expenses = [] } = trpc.platform.finance.expenses.list.useQuery(input);
@@ -67,9 +77,24 @@ export default function ManagementReportsPage() {
           <div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("reports.ticketRevenueByType")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("reports.ticketRevenueByTypeHint")}</p></div>
           <div className="flex items-center gap-3"><b className="text-lg">{money(ticketRevenueTotal)}</b><SecondaryButton onClick={() => setShowTicketBreakdown((current) => !current)}>{showTicketBreakdown ? t("reports.hideBreakdown") : t("reports.showBreakdown")}</SecondaryButton></div>
         </div>
-        {showTicketBreakdown && ((ticketRevenue as any[]).length
-          ? <TableFrame className="mt-4"><TableHeader><div className="grid grid-cols-[1.3fr_.5fr_.7fr_.7fr] gap-3"><span>{t("tickets.ticketType")}</span><span className="text-right">{t("reports.ticketsSoldCol")}</span><span className="text-right">{t("tickets.groupDiscount")}</span><span className="text-right">{t("finance.amountCol")}</span></div></TableHeader>{(ticketRevenue as any[]).map((row: any) => <TableRow key={`${row.ticketTypeId ?? "legacy"}`} className="grid-cols-[1.3fr_.5fr_.7fr_.7fr]"><span className="min-w-0"><span className="block truncate text-sm font-medium">{row.ticketTypeName}</span><span className="mt-0.5 block text-xs text-muted">{row.ticketGroup === "other_tickets" ? t("tickets.otherTickets") : t("reports.groupWaterPark")}</span></span><span className="text-right text-sm">{row.ticketCount}</span><span className="text-right text-xs text-muted">−{money(row.discountAmount)}</span><b className="text-right text-sm">{money(row.totalAmount)}</b></TableRow>)}</TableFrame>
-          : <EmptyState title={t("reports.noRecordsInPeriod")} description={t("reports.noTicketRevenueInPeriod")}/>)}
+        {showTicketBreakdown && <>
+          {(ticketRevenue as any[]).length > 1 && <div className="mt-4 max-w-xs"><TextField value={ticketTypeFilter} onChange={(event) => setTicketTypeFilter(event.target.value)} placeholder={t("reports.filterByType")}/></div>}
+          {filteredTicketRevenue.length
+            ? <TableFrame className="mt-4"><TableHeader><div className="grid grid-cols-[1.3fr_.5fr_.7fr_.7fr] gap-3"><span>{t("tickets.ticketType")}</span><span className="text-right">{t("reports.ticketsSoldCol")}</span><span className="text-right">{t("tickets.groupDiscount")}</span><span className="text-right">{t("finance.amountCol")}</span></div></TableHeader>{filteredTicketRevenue.map((row: any) => <TableRow key={`${row.ticketTypeId ?? "legacy"}`} className="grid-cols-[1.3fr_.5fr_.7fr_.7fr]"><span className="min-w-0"><span className="block truncate text-sm font-medium">{row.ticketTypeName}</span><span className="mt-0.5 block text-xs text-muted">{row.ticketGroup === "other_tickets" ? t("tickets.otherTickets") : t("reports.groupWaterPark")}</span></span><span className="text-right text-sm">{row.ticketCount}</span><span className="text-right text-xs text-muted">−{money(row.discountAmount)}</span><b className="text-right text-sm">{money(row.totalAmount)}</b></TableRow>)}</TableFrame>
+            : <EmptyState title={t("reports.noRecordsInPeriod")} description={t("reports.noTicketRevenueInPeriod")}/>}
+        </>}
+      </Surface>
+      <Surface className="mt-6">
+        <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+          <div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("reports.facilityRevenueByType")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("reports.facilityRevenueByTypeHint")}</p></div>
+          <div className="flex items-center gap-3"><b className="text-lg">{money(facilityRevenueTotal)}</b><SecondaryButton onClick={() => setShowFacilityBreakdown((current) => !current)}>{showFacilityBreakdown ? t("reports.hideBreakdown") : t("reports.showBreakdown")}</SecondaryButton></div>
+        </div>
+        {showFacilityBreakdown && <>
+          {(facilityRevenue as any[]).length > 1 && <div className="mt-4 max-w-xs"><TextField value={facilityTypeFilter} onChange={(event) => setFacilityTypeFilter(event.target.value)} placeholder={t("reports.filterByType")}/></div>}
+          {filteredFacilityRevenue.length
+            ? <TableFrame className="mt-4"><TableHeader><div className="grid grid-cols-[1.3fr_.7fr_.7fr] gap-3"><span>{t("settings.tabFacilityTypes")}</span><span className="text-right">{t("reports.bookingsCol")}</span><span className="text-right">{t("finance.amountCol")}</span></div></TableHeader>{filteredFacilityRevenue.map((row: any) => <TableRow key={row.facilityTypeId} className="grid-cols-[1.3fr_.7fr_.7fr]"><span className="truncate text-sm font-medium">{row.facilityTypeName}</span><span className="text-right text-sm">{row.bookingCount}</span><b className="text-right text-sm">{money(row.totalAmount)}</b></TableRow>)}</TableFrame>
+            : <EmptyState title={t("reports.noRecordsInPeriod")} description={t("reports.noFacilityRevenueInPeriod")}/>}
+        </>}
       </Surface>
       <Surface className="mt-6">
         <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("finance.singleCategoryReport")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("reports.singleCategoryReportHintReal")}</p></div><FileSearch size={19} className="text-accent"/></div>
@@ -107,6 +132,7 @@ export default function ManagementReportsPage() {
       <ReportSection title={t("reports.revenueActivity")}>{revenueRows.length ? <ReportTable headers={[{ label: t("reports.revenueStreamsGroup") }, { label: t("finance.amountCol"), num: true }]} rows={revenueRows.map((row: any) => [row.stream && REVENUE_STREAM_KEYS[row.stream] ? t(REVENUE_STREAM_KEYS[row.stream]) : String(row.stream || t("reports.ticketWord")).replaceAll("_", " "), money(row.total)])}/> : <p className="report-sub">{t("reports.noRevenueRecords")}</p>}</ReportSection>
       <ReportSection title={t("reports.expenseActivity")}>{expenseRows.length ? <ReportTable headers={[{ label: t("finance.tabCategories") }, { label: t("finance.amountCol"), num: true }]} rows={expenseRows.map((row: any) => [row.stream && REVENUE_STREAM_KEYS[row.stream] ? t(REVENUE_STREAM_KEYS[row.stream]) : String(row.stream || t("reports.expenseWord")).replaceAll("_", " "), money(row.total)])}/> : <p className="report-sub">{t("reports.noExpenseRecords")}</p>}</ReportSection>
       <ReportSection title={t("reports.ticketRevenueByType")}>{(ticketRevenue as any[]).length ? <ReportTable headers={[{ label: t("tickets.ticketType") }, { label: t("reports.ticketsSoldCol"), num: true }, { label: t("finance.amountCol"), num: true }]} rows={(ticketRevenue as any[]).map((row: any) => [row.ticketTypeName, String(row.ticketCount), money(row.totalAmount)])}/> : <p className="report-sub">{t("reports.noTicketRevenueInPeriod")}</p>}</ReportSection>
+      <ReportSection title={t("reports.facilityRevenueByType")}>{(facilityRevenue as any[]).length ? <ReportTable headers={[{ label: t("settings.tabFacilityTypes") }, { label: t("reports.bookingsCol"), num: true }, { label: t("finance.amountCol"), num: true }]} rows={(facilityRevenue as any[]).map((row: any) => [row.facilityTypeName, String(row.bookingCount), money(row.totalAmount)])}/> : <p className="report-sub">{t("reports.noFacilityRevenueInPeriod")}</p>}</ReportSection>
       {categoryReport && <ReportSection title={`${t("reports.categoryDetailTitle")}: ${categoryReport.title}`}>{categoryReport.rows.length ? <ReportTable headers={[{ label: t("common.date") }, { label: t("common.description") }, { label: t("finance.amountCol"), num: true }]} rows={categoryReport.rows.map((row) => [dateLabel(row.date), row.description, money(row.amount)])}/> : <p className="report-sub">{t("reports.nothingRecordedForCategory")}</p>}</ReportSection>}
       <ReportSection title={t("finance.fixedAssetsReport")}>
         <ReportStatGrid><ReportStat label={t("finance.fixedAssetsRunningTotal")} value={money(assetRunningTotal)}/></ReportStatGrid>

@@ -23,16 +23,16 @@ import {
   deleteExpenseRecord, deleteTicketFee, getExpenseCategory, getExpenseRecord, getOperationalFinancialSummary, getSalesTransactionByToken,
   getServiceRate, listApplicableFees, listExpenseCategories, listExpenseRecords, listFeeAssignments, listRecentTicketScans,
   listSalesTransactionLines, listSalesTransactions, listTicketFees, recordTicketScan, replaceFeeAssignments,
-  searchCustomers, getCustomerByPhone, upsertGuestByPhone, updateExpenseCategory, updateExpenseRecord, updateTicketFee,
+  searchCustomers, getCustomerByPhone, upsertGuestByPhone, updateGuest, deleteGuest, updateExpenseCategory, updateExpenseRecord, updateTicketFee,
   createPrdTicketPurchase, listTicketDiscountTiers, getTicketDiscountTier, createTicketDiscountTier, updateTicketDiscountTier, deleteTicketDiscountTier, findOverlappingActiveTier,
   listTicketTypes, getTicketType, getTicketTypeByCode, createTicketType, updateTicketType, deleteTicketType, listVisitorCategories, createVisitorCategory, updateVisitorCategory, listTicketPrices, upsertTicketPrice,
-  summariseTicketRevenueByType, describeSettingDependents,
+  summariseTicketRevenueByType, summariseFacilityRevenueByType, listRevenueCategoryOptionsForRecording, describeSettingDependents,
   listPartnerEntities, getPartnerEntity, createPartnerEntity, updatePartnerEntity, deletePartnerEntity,
   listPartnerDiscountRules, createPartnerDiscountRule, updatePartnerDiscountRule, deletePartnerDiscountRule, resolveActivePartnerDiscountRule,
   listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
   listAddonServices, getAddonService, createAddonService, updateAddonService, deleteAddonService,
   findOrCreateRevenueCategoryForFacility, createFacilityBooking, listFacilityBookings, listFacilityBookingAddons, getFacilityBooking, addFacilityBookingAddons, updateFacilityBookingDetails, cancelFacilityBooking,
-  addFacilityBookingPayment, autoCancelOverdueFacilityBookings, findFacilityBookingConflict, listFacilityBookingsForFacility, getFacilityBookingSettings, updateFacilityBookingSettings, getUserDisplayName,
+  addFacilityBookingPayment, autoCancelOverdueFacilityBookings, findFacilityBookingConflict, listFacilityBookingsForFacility, getUserDisplayName,
   listPrdTicketPurchases, listPrdTicketLines, getCustomerById, refundPrdTicketPurchase,
   listExpenseAdjustments, createExpenseAdjustment, createExpenseTransfer, getExpenseCategoryBalances,
   listRevenueCategories, createRevenueCategory, updateRevenueCategory, deleteRevenueCategory, getRevenueCategory,
@@ -287,6 +287,20 @@ export const platformRouter = router({
       await logActivity(ctx.user.id, "customer.upsert", "guest", customer?.id, `${input.fullName}:${input.phone}`);
       return customer;
     }),
+    // PRD Round 15, Section 5: edit/remove a customer from the Directory.
+    update: protectedProcedure.input(z.object({
+      id: z.number(), fullName: z.string().min(1), phone: z.string().min(3), email: z.string().email().optional().or(z.literal("")),
+      nationality: z.string().optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const customer = await updateGuest(input.id, { ...input, email: input.email || undefined });
+      await logActivity(ctx.user.id, "customer.update", "guest", input.id, `${input.fullName}:${input.phone}`);
+      return customer;
+    }),
+    delete: protectedProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+      await deleteGuest(input.id);
+      await logActivity(ctx.user.id, "customer.delete", "guest", input.id);
+      return { success: true };
+    }),
   }),
 
   // PRD Round 7, Section 1.2/1.3: Base Prices became a fully open,
@@ -458,10 +472,13 @@ export const platformRouter = router({
       name: z.string().trim().min(1).max(160), code: z.string().min(2).max(32),
       pricingMethod: z.enum(["hourly", "daily", "fixed"]), rate: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals"),
       applyVat: z.boolean().default(true), vatPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).default("5.00"),
+      // PRD Round 15, Section 6: per-facility auto-cancellation window,
+      // replacing the old single global setting.
+      autoCancelEnabled: z.boolean().default(false), autoCancelHours: z.number().int().positive().default(24),
     })).mutation(async ({ input, ctx }) => {
       if (Number(input.vatPercent) > 100) throw new TRPCError({ code: "BAD_REQUEST", message: "VAT rate cannot exceed 100" });
       const category = await findOrCreateRevenueCategoryForFacility(input.name, normalizeRateCode(input.code), ctx.user.id);
-      const facility = await createFacilityType({ name: input.name, code: normalizeRateCode(input.code), pricingMethod: input.pricingMethod, rate: input.rate, applyVat: input.applyVat, vatPercent: input.vatPercent, revenueCategoryId: category.id, createdBy: ctx.user.id } as any);
+      const facility = await createFacilityType({ name: input.name, code: normalizeRateCode(input.code), pricingMethod: input.pricingMethod, rate: input.rate, applyVat: input.applyVat, vatPercent: input.vatPercent, autoCancelEnabled: input.autoCancelEnabled, autoCancelHours: input.autoCancelHours, revenueCategoryId: category.id, createdBy: ctx.user.id } as any);
       await logActivity(ctx.user.id, "facility_type.create", "facility_type", facility.id, JSON.stringify(input));
       return facility;
     }),
@@ -469,6 +486,7 @@ export const platformRouter = router({
       id: z.number().int().positive(), name: z.string().trim().min(1).max(160).optional(), code: z.string().min(2).max(32).optional(),
       pricingMethod: z.enum(["hourly", "daily", "fixed"]).optional(), rate: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals").optional(), isActive: z.boolean().optional(),
       applyVat: z.boolean().optional(), vatPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
+      autoCancelEnabled: z.boolean().optional(), autoCancelHours: z.number().int().positive().optional(),
     })).mutation(async ({ input, ctx }) => {
       if (input.vatPercent !== undefined && Number(input.vatPercent) > 100) throw new TRPCError({ code: "BAD_REQUEST", message: "VAT rate cannot exceed 100" });
       const { id, code, ...rest } = input;
@@ -543,9 +561,9 @@ export const platformRouter = router({
       await autoCancelOverdueFacilityBookings();
       const conflict = await findFacilityBookingConflict(input.facilityTypeId, input.fromDate, input.toDate);
       if (!conflict) return null;
-      const settings = await getFacilityBookingSettings();
-      const hoursRemaining = conflict.booking.status === "booking" && settings.autoCancelEnabled
-        ? Math.max(0, settings.autoCancelHours - (Date.now() - new Date(conflict.booking.createdAt).getTime()) / 3_600_000)
+      const facility = await getFacilityType(input.facilityTypeId);
+      const hoursRemaining = conflict.booking.status === "booking" && facility?.autoCancelEnabled
+        ? Math.max(0, facility.autoCancelHours - (Date.now() - new Date(conflict.booking.createdAt).getTime()) / 3_600_000)
         : null;
       return {
         referenceNumber: conflict.booking.id, customerName: conflict.customer?.fullName || conflict.booking.customerName || null,
@@ -559,13 +577,13 @@ export const platformRouter = router({
     listForFacility: protectedProcedure.input(z.object({ facilityTypeId: z.number().int().positive() })).query(async ({ input }) => {
       await autoCancelOverdueFacilityBookings();
       const bookings = await listFacilityBookingsForFacility(input.facilityTypeId);
-      const settings = await getFacilityBookingSettings();
+      const facility = await getFacilityType(input.facilityTypeId);
       return bookings.map((row) => ({
         referenceNumber: row.booking.id, start: row.start, end: row.end, startTime: row.booking.startTime,
         quantity: row.booking.quantity, customerName: row.customer?.fullName || row.booking.customerName || null,
         status: row.booking.status,
-        hoursRemaining: row.booking.status === "booking" && settings.autoCancelEnabled
-          ? Math.max(0, settings.autoCancelHours - (Date.now() - new Date(row.booking.createdAt).getTime()) / 3_600_000)
+        hoursRemaining: row.booking.status === "booking" && facility?.autoCancelEnabled
+          ? Math.max(0, facility.autoCancelHours - (Date.now() - new Date(row.booking.createdAt).getTime()) / 3_600_000)
           : null,
       }));
     }),
@@ -693,14 +711,6 @@ export const platformRouter = router({
       });
       await logActivity(ctx.user.id, "facility_booking.add_payment", "facility_booking", input.bookingId, `${input.paymentMethod}:${updated.totalAmount}`);
       return { booking: updated, addons: await listFacilityBookingAddons(updated.id) };
-    }),
-    settings: router({
-      get: protectedProcedure.query(async () => getFacilityBookingSettings()),
-      update: superAdminProcedure.input(z.object({ autoCancelEnabled: z.boolean().optional(), autoCancelHours: z.number().int().positive().optional() })).mutation(async ({ input, ctx }) => {
-        const updated = await updateFacilityBookingSettings(input);
-        await logActivity(ctx.user.id, "facility_booking_settings.update", "facility_booking_settings", 1, JSON.stringify(input));
-        return updated;
-      }),
     }),
   }),
 
@@ -1198,6 +1208,12 @@ export const platformRouter = router({
     // PRD Round 9, Section 11: the breakdown behind the combined Tickets total.
     ticketRevenueByType: managerProcedure.input(z.object({ from: z.string(), to: z.string() }))
       .query(({ input }) => summariseTicketRevenueByType({ from: input.from, to: input.to })),
+    // PRD Round 15, Section 7.2: the Facility Type equivalent.
+    facilityRevenueByType: managerProcedure.input(z.object({ from: z.string(), to: z.string() }))
+      .query(({ input }) => summariseFacilityRevenueByType({ from: input.from, to: input.to })),
+    // PRD Round 15, Section 7.1: the live Ticket Type + Facility Type list
+    // offered when recording a manual Revenue transaction.
+    revenueCategoryOptionsForRecording: protectedProcedure.query(() => listRevenueCategoryOptionsForRecording()),
     occupancy: managerProcedure.input(z.object({ from: z.string(), to: z.string() }))
       .query(({ input }) => getOccupancyStats(input.from, input.to)),
     aquaAttendance: managerProcedure.input(z.object({ from: z.string(), to: z.string() }))

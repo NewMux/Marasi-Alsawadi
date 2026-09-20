@@ -117,23 +117,10 @@ export default function TicketDeskPage() {
   const saveDraftCustomer = trpc.platform.customers.upsertByPhone.useMutation({
     onSuccess: (customer: any, variables) => { if (customer) setDraftCustomer({ id: customer.id, name: variables.fullName, phone: variables.phone, email: variables.email || "" }); utils.platform.customers.search.invalidate(); },
   });
-  useEffect(() => {
-    if (!isNewCustomerFlow) return;
-    const name = form.customerName.trim();
-    const phone = form.customerPhone.trim();
-    const email = form.customerEmail.trim();
-    if (!name || phone.length < 7) return;
-    if (draftCustomer && draftCustomer.name === name && draftCustomer.phone === phone && draftCustomer.email === email) return;
-    const timeout = setTimeout(() => {
-      saveDraftCustomer.mutate({ fullName: name, phone, email: email || undefined, nationality: form.customerCountry.trim() || undefined });
-    }, 800);
-    return () => clearTimeout(timeout);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isNewCustomerFlow, form.customerName, form.customerPhone, form.customerEmail, form.customerCountry]);
   const draftMatchesCurrent = draftCustomer && draftCustomer.name === form.customerName.trim() && draftCustomer.phone === form.customerPhone.trim() && draftCustomer.email === form.customerEmail.trim();
-  // PRD Round 14, Section 2: the debounced auto-save above already covers
-  // this, but staff wanted an explicit manual action too — a clear, on-
-  // demand confirmation rather than trusting a background save happened.
+  // PRD Round 15, Section 1: this corrects the earlier auto-save design —
+  // customer details are only ever saved when staff explicitly press this,
+  // never as they type.
   const saveCustomerNow = () => {
     const name = form.customerName.trim();
     const phone = form.customerPhone.trim();
@@ -285,7 +272,13 @@ export default function TicketDeskPage() {
     });
   };
   const printReceipt = async (width: "80" | "58") => {
-    if (created && (await printViaAgent(toReceiptData(created, ticketTypeById)))) { toast.success(t("tickets.sentToPrinter")); return; }
+    if (created && (await printViaAgent(toReceiptData(created, ticketTypeById)))) {
+      toast.success(t("tickets.sentToPrinter"));
+      // PRD Round 15, Section 2: once a receipt has actually printed, the
+      // screen resets itself for the next customer — no "New Ticket" button.
+      if (justIssued) resetForNewTicket();
+      return;
+    }
     setReceiptWidth(width);
     // PRD Round 14, Section 4: setReceiptWidth is an async React state
     // update that swaps the receipt's CSS width class — a bare
@@ -300,6 +293,17 @@ export default function TicketDeskPage() {
     requestAnimationFrame(() => requestAnimationFrame(() => window.print()));
     if (created) toast.message(t("tickets.printAgentNotFound"));
   };
+  // PRD Round 15, Section 2: the browser's own "afterprint" event fires once
+  // the print dialog opened by window.print() above is dismissed — the reset
+  // is deferred to it (rather than firing right after window.print() is
+  // called) so the receipt is still in the DOM, and thus in the print
+  // stylesheet's output, at the moment printing actually happens.
+  useEffect(() => {
+    const handleAfterPrint = () => { if (justIssued) resetForNewTicket(); };
+    window.addEventListener("afterprint", handleAfterPrint);
+    return () => window.removeEventListener("afterprint", handleAfterPrint);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [justIssued]);
   const reprintPurchase = async (entry: any) => {
     setReprintingId(entry.purchase.id);
     try {
@@ -355,7 +359,7 @@ export default function TicketDeskPage() {
             {phoneResolved && phoneMatch && <div className={cx("mt-3 flex items-center justify-between gap-3 rounded-2xl px-4 py-3", attemptedSubmit && matchedCustomerUnconfirmed ? "bg-danger-bg ring-1 ring-danger/30" : "bg-success-bg")}><div className="min-w-0"><span className={cx("block text-xs font-semibold", attemptedSubmit && matchedCustomerUnconfirmed ? "text-danger" : "text-success")}>{attemptedSubmit && matchedCustomerUnconfirmed ? t("tickets.confirmMatchedCustomer") : t("tickets.existingCustomerFound")}</span><span className="mt-1 block truncate text-xs text-muted">{phoneMatch.fullName}{phoneMatch.email ? ` · ${phoneMatch.email}` : ""}{phoneMatch.nationality ? ` · ${phoneMatch.nationality}` : ""}</span></div><SecondaryButton onClick={useMatchedCustomer}>{t("tickets.useThisCustomer")}</SecondaryButton></div>}
             {isNewCustomerFlow && <div className="mt-5 grid gap-4">
               <div className="flex items-center gap-2 rounded-xl bg-well px-3 py-2 text-[11px] font-semibold uppercase tracking-[.14em] text-subtle">{t("tickets.newWalkIn")}</div>
-              <Field label={t("tickets.fullName")} error={attemptedSubmit && customerInvalid && !form.customerName.trim() ? t("common.required") : undefined}><TextField value={form.customerName} onChange={(event) => setForm({ ...form, customerName: event.target.value })} placeholder="Customer full name" className={attemptedSubmit && customerInvalid && !form.customerName.trim() ? "border-danger ring-1 ring-danger/30" : undefined}/></Field>
+              <Field label={t("tickets.fullName")} error={attemptedSubmit && customerInvalid && !form.customerName.trim() ? t("common.required") : undefined}><TextField value={form.customerName} onChange={(event) => setForm({ ...form, customerName: event.target.value })} placeholder="Customer full name" autoComplete="off" className={attemptedSubmit && customerInvalid && !form.customerName.trim() ? "border-danger ring-1 ring-danger/30" : undefined}/></Field>
               <Field label={t("tickets.email")}><TextField type="email" value={form.customerEmail} onChange={(event) => setForm({ ...form, customerEmail: event.target.value })} placeholder="name@example.com"/></Field>
               <div className="flex items-center gap-3">
                 <SecondaryButton onClick={saveCustomerNow} disabled={saveDraftCustomer.isPending}>{saveDraftCustomer.isPending ? t("tickets.saving") : t("tickets.saveCustomer")}</SecondaryButton>
@@ -420,7 +424,6 @@ export default function TicketDeskPage() {
         <div className="mt-5 flex flex-wrap gap-2 border-t border-divider pt-5">
           {!justIssued && <PrimaryButton onClick={issuePurchase} pending={issue.isPending}>{t("tickets.confirmIssue")} <Ticket size={15} className="ml-2"/></PrimaryButton>}
           {created && <><SecondaryButton onClick={() => printReceipt("80")}><Printer size={14} className="mr-2"/>{t("tickets.print80")}</SecondaryButton><SecondaryButton onClick={() => printReceipt("58")}><Printer size={14} className="mr-2"/>{t("tickets.print58")}</SecondaryButton></>}
-          {justIssued && <PrimaryButton onClick={resetForNewTicket}><Plus size={15} className="mr-2"/>{t("tickets.newTicket")}</PrimaryButton>}
         </div>
         {created && <div className="mt-5 rounded-2xl border border-[#cbead5] bg-[#effaf2] p-4"><StatusPill tone="success">{t("tickets.purchaseReady")}</StatusPill><div className="mt-2 font-mono text-lg font-semibold text-ink">{created.lines.length > 3 ? `#${created.lines[0].ticketNumber}–#${created.lines[created.lines.length - 1].ticketNumber} (×${created.lines.length})` : created.lines.map((line: any) => line.ticketNumber).join(" · ")}</div><p className="mt-1 text-xs leading-5 text-muted">{t("tickets.purchaseReadyHint")}</p></div>}
       </Surface>

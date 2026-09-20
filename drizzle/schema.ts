@@ -155,6 +155,11 @@ export const ticketTypes = mysqlTable("ticket_types", {
   // nothing until an Admin edits one.
   applyVat: boolean("applyVat").default(true).notNull(),
   vatPercent: decimal("vatPercent", { precision: 5, scale: 2 }).default("5.00").notNull(),
+  // PRD Round 15, Section 7.1: linked the same way Facility Types/Add-on
+  // Services already are, so recording a manual Revenue transaction can
+  // offer this exact ticket type as a category — nullable since rows
+  // created before this round have none yet (lazily backfilled on first use).
+  revenueCategoryId: int("revenueCategoryId"),
   isActive: boolean("isActive").default(true).notNull(),
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -698,6 +703,12 @@ export const facilityTypes = mysqlTable("facility_types", {
   // already charge so nothing looks inconsistent between the two receipts.
   applyVat: boolean("applyVat").default(true).notNull(),
   vatPercent: decimal("vatPercent", { precision: 5, scale: 2 }).default("5.00").notNull(),
+  // PRD Round 15, Section 6: this replaces the earlier single global
+  // auto-cancellation window (facility_booking_settings) — each facility now
+  // carries its own toggle and its own free/open number of hours, set by the
+  // Admin here rather than shared across every facility.
+  autoCancelEnabled: boolean("autoCancelEnabled").default(false).notNull(),
+  autoCancelHours: int("autoCancelHours").default(24).notNull(),
   isActive: boolean("isActive").default(true).notNull(),
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),

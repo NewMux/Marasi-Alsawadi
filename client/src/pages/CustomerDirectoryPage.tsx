@@ -1,5 +1,5 @@
 import { trpc } from "@/lib/trpc";
-import { ArrowUpRight, CalendarDays, Phone, Plus, Users } from "lucide-react";
+import { ArrowUpRight, CalendarDays, Edit3, Phone, Plus, Trash2, Users } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
@@ -11,6 +11,7 @@ import { useT } from "@/lib/i18n";
 const money = (value: unknown) => `OMR ${Number(value || 0).toLocaleString("en-OM", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
 const fmt = (value: unknown) => value ? new Date(value as string).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "—";
 const blankNewCustomer = { fullName: "", phone: `${COUNTRY_DIAL_CODES[DEFAULT_COUNTRY]} `, email: "", nationality: DEFAULT_COUNTRY };
+const blankEditCustomer = { id: 0, fullName: "", phone: "", email: "", nationality: DEFAULT_COUNTRY };
 
 export default function CustomerDirectoryPage() {
   const t = useT();
@@ -21,6 +22,8 @@ export default function CustomerDirectoryPage() {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
   const [newCustomer, setNewCustomer] = useState(blankNewCustomer);
+  const [editing, setEditing] = useState(false);
+  const [editCustomer, setEditCustomer] = useState(blankEditCustomer);
   const utils = trpc.useUtils();
   const { data: phoneMatch } = trpc.platform.customers.findByPhone.useQuery({ phone: newCustomer.phone.trim() }, { enabled: creating && newCustomer.phone.trim().length >= 7 });
   const searchInput = { query: query.trim() || undefined, country: countryFilter.trim() || undefined };
@@ -32,6 +35,26 @@ export default function CustomerDirectoryPage() {
     onSuccess: () => { toast.success(t("customers.savedToast")); setCreating(false); setNewCustomer(blankNewCustomer); utils.platform.customers.search.invalidate(); },
     onError: (error) => toast.error(error.message),
   });
+  const updateCustomer = trpc.platform.customers.update.useMutation({
+    onSuccess: () => { toast.success(t("customers.customerUpdatedToast")); setEditing(false); utils.platform.customers.search.invalidate(); utils.platform.tickets.purchaseList.invalidate(); },
+    onError: (error) => toast.error(error.message),
+  });
+  const deleteCustomer = trpc.platform.customers.delete.useMutation({
+    onSuccess: () => { toast.success(t("customers.customerRemovedToast")); utils.platform.customers.search.invalidate(); utils.platform.tickets.purchaseList.invalidate(); },
+    onError: (error) => toast.error(error.message),
+  });
+  const startEditCustomer = (customer: { id: number; name: string; phone: string; email: string; country: string }) => {
+    setEditCustomer({ id: customer.id, fullName: customer.name, phone: customer.phone, email: customer.email, nationality: customer.country || DEFAULT_COUNTRY });
+    setEditing(true);
+  };
+  const submitEditCustomer = () => {
+    if (!editCustomer.fullName.trim() || !editCustomer.phone.trim()) return toast.error(t("customers.requiredToast"));
+    updateCustomer.mutate({ id: editCustomer.id, fullName: editCustomer.fullName.trim(), phone: editCustomer.phone.trim(), email: editCustomer.email.trim() || undefined, nationality: editCustomer.nationality.trim() || undefined });
+  };
+  const removeCustomer = (customer: { id: number }) => {
+    if (!window.confirm(t("customers.confirmRemoveCustomer"))) return;
+    deleteCustomer.mutate({ id: customer.id });
+  };
   const customers = useMemo(() => {
     const map = new Map<number, any>();
     (records as any[]).forEach((customer) => { if (customer.id) map.set(customer.id, { id: customer.id, name: customer.fullName || "Guest", phone: customer.phone || "—", email: customer.email || "", country: customer.nationality || "", visits: [], total: 0 }); });
@@ -59,18 +82,30 @@ export default function CustomerDirectoryPage() {
     <PageHeader eyebrow={t("customers.eyebrow")} title={t("customers.title")} description={t("customers.descriptionReal")} actions={<div className="flex gap-2"><SecondaryButton onClick={() => setCreating(true)}><Plus size={15} className="mr-2"/>{t("customers.newCustomer")}</SecondaryButton><PrimaryButton onClick={() => setLocation("/tickets")}>{t("customers.newPurchase")} <ArrowUpRight size={15} className="ml-2"/></PrimaryButton></div>}/>
     <div className="grid gap-4 sm:grid-cols-3"><MetricCard icon={Users} label={t("customers.profiles")} value={String(customers.length)} detail={t("customers.matchingSearch")} tone="blue"/><MetricCard icon={CalendarDays} label={t("customers.purchaseRecords")} value={String(totalVisits)} detail={t("customers.groupedVisits")} tone="green"/><MetricCard icon={Phone} label={t("customers.searchCoverage")} value={t("customers.searchCoverageValue")} detail={t("customers.searchCoverageDetail")} tone="amber"/></div>
     <Surface className="mt-6"><div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"><div className="flex flex-1 flex-col gap-3 sm:flex-row"><div className="flex-1"><SearchField value={query} onChange={setQuery} placeholder={t("customers.searchPlaceholderReal")}/></div><SecondaryButton onClick={() => setShowAll(true)}>{t("customers.showAll")}</SecondaryButton><SelectField value={countryFilter} onChange={(event) => setCountryFilter(event.target.value)} className="sm:w-48"><option value="">{t("customers.allCountries")}</option>{COUNTRIES.map((country) => <option key={country} value={country}>{country}</option>)}</SelectField></div><div className="text-xs text-subtle">{!hasSearched ? t("customers.startTypingHint") : isLoading ? t("customers.searching") : `${customers.length} ${customers.length === 1 ? t("customers.profileUnit") : t("customers.profileUnitPlural")}`}</div></div></Surface>
-    <div className="mt-6">{!hasSearched ? <Surface><EmptyState title={t("customers.startTypingTitle")} description={t("customers.startTypingHint")}/></Surface> : customersError ? <Surface><EmptyState title={t("customers.loadError")} description={t("customers.loadErrorHint")} action={<PrimaryButton onClick={() => setLocation("/tickets")}>{t("customers.openTicketDeskLower")}</PrimaryButton>}/></Surface> : isLoading ? <LoadingState label={t("customers.searchingHistory")}/> : customers.length ? <Surface className="p-0"><TableFrame className="border-0"><TableHeader><div className="grid grid-cols-[1.25fr_1fr_.65fr_auto] gap-3"><span>{t("receipt.customer")}</span><span>{t("customers.lastVisit")}</span><span>{t("customers.lifetime")}</span><span className="text-right">{t("customers.history")}</span></div></TableHeader>{customers.map((customer) => <div key={customer.id}><TableRow className="grid-cols-[1.25fr_1fr_.65fr_auto]"><div className="min-w-0"><div className="truncate font-medium text-ink">{customer.name}</div><div className="mt-1 truncate text-xs text-muted"><span dir="ltr">{customer.phone}</span>{customer.email ? ` · ${customer.email}` : ""}{customer.country ? ` · ${customer.country}` : ""}</div></div><div className="text-xs text-muted">{fmt(customer.visits[0]?.visitDate)}<div className="mt-1"><StatusPill tone="info">{customer.visits.length} {customer.visits.length === 1 ? t("customers.purchase") : t("customers.purchases")}</StatusPill></div></div><b className="text-sm font-medium">{money(customer.total)}</b><button onClick={() => setExpandedId(expandedId === customer.id ? null : customer.id)} className="justify-self-end rounded-full bg-fill px-3 py-2 text-[11px] font-semibold text-ink hover:bg-[#e8e8ed]">{expandedId === customer.id ? t("common.close") : t("common.view")}</button></TableRow>{expandedId === customer.id && <div className="border-t border-divider bg-[#fbfbfd] px-4 py-4"><div className="mb-3 text-[10px] font-semibold uppercase tracking-[.14em] text-subtle">{t("customers.purchaseHistory")}</div>{customer.visits.length ? <div className="grid gap-2">{customer.visits.slice(0, 8).map((visit: any) => <div key={visit.id} className="grid grid-cols-[1fr_.8fr_auto] items-center gap-3 rounded-xl bg-white px-3 py-2.5 text-xs"><div><b className="font-mono text-accent">{visit.ticketNumbers.join(" · ") || `Purchase #${visit.id}`}</b><div className="mt-1 text-muted">{t("customers.waterparkPurchase")}</div></div><span className="text-muted">{fmt(visit.visitDate)}</span><b>{money(visit.totalAmount)}</b></div>)}</div> : <p className="text-xs text-muted">{t("customers.noTicketsYet")}</p>}</div>}</div>)}</TableFrame></Surface> : <Surface><EmptyState title={t("customers.noMatch")} description={t("customers.noMatchHintReal")} action={<PrimaryButton onClick={() => setLocation("/tickets")}>{t("overview.openTicketDesk")}</PrimaryButton>}/></Surface>}</div>
+    <div className="mt-6">{!hasSearched ? <Surface><EmptyState title={t("customers.startTypingTitle")} description={t("customers.startTypingHint")}/></Surface> : customersError ? <Surface><EmptyState title={t("customers.loadError")} description={t("customers.loadErrorHint")} action={<PrimaryButton onClick={() => setLocation("/tickets")}>{t("customers.openTicketDeskLower")}</PrimaryButton>}/></Surface> : isLoading ? <LoadingState label={t("customers.searchingHistory")}/> : customers.length ? <Surface className="p-0"><TableFrame className="border-0"><TableHeader><div className="grid grid-cols-[1.15fr_.9fr_.55fr_auto] gap-3"><span>{t("receipt.customer")}</span><span>{t("customers.lastVisit")}</span><span>{t("customers.lifetime")}</span><span className="text-right">{t("finance.actions")}</span></div></TableHeader>{customers.map((customer) => <div key={customer.id}><TableRow className="grid-cols-[1.15fr_.9fr_.55fr_auto]"><div className="min-w-0"><div className="truncate font-medium text-ink">{customer.name}</div><div className="mt-1 truncate text-xs text-muted"><span dir="ltr">{customer.phone}</span>{customer.email ? ` · ${customer.email}` : ""}{customer.country ? ` · ${customer.country}` : ""}</div></div><div className="text-xs text-muted">{fmt(customer.visits[0]?.visitDate)}<div className="mt-1"><StatusPill tone="info">{customer.visits.length} {customer.visits.length === 1 ? t("customers.purchase") : t("customers.purchases")}</StatusPill></div></div><b className="text-sm font-medium">{money(customer.total)}</b><div className="flex items-center justify-end gap-1"><button onClick={() => startEditCustomer(customer)} aria-label={t("customers.edit")} className="rounded-full p-2 text-muted hover:bg-fill hover:text-ink"><Edit3 size={14}/></button><button onClick={() => removeCustomer(customer)} aria-label={t("customers.remove")} className="rounded-full p-2 text-muted hover:bg-danger-bg hover:text-danger"><Trash2 size={14}/></button><button onClick={() => setExpandedId(expandedId === customer.id ? null : customer.id)} className="rounded-full bg-fill px-3 py-2 text-[11px] font-semibold text-ink hover:bg-[#e8e8ed]">{expandedId === customer.id ? t("common.close") : t("common.view")}</button></div></TableRow>{expandedId === customer.id && <div className="border-t border-divider bg-[#fbfbfd] px-4 py-4"><div className="mb-3 text-[10px] font-semibold uppercase tracking-[.14em] text-subtle">{t("customers.purchaseHistory")}</div>{customer.visits.length ? <div className="grid gap-2">{customer.visits.slice(0, 8).map((visit: any) => <div key={visit.id} className="grid grid-cols-[1fr_.8fr_auto] items-center gap-3 rounded-xl bg-white px-3 py-2.5 text-xs"><div><b className="font-mono text-accent">{visit.ticketNumbers.join(" · ") || `Purchase #${visit.id}`}</b><div className="mt-1 text-muted">{t("customers.waterparkPurchase")}</div></div><span className="text-muted">{fmt(visit.visitDate)}</span><b>{money(visit.totalAmount)}</b></div>)}</div> : <p className="text-xs text-muted">{t("customers.noTicketsYet")}</p>}</div>}</div>)}</TableFrame></Surface> : <Surface><EmptyState title={t("customers.noMatch")} description={t("customers.noMatchHintReal")} action={<PrimaryButton onClick={() => setLocation("/tickets")}>{t("overview.openTicketDesk")}</PrimaryButton>}/></Surface>}</div>
     <Dialog open={creating} onOpenChange={(open) => { setCreating(open); if (!open) setNewCustomer(blankNewCustomer); }}>
       <DialogContent>
         <DialogHeader><DialogTitle>{t("customers.newCustomerProfile")}</DialogTitle></DialogHeader>
         <div className="grid gap-4 py-2">
-          <Field label={t("tickets.fullName")}><TextField value={newCustomer.fullName} onChange={(event) => setNewCustomer({ ...newCustomer, fullName: event.target.value })} placeholder="Customer full name"/></Field>
+          <Field label={t("tickets.fullName")}><TextField value={newCustomer.fullName} onChange={(event) => setNewCustomer({ ...newCustomer, fullName: event.target.value })} placeholder="Customer full name" autoComplete="off"/></Field>
           <Field label={t("customers.phoneNumber")}><TextField value={newCustomer.phone} onChange={(event) => setNewCustomer({ ...newCustomer, phone: event.target.value })} inputMode="tel" dir="ltr" placeholder="+968 …"/></Field>
           {phoneMatch && <p className="rounded-xl bg-warning-bg px-3 py-2 text-xs text-warning">{t("customers.duplicatePhoneWarning", { name: phoneMatch.fullName })}</p>}
           <Field label={t("tickets.email")}><TextField type="email" value={newCustomer.email} onChange={(event) => setNewCustomer({ ...newCustomer, email: event.target.value })} placeholder="name@example.com"/></Field>
           <Field label={t("common.country")}><CountryField value={newCustomer.nationality} onChange={(country) => setNewCustomer({ ...newCustomer, nationality: country, phone: applyCountryDialCode(newCustomer.phone, newCustomer.nationality, country) })}/></Field>
         </div>
         <DialogFooter><PrimaryButton onClick={submitNewCustomer} pending={createCustomer.isPending}>{t("customers.saveCustomer")}</PrimaryButton></DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={editing} onOpenChange={(open) => { setEditing(open); if (!open) setEditCustomer(blankEditCustomer); }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>{t("customers.editCustomerProfile")}</DialogTitle></DialogHeader>
+        <div className="grid gap-4 py-2">
+          <Field label={t("tickets.fullName")}><TextField value={editCustomer.fullName} onChange={(event) => setEditCustomer({ ...editCustomer, fullName: event.target.value })} placeholder="Customer full name" autoComplete="off"/></Field>
+          <Field label={t("customers.phoneNumber")}><TextField value={editCustomer.phone} onChange={(event) => setEditCustomer({ ...editCustomer, phone: event.target.value })} inputMode="tel" dir="ltr" placeholder="+968 …"/></Field>
+          <Field label={t("tickets.email")}><TextField type="email" value={editCustomer.email} onChange={(event) => setEditCustomer({ ...editCustomer, email: event.target.value })} placeholder="name@example.com"/></Field>
+          <Field label={t("common.country")}><CountryField value={editCustomer.nationality} onChange={(country) => setEditCustomer({ ...editCustomer, nationality: country })}/></Field>
+        </div>
+        <DialogFooter><PrimaryButton onClick={submitEditCustomer} pending={updateCustomer.isPending}>{t("customers.saveChanges")}</PrimaryButton></DialogFooter>
       </DialogContent>
     </Dialog>
   </>;

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
-  addonServices, assetAdjustments, assetCategories, assetRecords, attachments, expenseAdjustments, expenseCategories, expenseRecords, facilityBookingAddons, facilityBookings, facilityBookingSettings, facilityTypes, guests, partnerEntities, partnerDiscountRules, pettyCashAllocations, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
+  addonServices, assetAdjustments, assetCategories, assetRecords, attachments, expenseAdjustments, expenseCategories, expenseRecords, facilityBookingAddons, facilityBookings, facilityTypes, guests, partnerEntities, partnerDiscountRules, pettyCashAllocations, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
   serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers, ticketTypes, visitorCategories, ticketPrices,
   ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries, users,
 } from "../drizzle/schema";
@@ -448,6 +448,30 @@ export async function upsertGuestByPhone(data: { fullName: string; phone: string
   await db.insert(guests).values({ fullName: data.fullName, phone, email: data.email || null, nationality: data.nationality || null });
   const rows = await db.select().from(guests).orderBy(desc(guests.id)).limit(1);
   return rows[0]!;
+}
+
+// PRD Round 15, Section 5: edit an existing customer's own details from the
+// Customer Directory.
+export async function updateGuest(id: number, data: { fullName: string; phone: string; email?: string; nationality?: string }) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(guests).set({ fullName: data.fullName, phone: data.phone, email: data.email || null, nationality: data.nationality || null }).where(eq(guests.id, id));
+  const rows = await db.select().from(guests).where(eq(guests.id, id)).limit(1);
+  return rows[0];
+}
+
+// PRD Round 15, Section 5: `guests` has no isActive flag, so — same as the
+// established pattern for categories/ticket types elsewhere — a customer
+// still referenced by an actual ticket purchase or facility booking is
+// blocked from deletion (with a clear reason) rather than silently orphaning
+// that history; only a genuinely unused profile is hard-deleted.
+export async function deleteGuest(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const [purchaseRows, bookingRows] = await Promise.all([
+    db.select({ id: ticketPurchases.id }).from(ticketPurchases).where(eq(ticketPurchases.customerId, id)).limit(1),
+    db.select({ id: facilityBookings.id }).from(facilityBookings).where(eq(facilityBookings.customerId, id)).limit(1),
+  ]);
+  if (purchaseRows.length || bookingRows.length) throw new Error("This customer has existing ticket purchases or facility bookings and cannot be removed");
+  await db.delete(guests).where(eq(guests.id, id));
 }
 
 export async function createSalesTransaction(data: SalesTransactionDraft) {
@@ -912,31 +936,25 @@ export async function addFacilityBookingPayment(data: { bookingId: number; payme
 // every list/get call self-heals any booking that's aged past the
 // Admin-configured window instead, the same "no manual step" philosophy
 // applyLegacyMigrations already uses for schema migrations.
+// PRD Round 15, Section 6: the window is now per-facility (facility_types
+// .autoCancelEnabled/autoCancelHours) rather than one shared global setting,
+// so each candidate booking is checked against its own facility's values.
 export async function autoCancelOverdueFacilityBookings() {
   const db = await getDb(); if (!db) return;
-  const settingsRows = await db.select().from(facilityBookingSettings).where(eq(facilityBookingSettings.id, 1)).limit(1);
-  const settings = settingsRows[0];
-  if (!settings?.autoCancelEnabled) return;
-  const cutoff = new Date(Date.now() - settings.autoCancelHours * 3_600_000);
-  const overdue = await db.select({ id: facilityBookings.id }).from(facilityBookings)
-    .where(and(eq(facilityBookings.status, "booking"), sql`${facilityBookings.createdAt} < ${cutoff}`));
-  for (const row of overdue) {
+  const candidates = await db.select({
+    id: facilityBookings.id, createdAt: facilityBookings.createdAt,
+    autoCancelEnabled: facilityTypes.autoCancelEnabled, autoCancelHours: facilityTypes.autoCancelHours,
+  }).from(facilityBookings)
+    .innerJoin(facilityTypes, eq(facilityBookings.facilityTypeId, facilityTypes.id))
+    .where(eq(facilityBookings.status, "booking"));
+  const now = Date.now();
+  for (const row of candidates) {
+    if (!row.autoCancelEnabled) continue;
+    if (new Date(row.createdAt).getTime() >= now - row.autoCancelHours * 3_600_000) continue;
     await db.update(facilityBookings).set({
       status: "cancelled", cancelledAt: new Date(), cancelKind: "auto", cancelReason: "Cancelled automatically (unpaid)",
     } as any).where(eq(facilityBookings.id, row.id));
   }
-}
-
-export async function getFacilityBookingSettings() {
-  const db = await getDb(); if (!db) return { id: 1, autoCancelEnabled: false, autoCancelHours: 24 };
-  const rows = await db.select().from(facilityBookingSettings).where(eq(facilityBookingSettings.id, 1)).limit(1);
-  return rows[0] || { id: 1, autoCancelEnabled: false, autoCancelHours: 24 };
-}
-
-export async function updateFacilityBookingSettings(data: { autoCancelEnabled?: boolean; autoCancelHours?: number }) {
-  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
-  await db.update(facilityBookingSettings).set(data as any).where(eq(facilityBookingSettings.id, 1));
-  return getFacilityBookingSettings();
 }
 
 // PRD Round 14, Section 5: warn staff before double-booking a facility on a
@@ -1729,6 +1747,66 @@ export async function summariseTicketRevenueByType(range: { from: string; to: st
     discountAmount: Number(row.discountAmount || 0).toFixed(3),
     totalAmount: Number(row.totalAmount || 0).toFixed(3),
   }));
+}
+
+// PRD Round 15, Section 7.2: the Facility Type equivalent of the per-ticket-
+// type breakdown above — grouped by the facility's own dedicated revenue
+// category (facility_types.revenueCategoryId, one per facility since Section
+// 2), and scoped to the facility LINE only via financeEntries.referenceType
+// (never the separate "facility_booking_addon" entries), so a booking's
+// add-on revenue is never double-counted into its facility's own total.
+// Only ever includes bookings actually paid (Stage 2) within the range,
+// dated to when the revenue was really posted, not the reservation date.
+export async function summariseFacilityRevenueByType(range: { from: string; to: string }) {
+  const db = await getDb(); if (!db) return [];
+  const rows = await db.select({
+    facilityTypeId: facilityTypes.id,
+    facilityTypeName: facilityTypes.name,
+    bookingCount: sql<number>`COUNT(*)`,
+    totalAmount: sql<string>`SUM(${revenueRecords.amount})`,
+  })
+    .from(revenueRecords)
+    .innerJoin(financeEntries, eq(revenueRecords.financeEntryId, financeEntries.id))
+    .innerJoin(facilityTypes, eq(revenueRecords.categoryId, facilityTypes.revenueCategoryId))
+    .where(and(
+      eq(financeEntries.referenceType, "facility_booking"),
+      sql`${revenueRecords.businessDate} >= ${range.from}`,
+      sql`${revenueRecords.businessDate} <= ${range.to}`,
+    ))
+    .groupBy(facilityTypes.id, facilityTypes.name)
+    .orderBy(desc(sql`SUM(${revenueRecords.amount})`));
+  return rows.map((row) => ({
+    facilityTypeId: row.facilityTypeId,
+    facilityTypeName: row.facilityTypeName,
+    bookingCount: Number(row.bookingCount || 0),
+    totalAmount: Number(row.totalAmount || 0).toFixed(3),
+  }));
+}
+
+// PRD Round 15, Section 7.1: the categories offered when recording a manual
+// Revenue transaction must exactly match the live Ticket Types and Facility
+// Types — never a separate, hardcoded list — and drop out automatically the
+// moment one is retired. Built fresh from both live tables (not from
+// revenue_categories directly, which also holds entries an Admin may have
+// added independently) and lazily linked to a real ledger category the
+// first time a ticket type needs one, the same "self-heal on the read that
+// needs it" pattern already used for auto-cancellation and migrations.
+export async function listRevenueCategoryOptionsForRecording() {
+  const db = await getDb(); if (!db) return [];
+  const activeTicketTypes = await db.select().from(ticketTypes).where(eq(ticketTypes.isActive, true));
+  const activeFacilityTypes = await db.select().from(facilityTypes).where(eq(facilityTypes.isActive, true));
+  const options: { categoryId: number; name: string }[] = [];
+  for (const type of activeTicketTypes) {
+    let categoryId = type.revenueCategoryId;
+    if (!categoryId) {
+      const category = await findOrCreateRevenueCategoryForFacility(type.name, type.code, type.createdBy);
+      await db.update(ticketTypes).set({ revenueCategoryId: category.id }).where(eq(ticketTypes.id, type.id));
+      categoryId = category.id;
+    }
+    options.push({ categoryId, name: type.name });
+  }
+  for (const facility of activeFacilityTypes) options.push({ categoryId: facility.revenueCategoryId, name: facility.name });
+  return options;
 }
 
 // PRD Round 9, Section 10: before an Admin retires or removes a library
