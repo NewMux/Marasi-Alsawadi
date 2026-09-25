@@ -325,6 +325,24 @@ export default function TicketDeskPage() {
     onError: (error) => toast.error(error.message || t("tickets.returnFailed")),
     onSettled: () => setRefundingId(null),
   });
+  // PRD Round 14 (Client feedback, 25/9/2026): a permanent, reusable Delete
+  // action offered only once a purchase is already returned — replaces the
+  // Return button in place, protected by a plain confirm() dialog (same
+  // convention already used for the Customer Directory's Remove action).
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const deletePurchase = trpc.platform.tickets.purchaseDelete.useMutation({
+    onSuccess: () => {
+      utils.platform.tickets.purchaseList.invalidate();
+      toast.success(t("tickets.deleteSuccess"));
+    },
+    onError: (error) => toast.error(error.message),
+    onSettled: () => setDeletingId(null),
+  });
+  const confirmDeletePurchase = (entry: any) => {
+    if (!window.confirm(t("tickets.confirmDeletePurchase"))) return;
+    setDeletingId(entry.purchase.id);
+    deletePurchase.mutate({ purchaseId: entry.purchase.id });
+  };
   const returnPurchase = (entry: any) => {
     setCancelReason("");
     setCancelingEntry(entry);
@@ -372,7 +390,7 @@ export default function TicketDeskPage() {
           <button onClick={() => setRecentExpanded((current) => !current)} className="flex w-full items-start justify-between gap-3 text-left"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("tickets.recentPurchases")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("tickets.recentPurchasesHint")}</p></div><div className="flex items-center gap-2"><StatusPill>{groupedPurchases.length} {t("tickets.purchasesCount")}</StatusPill>{recentExpanded ? <ChevronUp size={16} className="mt-1 text-muted"/> : <ChevronDown size={16} className="mt-1 text-muted"/>}</div></button>
           {recentExpanded && <>
             <div className="mt-4"><SearchField value={ticketQuery} onChange={setTicketQuery} placeholder={t("tickets.searchTickets")}/></div>
-            <div className="mt-4">{purchasesLoading ? <div className="p-4 text-sm text-muted">{t("tickets.loadingHistory")}</div> : groupedPurchases.length ? <TableFrame><TableHeader><div className="grid grid-cols-[1.15fr_.7fr_.55fr_auto] gap-3"><span>{t("tickets.customerTicketCol")}</span><span>{t("tickets.visitCol")}</span><span>{t("common.total")}</span><span className="text-right">{t("finance.actions")}</span></div></TableHeader>{groupedPurchases.slice(0, 8).map((entry: any) => { const refunded = entry.purchase.status === "refunded"; return <TableRow key={entry.purchase.id} className="grid-cols-[1.15fr_.7fr_.55fr_auto]"><div className="min-w-0"><div className="truncate text-sm font-medium">{entry.customer?.fullName || t("tickets.customerFallback")}</div><div className="mt-1 truncate font-mono text-[10px] text-accent">{entry.lines.map((line: any) => line.ticketNumber).join(" · ")}</div></div><div className="text-xs text-muted">{dateLabel(entry.purchase.visitDate)}</div><b className={cx("text-sm", refunded && "text-muted line-through")}>{money(entry.purchase.totalAmount)}</b><div className="flex items-center justify-end gap-1"><button onClick={() => reprintPurchase(entry)} disabled={reprintingId === entry.purchase.id} aria-label="Reprint this ticket" className="rounded-full bg-fill p-2 text-muted hover:bg-[#e8e8ed] hover:text-ink disabled:opacity-50"><Printer size={14}/></button>{refunded ? <StatusPill tone="danger">{t("tickets.returned")}</StatusPill> : <button onClick={() => returnPurchase(entry)} disabled={refundingId === entry.purchase.id} aria-label="Return this purchase" className="rounded-full bg-fill p-2 text-muted hover:bg-danger-bg hover:text-danger disabled:opacity-50"><Undo2 size={14}/></button>}</div></TableRow>; })}</TableFrame> : <EmptyState title={t("tickets.noPurchasesYet")} description={t("tickets.noPurchasesHint")}/>}</div>
+            <div className="mt-4">{purchasesLoading ? <div className="p-4 text-sm text-muted">{t("tickets.loadingHistory")}</div> : groupedPurchases.length ? <TableFrame><TableHeader><div className="grid grid-cols-[1.15fr_.7fr_.55fr_auto] gap-3"><span>{t("tickets.customerTicketCol")}</span><span>{t("tickets.visitCol")}</span><span>{t("common.total")}</span><span className="text-right">{t("finance.actions")}</span></div></TableHeader>{groupedPurchases.slice(0, 8).map((entry: any) => { const refunded = entry.purchase.status === "refunded"; return <TableRow key={entry.purchase.id} className="grid-cols-[1.15fr_.7fr_.55fr_auto]"><div className="min-w-0"><div className="truncate text-sm font-medium">{entry.customer?.fullName || t("tickets.customerFallback")}</div><div className="mt-1 truncate font-mono text-[10px] text-accent">{entry.lines.map((line: any) => line.ticketNumber).join(" · ")}</div></div><div className="text-xs text-muted">{dateLabel(entry.purchase.visitDate)}</div><b className={cx("text-sm", refunded && "text-muted line-through")}>{money(entry.purchase.totalAmount)}</b><div className="flex items-center justify-end gap-1"><button onClick={() => reprintPurchase(entry)} disabled={reprintingId === entry.purchase.id} aria-label="Reprint this ticket" className="rounded-full bg-fill p-2 text-muted hover:bg-[#e8e8ed] hover:text-ink disabled:opacity-50"><Printer size={14}/></button>{refunded ? <><StatusPill tone="danger">{t("tickets.returned")}</StatusPill><button onClick={() => confirmDeletePurchase(entry)} disabled={deletingId === entry.purchase.id} aria-label="Permanently delete this purchase" className="rounded-full bg-fill p-2 text-muted hover:bg-danger-bg hover:text-danger disabled:opacity-50"><Trash2 size={14}/></button></> : <button onClick={() => returnPurchase(entry)} disabled={refundingId === entry.purchase.id} aria-label="Return this purchase" className="rounded-full bg-fill p-2 text-muted hover:bg-danger-bg hover:text-danger disabled:opacity-50"><Undo2 size={14}/></button>}</div></TableRow>; })}</TableFrame> : <EmptyState title={t("tickets.noPurchasesYet")} description={t("tickets.noPurchasesHint")}/>}</div>
           </>}
         </Surface>
       </div>

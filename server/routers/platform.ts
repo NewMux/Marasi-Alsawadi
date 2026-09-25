@@ -31,9 +31,9 @@ import {
   listPartnerDiscountRules, createPartnerDiscountRule, updatePartnerDiscountRule, deletePartnerDiscountRule, resolveActivePartnerDiscountRule,
   listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
   listAddonServices, getAddonService, createAddonService, updateAddonService, deleteAddonService,
-  findOrCreateRevenueCategoryForFacility, createFacilityBooking, listFacilityBookings, listFacilityBookingAddons, getFacilityBooking, addFacilityBookingAddons, updateFacilityBookingDetails, cancelFacilityBooking,
+  findOrCreateRevenueCategoryForFacility, createFacilityBooking, listFacilityBookings, listFacilityBookingAddons, getFacilityBooking, addFacilityBookingAddons, updateFacilityBookingDetails, cancelFacilityBooking, deleteFacilityBooking,
   addFacilityBookingPayment, autoCancelOverdueFacilityBookings, findFacilityBookingConflict, listFacilityBookingsForFacility, getUserDisplayName,
-  listPrdTicketPurchases, listPrdTicketLines, getCustomerById, refundPrdTicketPurchase,
+  listPrdTicketPurchases, listPrdTicketLines, getCustomerById, refundPrdTicketPurchase, deletePrdTicketPurchase,
   listExpenseAdjustments, createExpenseAdjustment, createExpenseTransfer, getExpenseCategoryBalances,
   listRevenueCategories, createRevenueCategory, updateRevenueCategory, deleteRevenueCategory, getRevenueCategory,
   listRevenueRecords, createRevenueRecord, getRevenueRecord, updateRevenueRecord, deleteRevenueRecord,
@@ -670,6 +670,17 @@ export const platformRouter = router({
       await logActivity(ctx.user.id, "facility_booking.cancel", "facility_booking", input.id, input.reason?.trim() || "");
       return { booking: updated, addons: await listFacilityBookingAddons(updated.id) };
     }),
+    // PRD Round 14 (Client feedback, 25/9/2026): a permanent, reusable
+    // "Delete" action, offered only once a booking is already cancelled —
+    // replaces the Cancel button in place, protected by a confirm dialog on
+    // the client.
+    delete: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+      await deleteFacilityBooking(input.id).catch((error: Error) => {
+        throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
+      });
+      await logActivity(ctx.user.id, "facility_booking.delete", "facility_booking", input.id);
+      return { success: true };
+    }),
     // PRD Round 3, Section 5.2/5.3: log an add-on against a booking created
     // earlier — from the "Add-ons Only" flow (no facility re-selected) or a
     // booking's own details screen — without touching its original amount.
@@ -868,6 +879,17 @@ export const platformRouter = router({
       await deleteFinanceEntryByReference("prd_ticket_purchase", input.purchaseId);
       await logActivity(ctx.user.id, "prd_ticket_purchase.refund", "ticket_purchase", input.purchaseId, String(purchase?.totalAmount ?? ""));
       return purchase;
+    }),
+    // PRD Round 14 (Client feedback, 25/9/2026): a permanent, reusable
+    // "Delete" action, offered only once a purchase is already returned —
+    // replaces the Return button in place, protected by a confirm dialog on
+    // the client.
+    purchaseDelete: protectedProcedure.input(z.object({ purchaseId: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+      await deletePrdTicketPurchase(input.purchaseId).catch((error: Error) => {
+        throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
+      });
+      await logActivity(ctx.user.id, "prd_ticket_purchase.delete", "ticket_purchase", input.purchaseId);
+      return { success: true };
     }),
     list: protectedProcedure.input(z.object({
       from: z.string().optional(), to: z.string().optional(), customerQuery: z.string().optional(),

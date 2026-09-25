@@ -181,6 +181,18 @@ export default function FacilityBookingsPage() {
     onSuccess: () => { utils.platform.facilityBookings.list.invalidate(); utils.platform.finance.invalidate(); toast.success(t("facility.bookingCancelled")); },
     onError: (error) => toast.error(error.message),
   });
+  // PRD Round 14 (Client feedback, 25/9/2026): a permanent, reusable Delete
+  // action offered only once a booking is already cancelled — replaces the
+  // Cancel button in place, protected by a plain confirm() dialog (same
+  // convention already used for the Customer Directory's Remove action).
+  const deleteBooking = trpc.platform.facilityBookings.delete.useMutation({
+    onSuccess: () => { utils.platform.facilityBookings.list.invalidate(); toast.success(t("facility.bookingDeleted")); },
+    onError: (error) => toast.error(error.message),
+  });
+  const confirmDeleteBooking = (booking: any) => {
+    if (!window.confirm(t("facility.confirmDeleteBooking"))) return;
+    deleteBooking.mutate({ id: booking.id });
+  };
   const addPayment = trpc.platform.facilityBookings.addPayment.useMutation({
     onSuccess: () => { utils.platform.facilityBookings.list.invalidate(); utils.platform.finance.invalidate(); toast.success(t("facility.paymentRecorded")); setPayingBooking(null); },
     onError: (error) => toast.error(error.message),
@@ -438,6 +450,7 @@ export default function FacilityBookingsPage() {
                 {awaitingPayment && <PrimaryButton onClick={() => { setPaymentMethodForPayment(row.booking.paymentMethod || "cash"); setMixedPaymentForPayment(blankMixedPaymentValues); setPaymentAttempted(false); setPayingBooking(row.booking); }}>{t("facility.addPayment")}</PrimaryButton>}
                 {!cancelled && <SecondaryButton onClick={() => (editing ? setEditingBookingId(null) : startEdit(row.booking))}><Pencil size={14} className="mr-1.5"/>{t("facility.editBooking")}</SecondaryButton>}
                 {!cancelled && <SecondaryButton onClick={() => { setCancelReason(""); setCancelingBooking(row.booking); }} className="text-danger hover:bg-danger-bg"><Ban size={14} className="mr-1.5"/>{t("facility.cancelBooking")}</SecondaryButton>}
+                {cancelled && <SecondaryButton onClick={() => confirmDeleteBooking(row.booking)} disabled={deleteBooking.isPending} className="text-danger hover:bg-danger-bg"><Trash2 size={14} className="mr-1.5"/>{t("facility.deleteBooking")}</SecondaryButton>}
               </div>
               {reprintedBookingId === row.booking.id && <div className="mt-3 flex flex-wrap gap-2">
                 <SecondaryButton onClick={() => printReceipt("80")}><Printer size={14} className="mr-2"/>{t("tickets.print80")}</SecondaryButton>

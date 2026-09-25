@@ -299,6 +299,24 @@ export async function refundPrdTicketPurchase(id: number, refundedBy: number, re
   return getPrdTicketPurchase(id);
 }
 
+// PRD Round 14 (Client feedback, 25/9/2026): a permanent, reusable "Delete"
+// action that replaces "Cancel"/"Return" once a record is already returned —
+// only ever offered on a purchase already in that state, so a live one can
+// never be removed by mistake. The router already clears this purchase's
+// financeEntries row on refund; deleteFinanceEntryByReference is repeated
+// here defensively so Delete alone still fully reverses the financial
+// impact even if that ever didn't happen first.
+export async function deletePrdTicketPurchase(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const existing = await getPrdTicketPurchase(id);
+  if (!existing) throw new Error("Ticket purchase was not found");
+  if (existing.status !== "refunded") throw new Error("Only a returned purchase can be permanently deleted");
+  await db.delete(financeEntries).where(and(eq(financeEntries.referenceType, "prd_ticket_purchase"), eq(financeEntries.referenceId, id)));
+  await db.delete(ticketPurchaseFees).where(eq(ticketPurchaseFees.purchaseId, id));
+  await db.delete(ticketPurchaseLines).where(eq(ticketPurchaseLines.purchaseId, id));
+  await db.delete(ticketPurchases).where(eq(ticketPurchases.id, id));
+}
+
 export async function createServiceRate(data: typeof serviceRates.$inferInsert) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   await db.insert(serviceRates).values(data);
@@ -1086,6 +1104,28 @@ export async function cancelFacilityBooking(id: number, cancelledBy: number, rea
     const updated = await tx.select().from(facilityBookings).where(eq(facilityBookings.id, id)).limit(1);
     return updated[0]!;
   });
+}
+
+// PRD Round 14 (Client feedback, 25/9/2026): a permanent, reusable "Delete"
+// action that replaces "Cancel" once a booking is already cancelled — only
+// ever offered on a booking already in that state. cancelFacilityBooking
+// above already deletes any revenueRecords/financeEntries tied to this
+// booking at cancel time, so the same cleanup here is defensive (a no-op in
+// the normal case) rather than the primary mechanism.
+export async function deleteFacilityBooking(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const rows = await db.select().from(facilityBookings).where(eq(facilityBookings.id, id)).limit(1);
+  const booking = rows[0];
+  if (!booking) throw new Error("Facility booking was not found");
+  if (booking.status !== "cancelled") throw new Error("Only a cancelled booking can be permanently deleted");
+  const referenceTypes = ["facility_booking", "facility_booking_addon"];
+  const financeRows = await db.select({ id: financeEntries.id }).from(financeEntries)
+    .where(and(inArray(financeEntries.referenceType, referenceTypes), eq(financeEntries.referenceId, id)));
+  const financeEntryIds = financeRows.map((row) => row.id);
+  if (financeEntryIds.length) await db.delete(revenueRecords).where(inArray(revenueRecords.financeEntryId, financeEntryIds));
+  await db.delete(financeEntries).where(and(inArray(financeEntries.referenceType, referenceTypes), eq(financeEntries.referenceId, id)));
+  await db.delete(facilityBookingAddons).where(eq(facilityBookingAddons.bookingId, id));
+  await db.delete(facilityBookings).where(eq(facilityBookings.id, id));
 }
 
 // PRD Round 3, Section 5.2/5.3: staff can log an add-on service against a
