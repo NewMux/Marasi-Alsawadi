@@ -825,6 +825,20 @@ export const facilityBookingSettings = mysqlTable("facility_booking_settings", {
 });
 export type FacilityBookingSettings = typeof facilityBookingSettings.$inferSelect;
 
+// PRD Round 15 ("Reset All Data" feature): a singleton row, same pattern as
+// facility_booking_settings above — resetAllDataToolEnabled is the "disable
+// after one-time use, but keep the code" switch the client explicitly asked
+// for (rather than deleting the feature), and lastResetAt/lastResetBy are a
+// minimal audit trail for a genuinely irreversible action.
+export const systemSettings = mysqlTable("system_settings", {
+  id: int("id").primaryKey().default(1),
+  resetAllDataToolEnabled: boolean("resetAllDataToolEnabled").default(true).notNull(),
+  lastResetAt: timestamp("lastResetAt"),
+  lastResetBy: int("lastResetBy"),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type SystemSettings = typeof systemSettings.$inferSelect;
+
 export const facilityBookingAddons = mysqlTable("facility_booking_addons", {
   id: int("id").autoincrement().primaryKey(),
   bookingId: int("bookingId").notNull(),

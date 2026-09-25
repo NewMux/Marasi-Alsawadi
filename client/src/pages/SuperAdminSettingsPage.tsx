@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { DateField, Field as UiField, formatDateDmy, PageHeader, PrimaryButton, SelectField, Surface, TextField, toIsoDateString, cx as join } from "@/components/MarasiUI";
-import { Building2, Landmark, ListChecks, Package, ReceiptText, ShieldCheck, Ticket, TrendingUp, Users, X } from "lucide-react";
+import { AlertTriangle, Building2, Landmark, ListChecks, Package, ReceiptText, ShieldCheck, Ticket, TrendingUp, Users, X } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useT, type TranslationKey } from "@/lib/i18n";
@@ -9,7 +9,7 @@ import { useT, type TranslationKey } from "@/lib/i18n";
 const money = (value: unknown) => `OMR ${Number(value || 0).toFixed(3)}`;
 const today = new Date().toISOString().slice(0, 10);
 const OPENING_BALANCE_MARKER = "Opening balance";
-type Tab = "pricing" | "categoryPricing" | "fees" | "discounts" | "partnerEntities" | "facilityTypes" | "addonServices" | "categories" | "revenueCategories" | "assetCategories" | "opening" | "users" | "audit";
+type Tab = "pricing" | "categoryPricing" | "fees" | "discounts" | "partnerEntities" | "facilityTypes" | "addonServices" | "categories" | "revenueCategories" | "assetCategories" | "opening" | "users" | "audit" | "dangerZone";
 type Role = "staff" | "manager" | "admin" | "guard" | "super_admin" | "petty_cash";
 const STREAM_KEYS: Record<string, TranslationKey> = { rooms: "reports.streamRooms", aqua_park: "reports.streamAquaPark", fnb: "reports.streamFnb", extras: "reports.streamExtras" };
 
@@ -46,6 +46,10 @@ export default function SuperAdminSettingsPage() {
   const [userForm, setUserForm] = useState({ username: "", name: "", email: "", role: "staff" as Role, temporaryPassword: "" });
   const [revenueOpeningForm, setRevenueOpeningForm] = useState({ date: today, stream: "", amount: "", note: "" });
   const [expenseOpeningForm, setExpenseOpeningForm] = useState({ date: today, categoryId: "", amount: "", note: "" });
+  // PRD Round 15 ("Reset All Data" feature): a typed confirmation phrase,
+  // required to exactly match "RESET" before the destructive action can
+  // even be attempted.
+  const [resetPhrase, setResetPhrase] = useState("");
 
   const { data: ticketTypes = [] } = trpc.platform.ticketTypes.list.useQuery({ includeInactive: true });
   const { data: visitorCategories = [] } = trpc.platform.visitorCategories.list.useQuery({ includeInactive: true });
@@ -65,6 +69,25 @@ export default function SuperAdminSettingsPage() {
   const { data: expenseRecords = [] } = trpc.platform.finance.expenses.list.useQuery({ descriptionPrefix: OPENING_BALANCE_MARKER });
   const revenueOpeningBalances = (financeEntries as any[]).filter((entry) => entry.type === "revenue").sort((a, b) => String(b.date).localeCompare(String(a.date)));
   const expenseOpeningBalances = [...(expenseRecords as any[])].sort((a, b) => String(b.businessDate).localeCompare(String(a.businessDate)));
+  const { data: systemResetSettings } = trpc.platform.settings.systemReset.get.useQuery();
+  const resetToolEnabled = systemResetSettings?.resetAllDataToolEnabled ?? true;
+  const setResetToolEnabled = trpc.platform.settings.systemReset.setToolEnabled.useMutation({
+    onSuccess: () => { utils.platform.settings.systemReset.get.invalidate(); toast.success(t("settings.resetToolStateSaved")); },
+    onError: (error) => toast.error(error.message),
+  });
+  const executeReset = trpc.platform.settings.systemReset.execute.useMutation({
+    onSuccess: () => {
+      utils.invalidate();
+      setResetPhrase("");
+      toast.success(t("settings.resetAllDataDone"));
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const submitReset = () => {
+    if (resetPhrase.trim().toUpperCase() !== "RESET") return toast.error(t("settings.resetPhraseMismatch"));
+    if (!window.confirm(t("settings.resetAllDataFinalConfirm"))) return;
+    executeReset.mutate({ confirmationPhrase: resetPhrase.trim() });
+  };
 
   const roleLabel = (role: string): string => ({ staff: t("settings.roleCashier"), manager: t("settings.roleManager"), admin: t("settings.roleAdmin"), guard: t("settings.roleGuard"), super_admin: t("settings.roleSuperAdmin"), petty_cash: t("settings.rolePettyCash") })[role] ?? role;
 
@@ -149,6 +172,7 @@ export default function SuperAdminSettingsPage() {
     { id: "opening", label: t("settings.tabOpeningBalances"), icon: Landmark },
     { id: "users", label: t("settings.tabUsers"), icon: Users },
     { id: "audit", label: t("settings.tabAudit"), icon: ShieldCheck },
+    { id: "dangerZone", label: t("settings.tabDangerZone"), icon: AlertTriangle },
   ];
   const activeParent = tabs.find((entry) => entry.id === tab || entry.children?.some((child) => child.id === tab));
 
@@ -353,5 +377,30 @@ export default function SuperAdminSettingsPage() {
     {tab === "users" && <div className="grid gap-6 xl:grid-cols-[.85fr_1.15fr]"><Card><h2 className="font-serif text-2xl tracking-[-.035em]">{t("settings.createStaffAccount")}</h2><p className="mt-2 text-xs leading-5 text-muted">{t("settings.tempPasswordMustChange")}</p><div className="mt-5 grid gap-4 sm:grid-cols-2"><Field label={t("login.username")}><Input autoComplete="off" value={userForm.username} onChange={(e) => setUserForm({ ...userForm, username: e.target.value.toLowerCase() })}/></Field><Field label={t("tickets.fullName")}><Input value={userForm.name} onChange={(e) => setUserForm({ ...userForm, name: e.target.value })}/></Field><Field label={t("tickets.email")}><Input type="email" value={userForm.email} onChange={(e) => setUserForm({ ...userForm, email: e.target.value })}/></Field><Field label={t("settings.roleLabel")}><Select value={userForm.role} onChange={(e) => setUserForm({ ...userForm, role: e.target.value as Role })}><option value="staff">{t("settings.roleCashier")}</option><option value="manager">{t("settings.roleManager")}</option><option value="admin">{t("settings.roleAdmin")}</option><option value="guard">{t("settings.roleGuard")}</option><option value="super_admin">{t("settings.roleSuperAdmin")}</option><option value="petty_cash">{t("settings.rolePettyCash")}</option></Select></Field><div className="sm:col-span-2"><Field label={t("login.tempPassword")} hint={t("settings.minimum12Chars")}><Input type="password" autoComplete="new-password" value={userForm.temporaryPassword} onChange={(e) => setUserForm({ ...userForm, temporaryPassword: e.target.value })}/></Field></div></div><Button className="mt-5 rounded-full bg-accent text-white" onClick={() => { if (!userForm.username || !userForm.name || userForm.temporaryPassword.length < 12) return toast.error(t("settings.addUsernameNamePassword")); userCreate.mutate({ ...userForm, email: userForm.email || null }); }}>{t("settings.createAccount")}</Button></Card><Card><h2 className="font-serif text-2xl tracking-[-.035em]">{t("settings.usersAndRoles")}</h2><div className="mt-4 divide-y divide-divider">{users.map((user: any) => <div key={user.id} className="flex flex-wrap items-center justify-between gap-3 py-4"><div><div className="flex items-center gap-2"><b>{user.name || user.username}</b><span className="font-mono text-[10px] text-accent">{user.username || t("settings.legacyFallback")}</span>{!user.isActive && <span className="rounded-full bg-danger-bg px-2 py-1 text-[10px] text-danger">{t("settings.disabledBadge")}</span>}</div><div className="mt-1 text-xs capitalize text-muted">{roleLabel(String(user.role))}{user.mustChangePassword ? ` · ${t("settings.passwordChangeRequired")}` : ""}</div></div><div className="flex flex-wrap gap-2"><Select value={user.role} onChange={(e) => userUpdate.mutate({ id: user.id, role: e.target.value as Role })}><option value="staff">{t("settings.roleCashier")}</option><option value="manager">{t("settings.roleManager")}</option><option value="admin">{t("settings.roleAdmin")}</option><option value="guard">{t("settings.roleGuard")}</option><option value="super_admin">{t("settings.roleSuperAdmin")}</option><option value="petty_cash">{t("settings.rolePettyCash")}</option></Select><Button size="sm" variant="outline" onClick={() => userUpdate.mutate({ id: user.id, isActive: !user.isActive })}>{user.isActive ? t("settings.disable") : t("settings.enable")}</Button><Button size="sm" variant="outline" onClick={() => { const password = window.prompt(t("settings.tempPasswordPrompt", { name: user.name || user.username })); if (password && password.length >= 12) resetPassword.mutate({ id: user.id, temporaryPassword: password }); else if (password) toast.error(t("settings.passwordMin12")); }}>{t("settings.resetPassword")}</Button></div></div>)}</div></Card></div>}
 
     {tab === "audit" && <Card><h2 className="font-serif text-2xl tracking-[-.035em]">{t("settings.configAuditTrail")}</h2><p className="mt-2 text-xs leading-5 text-muted">{t("settings.recentChangesHint")}</p><div className="mt-5 overflow-hidden rounded-2xl border border-divider"><div className="grid grid-cols-[1fr_.8fr_.7fr] gap-3 bg-well px-4 py-2 text-[10px] font-semibold uppercase tracking-wide text-subtle"><span>{t("settings.actionCol")}</span><span>{t("settings.userCol")}</span><span>{t("settings.whenCol")}</span></div>{activity.map((entry: any) => <div key={entry.l.id} className="grid grid-cols-[1fr_.8fr_.7fr] gap-3 border-t border-divider px-4 py-3 text-xs"><div><b className="font-medium text-ink">{entry.l.action}</b><div className="mt-1 truncate text-subtle">{entry.l.details || entry.l.entityType || "—"}</div></div><span className="text-muted">{entry.u?.name || t("settings.systemFallback")}</span><span className="text-muted">{new Date(entry.l.createdAt).toLocaleString()}</span></div>)}</div></Card>}
+
+    {tab === "dangerZone" && <div className="grid gap-6 xl:grid-cols-[.9fr_1.1fr]">
+      <Card className="border-2 border-danger/30">
+        <div className="flex items-start gap-3"><AlertTriangle size={22} className="mt-0.5 shrink-0 text-danger"/><div><h2 className="font-serif text-2xl tracking-[-.035em] text-danger">{t("settings.resetAllDataTitle")}</h2><p className="mt-2 text-xs leading-5 text-muted">{t("settings.resetAllDataHint")}</p></div></div>
+        <div className="mt-5 rounded-2xl bg-danger-bg p-4 text-xs leading-5 text-danger">
+          <p className="font-semibold">{t("settings.resetAllDataWhatDeletes")}</p>
+          <ul className="mt-2 list-disc space-y-1 pl-4">
+            <li>{t("settings.resetAllDataItemTickets")}</li>
+            <li>{t("settings.resetAllDataItemBookings")}</li>
+            <li>{t("settings.resetAllDataItemFinance")}</li>
+            <li>{t("settings.resetAllDataItemCustomers")}</li>
+          </ul>
+          <p className="mt-3 font-semibold">{t("settings.resetAllDataWhatStays")}</p>
+        </div>
+        {systemResetSettings?.lastResetAt && <p className="mt-4 text-[11px] leading-4 text-subtle">{t("settings.resetAllDataLastUsed", { date: new Date(systemResetSettings.lastResetAt as any).toLocaleString(), name: systemResetSettings.lastResetByName || t("settings.systemFallback") })}</p>}
+        {resetToolEnabled ? <div className="mt-5 grid gap-4">
+          <Field label={t("settings.resetPhraseLabel")} hint={t("settings.resetPhraseHint")}><Input value={resetPhrase} onChange={(e) => setResetPhrase(e.target.value)} placeholder="RESET"/></Field>
+          <Button className="rounded-full bg-danger text-white hover:bg-danger/90" disabled={resetPhrase.trim().toUpperCase() !== "RESET"} onClick={submitReset}>{executeReset.isPending ? t("settings.resetInProgress") : t("settings.resetAllDataAction")}</Button>
+        </div> : <div className="mt-5 rounded-2xl bg-well p-4">
+          <p className="text-xs leading-5 text-body">{t("settings.resetToolDisabledHint")}</p>
+          <Button variant="outline" className="mt-3" onClick={() => setResetToolEnabled.mutate({ enabled: true })} disabled={setResetToolEnabled.isPending}>{t("settings.resetToolReenable")}</Button>
+        </div>}
+      </Card>
+      <Surface tone="tinted"><p className="text-xs leading-5 text-body">{t("settings.resetAllDataSideNote")}</p></Surface>
+    </div>}
   </>;
 }

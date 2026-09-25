@@ -27,6 +27,7 @@ import {
   createPrdTicketPurchase, listTicketDiscountTiers, getTicketDiscountTier, createTicketDiscountTier, updateTicketDiscountTier, deleteTicketDiscountTier, findOverlappingActiveTier,
   listTicketTypes, getTicketType, getTicketTypeByCode, createTicketType, updateTicketType, deleteTicketType, listVisitorCategories, createVisitorCategory, updateVisitorCategory, listTicketPrices, upsertTicketPrice,
   summariseTicketRevenueByType, summariseFacilityRevenueByType, listRevenueCategoryOptionsForRecording, describeSettingDependents,
+  getSystemSettings, setResetAllDataToolEnabled, resetAllOperationalData,
   listPartnerEntities, getPartnerEntity, createPartnerEntity, updatePartnerEntity, deletePartnerEntity,
   listPartnerDiscountRules, createPartnerDiscountRule, updatePartnerDiscountRule, deletePartnerDiscountRule, resolveActivePartnerDiscountRule,
   listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
@@ -361,6 +362,31 @@ export const platformRouter = router({
       entity: z.enum(["ticket_type", "visitor_category", "revenue_category", "expense_category", "asset_category", "facility_type", "addon_service", "partner_entity"]),
       id: z.number().int().positive(),
     })).query(({ input }) => describeSettingDependents(input.entity, input.id)),
+    // PRD Round 15 ("Reset All Data" feature): a one-time-use, super-admin-
+    // only wipe of every ticket/booking/financial/customer record, gated by
+    // a persisted enabled flag (disabled automatically after use, per the
+    // client's explicit request to keep the tool intact for a future
+    // season) and a typed "RESET" confirmation phrase.
+    systemReset: router({
+      get: superAdminProcedure.query(async () => {
+        const settings = await getSystemSettings();
+        const lastResetByName = settings.lastResetBy ? await getUserDisplayName(settings.lastResetBy) : null;
+        return { ...settings, lastResetByName };
+      }),
+      setToolEnabled: superAdminProcedure.input(z.object({ enabled: z.boolean() })).mutation(async ({ input, ctx }) => {
+        const updated = await setResetAllDataToolEnabled(input.enabled);
+        await logActivity(ctx.user.id, "system.reset_tool_toggle", "system_settings", 1, String(input.enabled));
+        return updated;
+      }),
+      execute: superAdminProcedure.input(z.object({ confirmationPhrase: z.string() })).mutation(async ({ input, ctx }) => {
+        if (input.confirmationPhrase.trim().toUpperCase() !== "RESET") throw new TRPCError({ code: "BAD_REQUEST", message: "Type RESET exactly to confirm" });
+        const settings = await getSystemSettings();
+        if (!settings.resetAllDataToolEnabled) throw new TRPCError({ code: "FORBIDDEN", message: "This tool has already been used and is currently disabled. Re-enable it first." });
+        await resetAllOperationalData(ctx.user.id);
+        await logActivity(ctx.user.id, "system.reset_all_data", "system_settings", 1, "Full ticket/booking/financial/customer data reset");
+        return { success: true };
+      }),
+    }),
   }),
   visitorCategories: router({
     list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())

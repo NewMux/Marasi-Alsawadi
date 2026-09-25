@@ -4,7 +4,7 @@ import { alias } from "drizzle-orm/mysql-core";
 import {
   addonServices, assetAdjustments, assetCategories, assetRecords, attachments, expenseAdjustments, expenseCategories, expenseRecords, facilityBookingAddons, facilityBookings, facilityTypes, guests, partnerEntities, partnerDiscountRules, pettyCashAllocations, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
   serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers, ticketTypes, visitorCategories, ticketPrices,
-  ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries, users,
+  ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries, users, systemSettings,
 } from "../drizzle/schema";
 import { getDb } from "./db";
 import { calculateOperationalNet, calculatePrdPurchasePricing, decideGateEntry, formatPrdTicketNumber, formatTicketNumber, minorToMoney, moneyToMinor, validateMixedPaymentBreakdown, type PrdDiscountTierInput, type PrdTicketLineInput } from "./ticketingRules";
@@ -1887,4 +1887,56 @@ export async function describeSettingDependents(entity: "ticket_type" | "visitor
   if (entity === "addon_service") push("Booking add-ons", await countOf(db.select({ total: sql<number>`COUNT(*)` }).from(facilityBookingAddons).where(eq(facilityBookingAddons.addonServiceId, id))));
   if (entity === "partner_entity") push("Discount rules", await countOf(db.select({ total: sql<number>`COUNT(*)` }).from(partnerDiscountRules).where(eq(partnerDiscountRules.partnerEntityId, id))));
   return affected;
+}
+
+// PRD Round 15 ("Reset All Data" feature): a one-time-use admin tool. Reads
+// the singleton row, self-healing the same way facility_booking_settings
+// already did before it (insert-if-missing on first read).
+export async function getSystemSettings() {
+  const db = await getDb(); if (!db) return { id: 1, resetAllDataToolEnabled: true, lastResetAt: null as Date | null, lastResetBy: null as number | null };
+  await db.insert(systemSettings).values({ id: 1 }).onDuplicateKeyUpdate({ set: { id: 1 } });
+  const rows = await db.select().from(systemSettings).where(eq(systemSettings.id, 1)).limit(1);
+  return rows[0]!;
+}
+
+export async function setResetAllDataToolEnabled(enabled: boolean) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await getSystemSettings();
+  await db.update(systemSettings).set({ resetAllDataToolEnabled: enabled }).where(eq(systemSettings.id, 1));
+  return getSystemSettings();
+}
+
+// Client feedback (Round 15): a genuinely destructive, irreversible wipe of
+// every transactional/financial/customer record while leaving every
+// Commercial Settings configuration table (ticket types, prices, visitor
+// categories, discount tiers, facility types, add-on services, fee items,
+// partner entities/rules, revenue/expense/asset CATEGORIES, petty cash
+// FUNDS, users) completely untouched. Deleting a ticket or booking also
+// deletes financeEntries wholesale in the same transaction, so no orphaned
+// revenue entry can ever survive the reset — the same guarantee the Round 14
+// Cancel -> Delete feature makes for one record at a time. Disables the
+// tool afterward (a persisted flag, not a code change) per the client's
+// explicit request to keep it reusable for a future season without
+// rebuilding it.
+export async function resetAllOperationalData(performedBy: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  return db.transaction(async (tx) => {
+    await tx.delete(ticketPurchaseFees);
+    await tx.delete(ticketPurchaseLines);
+    await tx.delete(ticketPurchases);
+    await tx.delete(facilityBookingAddons);
+    await tx.delete(facilityBookings);
+    await tx.delete(revenueRecords);
+    await tx.delete(expenseRecords);
+    await tx.delete(assetRecords);
+    await tx.delete(revenueAdjustments);
+    await tx.delete(expenseAdjustments);
+    await tx.delete(assetAdjustments);
+    await tx.delete(pettyCashAllocations);
+    await tx.delete(pettyCashSpends);
+    await tx.delete(financeEntries);
+    await tx.delete(guests);
+    await tx.insert(systemSettings).values({ id: 1, resetAllDataToolEnabled: false, lastResetAt: new Date(), lastResetBy: performedBy })
+      .onDuplicateKeyUpdate({ set: { resetAllDataToolEnabled: false, lastResetAt: new Date(), lastResetBy: performedBy } });
+  });
 }
