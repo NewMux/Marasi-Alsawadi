@@ -100,9 +100,14 @@ export function formatDateDmy(value: string | Date | undefined | null): string {
 
 export function DateField({
   value, onChange, min, max, placeholder = "DD/MM/YYYY", className, disabled,
-  modifiers, modifiersClassNames, onDayClick, keepOpenWhen, footer,
+  modifiers, modifiersClassNames, onDayClick, keepOpenWhen, footer, openToMonthOf,
 }: {
   value: string; onChange: (iso: string) => void; min?: string; max?: string; placeholder?: string; className?: string; disabled?: boolean;
+  // PRD Round 16, item 3: the month the calendar should open on when it's
+  // not the value's own month — e.g. a "To" field opens on the month just
+  // picked in "From", so choosing "end of August" doesn't mean paging back
+  // from the current month.
+  openToMonthOf?: string;
   // Generic passthrough to the underlying react-day-picker Calendar, so a
   // consumer (e.g. the facility booking availability calendar) can
   // highlight specific days and react to clicks without DateField itself
@@ -120,6 +125,9 @@ export function DateField({
 }) {
   const [open, setOpen] = useState(false);
   const selected = parseIsoDateLocal(value);
+  const jumpTo = openToMonthOf ? parseIsoDateLocal(openToMonthOf) : undefined;
+  const sameMonth = (a?: Date, b?: Date) => Boolean(a && b && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth());
+  const openingMonth = jumpTo && !sameMonth(jumpTo, selected) ? jumpTo : selected;
   return <Popover open={open} onOpenChange={setOpen}>
     <PopoverTrigger asChild>
       <button type="button" disabled={disabled} className={cx("flex h-11 w-full items-center justify-between gap-2 rounded-xl border border-line bg-well px-3.5 text-sm outline-none transition focus:border-accent focus:ring-4 focus:ring-accent/10 disabled:opacity-60", selected ? "text-ink" : "text-muted", className)}>
@@ -129,7 +137,7 @@ export function DateField({
     </PopoverTrigger>
     <PopoverContent className="w-auto p-0" align="start">
       <Calendar
-        mode="single" selected={selected} defaultMonth={selected}
+        mode="single" selected={selected} defaultMonth={openingMonth}
         onSelect={(date) => { if (date && !keepOpenWhen?.(date)) { onChange(toIsoDateLocal(date)); setOpen(false); } }}
         onDayClick={onDayClick}
         modifiers={modifiers} modifiersClassNames={modifiersClassNames}

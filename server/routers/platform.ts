@@ -6,7 +6,7 @@ import {
   createHousekeepingTask, createInventoryItem, createMaintenanceRequest,
   createLeaveRequest, createReservation, createShift, createStaffProfile, createUnit,
   createWorkbookImport, getActivityLog, getAquaAttendance, getAquaCapacity, getFinanceEntry,
-  getOccupancyStats, getRevenueSummary, getUserByUsername, linkStaffToUser,
+  getOccupancyStats, getRevenueSummary, getUserByUsername, getUserById, deleteLocalUser, linkStaffToUser,
   isValidDateRange, listAquaTickets, listAttendance, listDailyTasks, listFinanceEntries, listGuests,
   listHousekeepingTasks, listInventory, listMaintenanceRequests,
   listDailySettlements, listLeaveRequests, listPettyCashRequests, listReservations, listShifts, listStaff, listUnits, listUsers,
@@ -28,13 +28,14 @@ import {
   listTicketTypes, getTicketType, getTicketTypeByCode, createTicketType, updateTicketType, deleteTicketType, listVisitorCategories, createVisitorCategory, updateVisitorCategory, listTicketPrices, upsertTicketPrice,
   summariseTicketRevenueByType, summariseFacilityRevenueByType, listRevenueCategoryOptionsForRecording, describeSettingDependents,
   getSystemSettings, setResetAllDataToolEnabled, resetAllOperationalData,
+  listPayables, setRecordPaidAmount, listCashFlowAdjustments, createCashFlowAdjustment, deleteCashFlowAdjustment, getCashFlowStatus, assertValidCategoryParent, getCategoryReport,
   listPartnerEntities, getPartnerEntity, createPartnerEntity, updatePartnerEntity, deletePartnerEntity,
   listPartnerDiscountRules, createPartnerDiscountRule, updatePartnerDiscountRule, deletePartnerDiscountRule, resolveActivePartnerDiscountRule,
   listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
   listAddonServices, getAddonService, createAddonService, updateAddonService, deleteAddonService,
   findOrCreateRevenueCategoryForFacility, createFacilityBooking, listFacilityBookings, listFacilityBookingAddons, getFacilityBooking, addFacilityBookingAddons, updateFacilityBookingDetails, cancelFacilityBooking, deleteFacilityBooking,
   addFacilityBookingPayment, autoCancelOverdueFacilityBookings, findFacilityBookingConflict, listFacilityBookingsForFacility, getUserDisplayName,
-  listPrdTicketPurchases, listPrdTicketLines, getCustomerById, refundPrdTicketPurchase, deletePrdTicketPurchase,
+  listPrdTicketPurchases, listPrdTicketLines, getCustomerById, refundPrdTicketPurchase, deletePrdTicketPurchase, getPrdTicketPurchase,
   listExpenseAdjustments, createExpenseAdjustment, createExpenseTransfer, getExpenseCategoryBalances,
   listRevenueCategories, createRevenueCategory, updateRevenueCategory, deleteRevenueCategory, getRevenueCategory,
   listRevenueRecords, createRevenueRecord, getRevenueRecord, updateRevenueRecord, deleteRevenueRecord,
@@ -44,10 +45,11 @@ import {
   listAssetAdjustments, createAssetAdjustment, createAssetTransfer, getAssetCategoryBalances,
   getExpenseCategoryByCode, createPettyCashFund, getPettyCashFund, getPettyCashFundByCustodian, updatePettyCashFundAmount,
   listPettyCashFundsWithBalances, listPettyCashSpends, createPettyCashSpendWithExpense, getPettyCashSpend, deletePettyCashSpendWithExpense, getPettyCashFundBalance,
+  updatePettyCashSpendWithExpense, adjustPettyCashFundBalance, setPettyCashFundActive,
   createPettyCashAllocation, listPettyCashAllocations,
   listAttachmentsForEntry, listAttachmentsForEntries, createAttachment, getAttachment, deleteAttachment,
 } from "../ticketingDb";
-import { applyFacilityDiscount, calculateFacilityFees, calculateFacilityLineAmount, calculateFacilityVat, calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE, percentageToBasisPoints } from "../ticketingRules";
+import { applyFacilityDiscount, calculateFacilityFees, calculateFacilityLineAmount, calculateFacilityVat, calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE, minorToMoney, moneyToMinor, percentageToBasisPoints } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
 import { publicTicketUrl, requestOrigin } from "../ticketUrl";
 import { deleteAttachmentFile, isAllowedAttachmentMimeType, saveExpenseAttachment } from "../attachments";
@@ -63,6 +65,34 @@ const superAdminProcedure = protectedProcedure.use(({ ctx, next }) => {
     throw new TRPCError({ code: "FORBIDDEN", message: "Super Admin required" });
   return next({ ctx });
 });
+
+// PRD Round 16, item 12: "Admin Operations" reaches everything including
+// Commercial Settings, EXCEPT Audit Activity and the Danger Zone reset tool,
+// which stay on superAdminProcedure above.
+const CONFIG_ADMIN_ROLES = ["admin", "super_admin"];
+const isConfigAdmin = (role: string) => CONFIG_ADMIN_ROLES.includes(role);
+const configAdminProcedure = protectedProcedure.use(({ ctx, next }) => {
+  if (!isConfigAdmin(ctx.user.role))
+    throw new TRPCError({ code: "FORBIDDEN", message: "Admin Operations or Super Admin required" });
+  return next({ ctx });
+});
+
+// PRD Round 16, item 12: Finance Control (record/list transactions) is for
+// Staff/Accountant and above — never a Cashier, Guard, or Petty Cash custodian.
+const FINANCE_ROLES = ["staff", "manager", "admin", "super_admin"];
+const financeProcedure = protectedProcedure.use(({ ctx, next }) => {
+  if (!FINANCE_ROLES.includes(ctx.user.role))
+    throw new TRPCError({ code: "FORBIDDEN", message: "Finance access required" });
+  return next({ ctx });
+});
+
+// PRD Round 16, item 12: a Cashier works the Front Office but only ever
+// sees and acts on their own transactions (ticket purchases they issued,
+// facility bookings they created). Every other role is unaffected.
+const isCashier = (role: string) => role === "cashier";
+function assertOwnTransaction(user: { id: number; role: string }, ownerId: number | null | undefined) {
+  if (isCashier(user.role) && ownerId !== user.id) throw new TRPCError({ code: "FORBIDDEN", message: "Cashiers can only access their own transactions" });
+}
 
 const gateProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (!["guard", "manager", "admin", "super_admin"].includes(ctx.user.role)) {
@@ -228,10 +258,35 @@ async function withAttachments<T extends { id: number }>(entryType: "expense" | 
   return rows.map((row) => ({ ...row, attachments: byEntry.get(row.id) ?? [] }));
 }
 
+// PRD Round 16, item 12: Admin Operations manages users too, but can never
+// create, edit, delete, or promote anyone to/from Super Admin — only a
+// Super Admin can touch a Super Admin account.
+function assertCanManageAccount(actor: { role: string }, target: { role: string } | undefined, requestedRole?: string) {
+  if (actor.role === "super_admin") return;
+  if (target?.role === "super_admin" || requestedRole === "super_admin")
+    throw new TRPCError({ code: "FORBIDDEN", message: "Only a Super Admin can manage Super Admin accounts" });
+}
+
+// PRD Round 16, item 4: `amount` is the Total; Paid defaults to the full
+// Total (exactly how every transaction behaved before this round), and
+// Balance is always derived — never entered — so the three can't disagree.
+const nonNegativeMoney = z.string().regex(/^\d+(\.\d{1,3})?$/, "Enter an amount with up to three decimals");
+function resolvePaidBalance(total: string, paid: string | undefined, existing?: { amount: string; paidAmount: string | null; balanceAmount: string }) {
+  const totalMinor = moneyToMinor(total);
+  let paidMinor: number;
+  if (paid !== undefined) paidMinor = moneyToMinor(paid);
+  else if (existing) {
+    const fullyPaid = Number(existing.balanceAmount) < 0.0005;
+    paidMinor = fullyPaid ? totalMinor : Math.min(moneyToMinor(String(existing.paidAmount ?? existing.amount)), totalMinor);
+  } else paidMinor = totalMinor;
+  if (paidMinor > totalMinor) throw new TRPCError({ code: "BAD_REQUEST", message: "The paid amount cannot be more than the total amount" });
+  return { paidAmount: minorToMoney(paidMinor), balanceAmount: minorToMoney(totalMinor - paidMinor) };
+}
+
 export const platformRouter = router({
   units: router({
     list: protectedProcedure.query(() => listUnits()),
-    create: superAdminProcedure.input(z.object({
+    create: configAdminProcedure.input(z.object({
       code: z.string().min(1), name: z.string().min(1),
       type: z.enum(["room", "chalet"]).default("room"),
       capacity: z.number().int().min(1).default(2),
@@ -311,11 +366,11 @@ export const platformRouter = router({
   // replacing the old fixed waterpark/companion `rates` router.
   ticketTypes: router({
     list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
-      .query(({ input, ctx }) => listTicketTypes(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
+      .query(({ input, ctx }) => listTicketTypes(Boolean(input?.includeInactive && isConfigAdmin(ctx.user.role)))),
     // PRD Round 10, Section 1: VAT is a direct field on the price itself —
     // an apply toggle and its own editable rate — defaulting to on/5% for
     // every new type, matching the (now-removed) old system-wide behavior.
-    create: superAdminProcedure.input(z.object({
+    create: configAdminProcedure.input(z.object({
       name: z.string().trim().min(2).max(128), code: z.string().trim().min(2).max(48), ticketGroup: z.enum(["water_park", "other_tickets"]),
       applyVat: z.boolean().default(true), vatPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).default("5.00"),
     })).mutation(async ({ input, ctx }) => {
@@ -329,7 +384,7 @@ export const platformRouter = router({
     // and reference the type by id — so a correction here cannot rewrite or
     // mislabel an already-issued ticket. It stays unique, since the code is
     // what identifies the type to an operator.
-    update: superAdminProcedure.input(z.object({
+    update: configAdminProcedure.input(z.object({
       id: z.number().int().positive(), name: z.string().trim().min(2).max(128).optional(), code: z.string().trim().min(2).max(48).optional(), ticketGroup: z.enum(["water_park", "other_tickets"]).optional(), isActive: z.boolean().optional(),
       applyVat: z.boolean().optional(), vatPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
     })).mutation(async ({ input, ctx }) => {
@@ -349,7 +404,7 @@ export const platformRouter = router({
     }),
     // PRD Round 11, Section 4: a retired ticket type had no way to actually
     // be removed — mirrors facilityTypes.delete/addonServices.delete.
-    delete: superAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+    delete: configAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
       const result = await deleteTicketType(input.id);
       await logActivity(ctx.user.id, "ticket_type.delete", "ticket_type", input.id, result.deactivated ? "retired" : "deleted");
       return result;
@@ -358,7 +413,7 @@ export const platformRouter = router({
   // PRD Round 9, Section 10: what else is built on a library entry, asked
   // before the Admin retires or removes it.
   settings: router({
-    dependents: superAdminProcedure.input(z.object({
+    dependents: configAdminProcedure.input(z.object({
       entity: z.enum(["ticket_type", "visitor_category", "revenue_category", "expense_category", "asset_category", "facility_type", "addon_service", "partner_entity"]),
       id: z.number().int().positive(),
     })).query(({ input }) => describeSettingDependents(input.entity, input.id)),
@@ -390,8 +445,8 @@ export const platformRouter = router({
   }),
   visitorCategories: router({
     list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
-      .query(({ input, ctx }) => listVisitorCategories(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
-    create: superAdminProcedure.input(z.object({
+      .query(({ input, ctx }) => listVisitorCategories(Boolean(input?.includeInactive && isConfigAdmin(ctx.user.role)))),
+    create: configAdminProcedure.input(z.object({
       name: z.string().trim().min(2).max(128), code: z.string().trim().min(2).max(48), displayOrder: z.number().int().min(0).max(999).default(0),
       // PRD Round 8, Section 2: restored behavioral fields from the old
       // fixed Water Park categories.
@@ -402,7 +457,7 @@ export const platformRouter = router({
       await logActivity(ctx.user.id, "visitor_category.create", "visitor_category", category.id, category.code);
       return category;
     }),
-    update: superAdminProcedure.input(z.object({
+    update: configAdminProcedure.input(z.object({
       id: z.number().int().positive(), name: z.string().trim().min(2).max(128).optional(), displayOrder: z.number().int().min(0).max(999).optional(), isActive: z.boolean().optional(),
       maxPerBooking: z.number().int().positive().nullable().optional(), countsTowardGroupDiscount: z.boolean().optional(),
     })).mutation(async ({ input, ctx }) => {
@@ -415,11 +470,11 @@ export const platformRouter = router({
   }),
   ticketPrices: router({
     list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
-      .query(({ input, ctx }) => listTicketPrices(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
+      .query(({ input, ctx }) => listTicketPrices(Boolean(input?.includeInactive && isConfigAdmin(ctx.user.role)))),
     // PRD Round 11, Section 3: `isActive` here means "linked" — whether this
     // ticket type shows this visitor category at all on the Ticket Desk,
     // independent of its price.
-    set: superAdminProcedure.input(z.object({
+    set: configAdminProcedure.input(z.object({
       ticketTypeId: z.number().int().positive(), categoryId: z.number().int().positive(), unitPrice: z.string().regex(/^\d+(\.\d{1,3})?$/, "Enter an OMR amount with up to three decimals"),
       isActive: z.boolean().optional(),
     })).mutation(async ({ input, ctx }) => {
@@ -431,8 +486,8 @@ export const platformRouter = router({
 
   fees: router({
     list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
-      .query(({ input, ctx }) => listTicketFees(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
-    assignments: superAdminProcedure.query(() => listFeeAssignments()),
+      .query(({ input, ctx }) => listTicketFees(Boolean(input?.includeInactive && isConfigAdmin(ctx.user.role)))),
+    assignments: configAdminProcedure.query(() => listFeeAssignments()),
     preview: protectedProcedure.input(z.object({ rateId: z.number(), quantity: z.number().int().min(1) })).query(async ({ input }) => {
       const rate = await getServiceRate(input.rateId);
       if (!rate?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active price" });
@@ -443,7 +498,7 @@ export const platformRouter = router({
     // Types too, not just Ticket Types — "applies globally" still only ever
     // means every ticket type (unchanged), so a facility type only picks up
     // a fee it's explicitly assigned to here.
-    create: superAdminProcedure.input(z.object({
+    create: configAdminProcedure.input(z.object({
       name: z.string().min(2).max(128), code: z.string().min(2).max(48), calculationType: z.enum(["fixed", "percentage"]),
       value: z.string().regex(/^\d+(\.\d{1,4})?$/), applicationBasis: z.enum(["per_ticket", "per_transaction"]),
       appliesGlobally: z.boolean().default(false), displayOrder: z.number().int().min(0).max(999).default(0),
@@ -463,7 +518,7 @@ export const platformRouter = router({
     // authoritative assignment list on every update (never a partial diff)
     // — matching how ticketTypeIds already worked before facility types
     // existed — so there's no ambiguity between "leave as-is" and "clear".
-    update: superAdminProcedure.input(z.object({
+    update: configAdminProcedure.input(z.object({
       id: z.number(), name: z.string().min(2).max(128).optional(), code: z.string().min(2).max(48).optional(),
       calculationType: z.enum(["fixed", "percentage"]).optional(), value: z.string().regex(/^\d+(\.\d{1,4})?$/).optional(),
       applicationBasis: z.enum(["per_ticket", "per_transaction"]).optional(), appliesGlobally: z.boolean().optional(),
@@ -483,7 +538,7 @@ export const platformRouter = router({
       await logActivity(ctx.user.id, "ticket_fee.update", "ticket_fee", id, JSON.stringify(input));
       return fee;
     }),
-    delete: superAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+    delete: configAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
       const result = await deleteTicketFee(input.id);
       await logActivity(ctx.user.id, "ticket_fee.delete", "ticket_fee", input.id);
       return result;
@@ -491,10 +546,10 @@ export const platformRouter = router({
   }),
 
   facilityTypes: router({
-    list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listFacilityTypes(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
+    list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listFacilityTypes(Boolean(input?.includeInactive && isConfigAdmin(ctx.user.role)))),
     // PRD Round 10, Section 1: same direct VAT field as ticket types —
     // facility bookings had no VAT concept at all before this round.
-    create: superAdminProcedure.input(z.object({
+    create: configAdminProcedure.input(z.object({
       name: z.string().trim().min(1).max(160), code: z.string().min(2).max(32),
       pricingMethod: z.enum(["hourly", "daily", "fixed"]), rate: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals"),
       applyVat: z.boolean().default(true), vatPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).default("5.00"),
@@ -508,7 +563,7 @@ export const platformRouter = router({
       await logActivity(ctx.user.id, "facility_type.create", "facility_type", facility.id, JSON.stringify(input));
       return facility;
     }),
-    update: superAdminProcedure.input(z.object({
+    update: configAdminProcedure.input(z.object({
       id: z.number().int().positive(), name: z.string().trim().min(1).max(160).optional(), code: z.string().min(2).max(32).optional(),
       pricingMethod: z.enum(["hourly", "daily", "fixed"]).optional(), rate: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals").optional(), isActive: z.boolean().optional(),
       applyVat: z.boolean().optional(), vatPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
@@ -521,7 +576,7 @@ export const platformRouter = router({
       await logActivity(ctx.user.id, "facility_type.update", "facility_type", id, JSON.stringify(input));
       return facility;
     }),
-    delete: superAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+    delete: configAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
       const result = await deleteFacilityType(input.id);
       await logActivity(ctx.user.id, "facility_type.delete", "facility_type", input.id, result.deactivated ? "retired" : "deleted");
       return result;
@@ -529,11 +584,11 @@ export const platformRouter = router({
   }),
 
   addonServices: router({
-    list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listAddonServices(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
+    list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listAddonServices(Boolean(input?.includeInactive && isConfigAdmin(ctx.user.role)))),
     // PRD Round 13 (client feedback): same direct VAT field as ticket types
     // and facility types — add-ons had no VAT concept at all before this
     // round, so a facility booking's VAT line silently excluded them.
-    create: superAdminProcedure.input(z.object({
+    create: configAdminProcedure.input(z.object({
       name: z.string().trim().min(1).max(160), code: z.string().min(2).max(32),
       pricingMethod: z.enum(["per_person", "fixed", "hourly"]), rate: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals"),
       applyVat: z.boolean().default(true), vatPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).default("5.00"),
@@ -544,7 +599,7 @@ export const platformRouter = router({
       await logActivity(ctx.user.id, "addon_service.create", "addon_service", addon.id, JSON.stringify(input));
       return addon;
     }),
-    update: superAdminProcedure.input(z.object({
+    update: configAdminProcedure.input(z.object({
       id: z.number().int().positive(), name: z.string().trim().min(1).max(160).optional(), code: z.string().min(2).max(32).optional(),
       pricingMethod: z.enum(["per_person", "fixed", "hourly"]).optional(), rate: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals").optional(), isActive: z.boolean().optional(),
       applyVat: z.boolean().optional(), vatPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
@@ -556,7 +611,7 @@ export const platformRouter = router({
       await logActivity(ctx.user.id, "addon_service.update", "addon_service", id, JSON.stringify(input));
       return addon;
     }),
-    delete: superAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+    delete: configAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
       const result = await deleteAddonService(input.id);
       await logActivity(ctx.user.id, "addon_service.delete", "addon_service", input.id, result.deactivated ? "retired" : "deleted");
       return result;
@@ -565,15 +620,16 @@ export const platformRouter = router({
 
   facilityBookings: router({
     catalog: protectedProcedure.query(async () => ({ facilityTypes: await listFacilityTypes(false), addonServices: await listAddonServices(false), partnerEntities: await listPartnerEntities(false) })),
-    list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional(), query: z.string().optional() }).optional()).query(async ({ input }) => {
+    list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional(), query: z.string().optional() }).optional()).query(async ({ input, ctx }) => {
       await autoCancelOverdueFacilityBookings();
-      const rows = await listFacilityBookings(input?.from, input?.to, input?.query);
+      const rows = await listFacilityBookings(input?.from, input?.to, input?.query, isCashier(ctx.user.role) ? ctx.user.id : undefined);
       return Promise.all((rows as any[]).map(async (row) => ({ booking: row.booking, customer: row.customer, cancelledByName: row.cancelledByName, addons: await listFacilityBookingAddons(row.booking.id) })));
     }),
-    get: protectedProcedure.input(z.object({ id: z.number().int().positive() })).query(async ({ input }) => {
+    get: protectedProcedure.input(z.object({ id: z.number().int().positive() })).query(async ({ input, ctx }) => {
       await autoCancelOverdueFacilityBookings();
       const booking = await getFacilityBooking(input.id);
       if (!booking) throw new TRPCError({ code: "NOT_FOUND", message: "Facility booking was not found" });
+      assertOwnTransaction(ctx.user, booking.createdBy);
       const customer = booking.customerId ? await getCustomerById(booking.customerId) : null;
       const cancelledByName = booking.cancelledBy ? await getUserDisplayName(booking.cancelledBy) : null;
       return { booking, customer, cancelledByName, addons: await listFacilityBookingAddons(booking.id) };
@@ -664,6 +720,7 @@ export const platformRouter = router({
     })).mutation(async ({ input, ctx }) => {
       const booking = await getFacilityBooking(input.id);
       if (!booking) throw new TRPCError({ code: "NOT_FOUND", message: "Facility booking was not found" });
+      assertOwnTransaction(ctx.user, booking.createdBy);
       if (booking.status === "cancelled") throw new TRPCError({ code: "BAD_REQUEST", message: "This booking has been cancelled and can no longer be edited" });
       const facility = await getFacilityType(booking.facilityTypeId);
       if (!facility) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "This booking's facility is missing" });
@@ -690,6 +747,8 @@ export const platformRouter = router({
     // "cancelled" (kept for record-keeping) and its revenue is reversed out
     // of finance_entries/revenue_records so it stops counting in reports.
     cancel: protectedProcedure.input(z.object({ id: z.number().int().positive(), reason: z.string().max(500).optional() })).mutation(async ({ input, ctx }) => {
+      const ownedBooking = await getFacilityBooking(input.id);
+      if (ownedBooking) assertOwnTransaction(ctx.user, ownedBooking.createdBy);
       const updated = await cancelFacilityBooking(input.id, ctx.user.id, input.reason?.trim() || undefined).catch((error: Error) => {
         throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
       });
@@ -701,6 +760,8 @@ export const platformRouter = router({
     // replaces the Cancel button in place, protected by a confirm dialog on
     // the client.
     delete: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+      const ownedBooking = await getFacilityBooking(input.id);
+      if (ownedBooking) assertOwnTransaction(ctx.user, ownedBooking.createdBy);
       await deleteFacilityBooking(input.id).catch((error: Error) => {
         throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
       });
@@ -716,6 +777,7 @@ export const platformRouter = router({
     })).mutation(async ({ input, ctx }) => {
       const booking = await getFacilityBooking(input.bookingId);
       if (!booking) throw new TRPCError({ code: "NOT_FOUND", message: "Facility booking was not found" });
+      assertOwnTransaction(ctx.user, booking.createdBy);
       if (booking.status === "cancelled") throw new TRPCError({ code: "BAD_REQUEST", message: "This booking has been cancelled and can no longer be changed" });
       const addons = await Promise.all(input.addons.map(async (line) => {
         const addon = await getAddonService(line.addonServiceId);
@@ -740,6 +802,8 @@ export const platformRouter = router({
       cashAmount: z.string().optional(), cardAmount: z.string().optional(), bankAmount: z.string().optional(),
     }).refine((input) => input.paymentMethod !== "mixed" || (input.cashAmount !== undefined && input.cardAmount !== undefined && input.bankAmount !== undefined), { message: "Enter the cash, card, and bank amounts for a mixed payment" })
     ).mutation(async ({ input, ctx }) => {
+      const ownedBooking = await getFacilityBooking(input.bookingId);
+      if (ownedBooking) assertOwnTransaction(ctx.user, ownedBooking.createdBy);
       const updated = await addFacilityBookingPayment({
         bookingId: input.bookingId, paymentMethod: input.paymentMethod, cashAmount: input.cashAmount, cardAmount: input.cardAmount, bankAmount: input.bankAmount,
         businessDate: input.businessDate, paidBy: ctx.user.id,
@@ -765,26 +829,26 @@ export const platformRouter = router({
       maxTicketsPerPurchase: MAX_TICKETS_PER_PURCHASE,
     })),
     partnerEntities: router({
-      list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listPartnerEntities(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
-      create: superAdminProcedure.input(z.object({ name: z.string().trim().min(1).max(160) })).mutation(async ({ input, ctx }) => {
+      list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listPartnerEntities(Boolean(input?.includeInactive && isConfigAdmin(ctx.user.role)))),
+      create: configAdminProcedure.input(z.object({ name: z.string().trim().min(1).max(160) })).mutation(async ({ input, ctx }) => {
         const entity = await createPartnerEntity({ name: input.name, createdBy: ctx.user.id } as any);
         await logActivity(ctx.user.id, "partner_entity.create", "partner_entity", entity.id, JSON.stringify(input));
         return entity;
       }),
-      update: superAdminProcedure.input(z.object({ id: z.number().int().positive(), name: z.string().trim().min(1).max(160).optional(), isActive: z.boolean().optional() })).mutation(async ({ input, ctx }) => {
+      update: configAdminProcedure.input(z.object({ id: z.number().int().positive(), name: z.string().trim().min(1).max(160).optional(), isActive: z.boolean().optional() })).mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
         const entity = await updatePartnerEntity(id, data);
         await logActivity(ctx.user.id, "partner_entity.update", "partner_entity", id, JSON.stringify(data));
         return entity;
       }),
-      delete: superAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+      delete: configAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
         const result = await deletePartnerEntity(input.id);
         await logActivity(ctx.user.id, "partner_entity.delete", "partner_entity", input.id, result.deactivated ? "retired" : "deleted");
         return result;
       }),
       discountRules: router({
         list: protectedProcedure.input(z.object({ partnerEntityId: z.number().int().positive().optional() }).optional()).query(({ input }) => listPartnerDiscountRules(input?.partnerEntityId)),
-        create: superAdminProcedure.input(z.object({
+        create: configAdminProcedure.input(z.object({
           partnerEntityId: z.number().int().positive(),
           appliesTo: z.enum(["ticket_type", "facility"]),
           ticketTypeId: z.number().int().positive().optional(),
@@ -815,12 +879,12 @@ export const platformRouter = router({
           await logActivity(ctx.user.id, "partner_discount_rule.create", "partner_discount_rule", rule.id, JSON.stringify(input));
           return rule;
         }),
-        update: superAdminProcedure.input(z.object({ id: z.number().int().positive(), isActive: z.boolean().optional() })).mutation(async ({ input, ctx }) => {
+        update: configAdminProcedure.input(z.object({ id: z.number().int().positive(), isActive: z.boolean().optional() })).mutation(async ({ input, ctx }) => {
           const rule = await updatePartnerDiscountRule(input.id, { isActive: input.isActive });
           await logActivity(ctx.user.id, "partner_discount_rule.update", "partner_discount_rule", input.id, JSON.stringify(input));
           return rule;
         }),
-        delete: superAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+        delete: configAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
           const result = await deletePartnerDiscountRule(input.id);
           await logActivity(ctx.user.id, "partner_discount_rule.delete", "partner_discount_rule", input.id);
           return result;
@@ -834,8 +898,8 @@ export const platformRouter = router({
     // range at once (the finding that surfaced this: two Water Park tiers,
     // 100-500 and 100-1000, both active at 30%, with nothing stopping it).
     discountTiers: router({
-      list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional(), ticketTypeId: z.number().int().positive().optional() }).optional()).query(({ input, ctx }) => listTicketDiscountTiers(Boolean(input?.includeInactive && ctx.user.role === "super_admin"), input?.ticketTypeId)),
-      create: superAdminProcedure.input(z.object({ ticketTypeId: z.number().int().positive(), minTickets: z.number().int().min(1), maxTickets: z.number().int().min(1).nullable().optional(), percentage: z.string().regex(/^\d+(\.\d{1,2})?$/) })).mutation(async ({ input, ctx }) => {
+      list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional(), ticketTypeId: z.number().int().positive().optional() }).optional()).query(({ input, ctx }) => listTicketDiscountTiers(Boolean(input?.includeInactive && isConfigAdmin(ctx.user.role)), input?.ticketTypeId)),
+      create: configAdminProcedure.input(z.object({ ticketTypeId: z.number().int().positive(), minTickets: z.number().int().min(1), maxTickets: z.number().int().min(1).nullable().optional(), percentage: z.string().regex(/^\d+(\.\d{1,2})?$/) })).mutation(async ({ input, ctx }) => {
         if (input.maxTickets !== null && input.maxTickets !== undefined && input.maxTickets < input.minTickets) throw new TRPCError({ code: "BAD_REQUEST", message: "Maximum tickets must be greater than or equal to the minimum" });
         if (Number(input.percentage) < 0 || Number(input.percentage) > 100) throw new TRPCError({ code: "BAD_REQUEST", message: "Discount percentage must be between 0 and 100" });
         const overlap = await findOverlappingActiveTier(input.ticketTypeId, input.minTickets, input.maxTickets ?? null);
@@ -843,7 +907,7 @@ export const platformRouter = router({
         const tier = await createTicketDiscountTier({ ticketTypeId: input.ticketTypeId, minTickets: input.minTickets, maxTickets: input.maxTickets ?? null, percentage: input.percentage, createdBy: ctx.user.id });
         await logActivity(ctx.user.id, "ticket_discount.create", "ticket_discount_tier", tier.id, JSON.stringify(input)); return tier;
       }),
-      update: superAdminProcedure.input(z.object({ id: z.number().int().positive(), minTickets: z.number().int().min(1).optional(), maxTickets: z.number().int().min(1).nullable().optional(), percentage: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(), isActive: z.boolean().optional() })).mutation(async ({ input, ctx }) => {
+      update: configAdminProcedure.input(z.object({ id: z.number().int().positive(), minTickets: z.number().int().min(1).optional(), maxTickets: z.number().int().min(1).nullable().optional(), percentage: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(), isActive: z.boolean().optional() })).mutation(async ({ input, ctx }) => {
         if (input.percentage !== undefined && (Number(input.percentage) < 0 || Number(input.percentage) > 100)) throw new TRPCError({ code: "BAD_REQUEST", message: "Discount percentage must be between 0 and 100" });
         // A range/activation change can only newly overlap another tier, so
         // it's only worth checking when one of those fields is in play.
@@ -861,7 +925,7 @@ export const platformRouter = router({
         const tier = await updateTicketDiscountTier(input.id, input as any); if (!tier) throw new TRPCError({ code: "NOT_FOUND", message: "Discount tier not found" });
         await logActivity(ctx.user.id, "ticket_discount.update", "ticket_discount_tier", input.id, JSON.stringify(input)); return tier;
       }),
-      delete: superAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => { const result = await deleteTicketDiscountTier(input.id); await logActivity(ctx.user.id, "ticket_discount.delete", "ticket_discount_tier", input.id); return result; }),
+      delete: configAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => { const result = await deleteTicketDiscountTier(input.id); await logActivity(ctx.user.id, "ticket_discount.delete", "ticket_discount_tier", input.id); return result; }),
     }),
     // PRD Round 9, Section 5: the preview also reports which ticket types the
     // selected partner actually holds a rule for. A partner selection
@@ -872,8 +936,11 @@ export const platformRouter = router({
       const resolved = await resolvePrdPricing(input.lines, input.partnerEntityId);
       return { ...resolved.pricing, partnerEntity: resolved.partnerEntity, partnerDiscountByTicketType: resolved.overrideDiscountByTicketType ?? null };
     }),
-    purchaseList: protectedProcedure.input(z.object({ query: z.string().optional(), from: z.string().optional(), to: z.string().optional() }).optional()).query(({ input }) => listPrdTicketPurchases(input?.query, input?.from, input?.to)),
-    purchaseLines: protectedProcedure.input(z.object({ purchaseId: z.number().int().positive() })).query(({ input }) => listPrdTicketLines(input.purchaseId)),
+    purchaseList: protectedProcedure.input(z.object({ query: z.string().optional(), from: z.string().optional(), to: z.string().optional() }).optional()).query(({ input, ctx }) => listPrdTicketPurchases(input?.query, input?.from, input?.to, isCashier(ctx.user.role) ? ctx.user.id : undefined)),
+    purchaseLines: protectedProcedure.input(z.object({ purchaseId: z.number().int().positive() })).query(async ({ input, ctx }) => {
+      if (isCashier(ctx.user.role)) assertOwnTransaction(ctx.user, (await getPrdTicketPurchase(input.purchaseId))?.issuedBy);
+      return listPrdTicketLines(input.purchaseId);
+    }),
     purchaseCreate: protectedProcedure.input(z.object({
       customerId: z.number().int().positive().optional(), customerName: z.string().min(1).optional(), customerPhone: z.string().min(3).optional(),
       customerEmail: z.string().email().optional(), customerNationality: z.string().max(64).optional(), visitDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -901,6 +968,7 @@ export const platformRouter = router({
       return { ...result, customer };
     }),
     purchaseRefund: protectedProcedure.input(z.object({ purchaseId: z.number().int().positive(), reason: z.string().max(500).optional() })).mutation(async ({ input, ctx }) => {
+      if (isCashier(ctx.user.role)) assertOwnTransaction(ctx.user, (await getPrdTicketPurchase(input.purchaseId))?.issuedBy);
       const purchase = await refundPrdTicketPurchase(input.purchaseId, ctx.user.id, input.reason?.trim() || undefined);
       await deleteFinanceEntryByReference("prd_ticket_purchase", input.purchaseId);
       await logActivity(ctx.user.id, "prd_ticket_purchase.refund", "ticket_purchase", input.purchaseId, String(purchase?.totalAmount ?? ""));
@@ -911,6 +979,7 @@ export const platformRouter = router({
     // replaces the Return button in place, protected by a confirm dialog on
     // the client.
     purchaseDelete: protectedProcedure.input(z.object({ purchaseId: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+      if (isCashier(ctx.user.role)) assertOwnTransaction(ctx.user, (await getPrdTicketPurchase(input.purchaseId))?.issuedBy);
       await deletePrdTicketPurchase(input.purchaseId).catch((error: Error) => {
         throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
       });
@@ -1244,7 +1313,7 @@ export const platformRouter = router({
     // Only for manually created entries (no referenceType) — ticket- and
     // reservation-derived finance entries must stay in sync with their
     // source record, so they're never deletable through this endpoint.
-    delete: superAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+    delete: configAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
       const entry = await getFinanceEntry(input.id);
       if (!entry) throw new TRPCError({ code: "NOT_FOUND", message: "Finance entry was not found" });
       if (entry.referenceType) throw new TRPCError({ code: "BAD_REQUEST", message: "This entry is linked to a ticket or reservation and cannot be removed here" });
@@ -1261,7 +1330,42 @@ export const platformRouter = router({
       .query(({ input }) => summariseFacilityRevenueByType({ from: input.from, to: input.to })),
     // PRD Round 15, Section 7.1: the live Ticket Type + Facility Type list
     // offered when recording a manual Revenue transaction.
-    revenueCategoryOptionsForRecording: protectedProcedure.query(() => listRevenueCategoryOptionsForRecording()),
+    // PRD Round 16, item 4: every transaction with a Balance still owed.
+    // PRD Round 16, item 2: one category's transactions, sub-categories included.
+    categoryReport: managerProcedure.input(z.object({ kind: z.enum(["expense", "revenue", "asset"]), categoryId: z.number().int().positive(), from: z.string().optional(), to: z.string().optional() }))
+      .query(({ input }) => getCategoryReport(input.kind, input.categoryId, input.from, input.to)),
+    payables: financeProcedure.query(() => listPayables()),
+    // Raises (or lowers) only the Paid amount of one transaction — Finance
+    // staff can settle a payable without full edit rights to the record.
+    settlePayable: financeProcedure.input(z.object({
+      type: z.enum(["expense", "revenue", "asset"]), id: z.number().int().positive(), paidAmount: nonNegativeMoney,
+    })).mutation(async ({ input, ctx }) => {
+      const existing = input.type === "expense" ? await getExpenseRecord(input.id) : input.type === "revenue" ? await getRevenueRecord(input.id) : await getAssetRecord(input.id);
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Transaction was not found" });
+      const { paidAmount, balanceAmount } = resolvePaidBalance(String(existing.amount), input.paidAmount);
+      await setRecordPaidAmount(input.type, input.id, paidAmount, balanceAmount);
+      await logActivity(ctx.user.id, `${input.type}.settle`, `${input.type}_record`, input.id, `paid ${paidAmount} / balance ${balanceAmount}`);
+      return { paidAmount, balanceAmount };
+    }),
+    // PRD Round 16, items 6/7/10: Cash Flow status (Finance Reports) plus the
+    // Admin's opening balance / manual adjustments (Commercial Settings).
+    cashFlow: router({
+      status: managerProcedure.input(z.object({ from: z.string(), to: z.string() })).query(({ input }) => getCashFlowStatus(input.from, input.to)),
+      adjustments: configAdminProcedure.query(() => listCashFlowAdjustments()),
+      adjust: configAdminProcedure.input(z.object({
+        businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), type: z.enum(["opening", "add", "deduct"]),
+        amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"), note: z.string().max(512).optional(),
+      })).mutation(async ({ input, ctx }) => {
+        const adjustment = await createCashFlowAdjustment({ ...input, note: input.note?.trim(), createdBy: ctx.user.id });
+        await logActivity(ctx.user.id, "cash_flow.adjust", "cash_flow_adjustment", adjustment.id, `${input.type}:${input.amount}`);
+        return adjustment;
+      }),
+      removeAdjustment: configAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+        await deleteCashFlowAdjustment(input.id);
+        await logActivity(ctx.user.id, "cash_flow.adjustment_delete", "cash_flow_adjustment", input.id);
+      }),
+    }),
+    revenueCategoryOptionsForRecording: financeProcedure.query(() => listRevenueCategoryOptionsForRecording()),
     occupancy: managerProcedure.input(z.object({ from: z.string(), to: z.string() }))
       .query(({ input }) => getOccupancyStats(input.from, input.to)),
     aquaAttendance: managerProcedure.input(z.object({ from: z.string(), to: z.string() }))
@@ -1290,37 +1394,42 @@ export const platformRouter = router({
     }),
     expenseCategories: router({
       list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
-        .query(({ input, ctx }) => listExpenseCategories(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
-      create: superAdminProcedure.input(z.object({ name: z.string().min(1), code: z.string().min(2).max(32) }))
+        .query(({ input, ctx }) => listExpenseCategories(Boolean(input?.includeInactive && isConfigAdmin(ctx.user.role)))),
+      create: configAdminProcedure.input(z.object({ name: z.string().min(1), code: z.string().min(2).max(32), parentId: z.number().int().positive().nullable().optional() }))
         .mutation(async ({ input, ctx }) => {
-          const category = await createExpenseCategory({ ...input, createdBy: ctx.user.id });
+          await assertValidCategoryParent("expense", undefined, input.parentId).catch((error: Error) => { throw new TRPCError({ code: "BAD_REQUEST", message: error.message }); });
+          const category = await createExpenseCategory({ ...input, parentId: input.parentId ?? null, createdBy: ctx.user.id });
           await logActivity(ctx.user.id, "expense_category.create", "expense_category", category.id, input.code);
           return category;
         }),
-      update: superAdminProcedure.input(z.object({
+      update: configAdminProcedure.input(z.object({
         id: z.number(), name: z.string().min(1).optional(), code: z.string().min(2).max(32).optional(), isActive: z.boolean().optional(),
+        parentId: z.number().int().positive().nullable().optional(),
       })).mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
+        await assertValidCategoryParent("expense", id, data.parentId).catch((error: Error) => { throw new TRPCError({ code: "BAD_REQUEST", message: error.message }); });
         const category = await updateExpenseCategory(id, data);
         await logActivity(ctx.user.id, "expense_category.update", "expense_category", id, JSON.stringify(data));
         return category;
       }),
-      delete: superAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+      delete: configAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
         const result = await deleteExpenseCategory(input.id);
         await logActivity(ctx.user.id, "expense_category.delete", "expense_category", input.id, result.deactivated ? "retired" : "deleted");
         return result;
       }),
     }),
     expenses: router({
-      list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional(), descriptionPrefix: z.string().optional() }).optional())
+      list: financeProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional(), descriptionPrefix: z.string().optional() }).optional())
         .query(async ({ input }) => withAttachments("expense", await listExpenseRecords(input?.from, input?.to, input?.descriptionPrefix))),
-      create: protectedProcedure.input(z.object({
+      create: financeProcedure.input(z.object({
         businessDate: z.string(), categoryId: z.number(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
         payee: z.string().optional(), description: z.string().min(1),
         receiptNumber: z.string().max(64).optional(),
+        paidAmount: nonNegativeMoney.optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
         department: z.enum(["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]).default("general"),
       })).mutation(async ({ input, ctx }) => {
+        const paidBalance = resolvePaidBalance(input.amount, input.paidAmount);
         const category = await getExpenseCategory(input.categoryId);
         if (!category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active expense category" });
         const stream = input.department === "aqua_park" || input.department === "fnb" ? input.department : "extras";
@@ -1330,7 +1439,7 @@ export const platformRouter = router({
         } as any);
         const { attachments: attachmentFiles, ...expenseInput } = input;
         const expense = await createExpenseRecord({
-          ...expenseInput, businessDate: input.businessDate as any, categoryName: category.name,
+          ...expenseInput, ...paidBalance, businessDate: input.businessDate as any, categoryName: category.name,
           financeEntryId: financeEntry.id, createdBy: ctx.user.id,
         } as any);
         await saveEntryAttachments("expense", expense.id, attachmentFiles, ctx.user.id);
@@ -1340,12 +1449,14 @@ export const platformRouter = router({
       update: managerProcedure.input(z.object({
         id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals").optional(),
         payee: z.string().optional(), description: z.string().min(1).optional(), receiptNumber: z.string().max(64).optional(),
+        paidAmount: nonNegativeMoney.optional(),
         department: z.enum(["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]).optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
-        const { id, categoryId, attachments: attachmentFiles, ...data } = input;
+        const { id, categoryId, attachments: attachmentFiles, paidAmount, ...data } = input;
         const existing = await getExpenseRecord(id);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Expense record was not found" });
+        Object.assign(data, resolvePaidBalance(data.amount ?? String(existing.amount), paidAmount, existing as any));
         const category = categoryId ? await getExpenseCategory(categoryId) : undefined;
         if (categoryId && !category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active expense category" });
         await updateExpenseRecord(id, { ...data, ...(category ? { categoryId, categoryName: category.name } : {}) } as any);
@@ -1370,36 +1481,41 @@ export const platformRouter = router({
     }),
     revenueCategories: router({
       list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
-        .query(({ input, ctx }) => listRevenueCategories(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
-      create: superAdminProcedure.input(z.object({ name: z.string().min(1), code: z.string().min(2).max(32) }))
+        .query(({ input, ctx }) => listRevenueCategories(Boolean(input?.includeInactive && isConfigAdmin(ctx.user.role)))),
+      create: configAdminProcedure.input(z.object({ name: z.string().min(1), code: z.string().min(2).max(32), parentId: z.number().int().positive().nullable().optional() }))
         .mutation(async ({ input, ctx }) => {
-          const category = await createRevenueCategory({ ...input, createdBy: ctx.user.id });
+          await assertValidCategoryParent("revenue", undefined, input.parentId).catch((error: Error) => { throw new TRPCError({ code: "BAD_REQUEST", message: error.message }); });
+          const category = await createRevenueCategory({ ...input, parentId: input.parentId ?? null, createdBy: ctx.user.id });
           await logActivity(ctx.user.id, "revenue_category.create", "revenue_category", category.id, input.code);
           return category;
         }),
-      update: superAdminProcedure.input(z.object({
+      update: configAdminProcedure.input(z.object({
         id: z.number(), name: z.string().min(1).optional(), code: z.string().min(2).max(32).optional(), isActive: z.boolean().optional(),
+        parentId: z.number().int().positive().nullable().optional(),
       })).mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
+        await assertValidCategoryParent("revenue", id, data.parentId).catch((error: Error) => { throw new TRPCError({ code: "BAD_REQUEST", message: error.message }); });
         const category = await updateRevenueCategory(id, data);
         await logActivity(ctx.user.id, "revenue_category.update", "revenue_category", id, JSON.stringify(data));
         return category;
       }),
-      delete: superAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+      delete: configAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
         const result = await deleteRevenueCategory(input.id);
         await logActivity(ctx.user.id, "revenue_category.delete", "revenue_category", input.id, result.deactivated ? "retired" : "deleted");
         return result;
       }),
     }),
     revenues: router({
-      list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
+      list: financeProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
         .query(async ({ input }) => withAttachments("revenue", await listRevenueRecords(input?.from, input?.to))),
-      create: protectedProcedure.input(z.object({
+      create: financeProcedure.input(z.object({
         businessDate: z.string(), categoryId: z.number(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
         source: z.string().max(128).optional(), description: z.string().min(1),
         receiptNumber: z.string().max(64).optional(),
+        paidAmount: nonNegativeMoney.optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
+        const paidBalance = resolvePaidBalance(input.amount, input.paidAmount);
         const category = await getRevenueCategory(input.categoryId);
         if (!category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active revenue category" });
         const financeEntry = await createFinanceEntry({
@@ -1408,7 +1524,7 @@ export const platformRouter = router({
         } as any);
         const { attachments: attachmentFiles, ...revenueInput } = input;
         const revenue = await createRevenueRecord({
-          ...revenueInput, businessDate: input.businessDate as any, categoryName: category.name,
+          ...revenueInput, ...paidBalance, businessDate: input.businessDate as any, categoryName: category.name,
           financeEntryId: financeEntry.id, createdBy: ctx.user.id,
         } as any);
         await saveEntryAttachments("revenue", revenue.id, attachmentFiles, ctx.user.id);
@@ -1418,11 +1534,13 @@ export const platformRouter = router({
       update: managerProcedure.input(z.object({
         id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals").optional(),
         source: z.string().max(128).optional(), description: z.string().min(1).optional(), receiptNumber: z.string().max(64).optional(),
+        paidAmount: nonNegativeMoney.optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
-        const { id, categoryId, attachments: attachmentFiles, ...data } = input;
+        const { id, categoryId, attachments: attachmentFiles, paidAmount, ...data } = input;
         const existing = await getRevenueRecord(id);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Revenue record was not found" });
+        Object.assign(data, resolvePaidBalance(data.amount ?? String(existing.amount), paidAmount, existing as any));
         const category = categoryId ? await getRevenueCategory(categoryId) : undefined;
         if (categoryId && !category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active revenue category" });
         await updateRevenueRecord(id, { ...data, ...(category ? { categoryId, categoryName: category.name } : {}) } as any);
@@ -1445,44 +1563,49 @@ export const platformRouter = router({
     }),
     assetCategories: router({
       list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional())
-        .query(({ input, ctx }) => listAssetCategories(Boolean(input?.includeInactive && ctx.user.role === "super_admin"))),
-      create: superAdminProcedure.input(z.object({ name: z.string().min(1), code: z.string().min(2).max(32) }))
+        .query(({ input, ctx }) => listAssetCategories(Boolean(input?.includeInactive && isConfigAdmin(ctx.user.role)))),
+      create: configAdminProcedure.input(z.object({ name: z.string().min(1), code: z.string().min(2).max(32), parentId: z.number().int().positive().nullable().optional() }))
         .mutation(async ({ input, ctx }) => {
-          const category = await createAssetCategory({ ...input, createdBy: ctx.user.id });
+          await assertValidCategoryParent("asset", undefined, input.parentId).catch((error: Error) => { throw new TRPCError({ code: "BAD_REQUEST", message: error.message }); });
+          const category = await createAssetCategory({ ...input, parentId: input.parentId ?? null, createdBy: ctx.user.id });
           await logActivity(ctx.user.id, "asset_category.create", "asset_category", category.id, input.code);
           return category;
         }),
-      update: superAdminProcedure.input(z.object({
+      update: configAdminProcedure.input(z.object({
         id: z.number(), name: z.string().min(1).optional(), code: z.string().min(2).max(32).optional(), isActive: z.boolean().optional(),
+        parentId: z.number().int().positive().nullable().optional(),
       })).mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
+        await assertValidCategoryParent("asset", id, data.parentId).catch((error: Error) => { throw new TRPCError({ code: "BAD_REQUEST", message: error.message }); });
         const category = await updateAssetCategory(id, data);
         await logActivity(ctx.user.id, "asset_category.update", "asset_category", id, JSON.stringify(data));
         return category;
       }),
-      delete: superAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+      delete: configAdminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
         const result = await deleteAssetCategory(input.id);
         await logActivity(ctx.user.id, "asset_category.delete", "asset_category", input.id, result.deactivated ? "retired" : "deleted");
         return result;
       }),
     }),
     assets: router({
-      list: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
+      list: financeProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
         .query(async ({ input }) => withAttachments("asset", await listAssetRecords(input?.from, input?.to))),
-      create: protectedProcedure.input(z.object({
+      create: financeProcedure.input(z.object({
         businessDate: z.string(), categoryId: z.number(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
         vendor: z.string().max(128).optional(), description: z.string().min(1),
         receiptNumber: z.string().max(64).optional(),
         location: z.string().max(160).optional(),
         status: z.enum(["active", "under_maintenance", "disposed"]).default("active"),
         usefulLifeYears: z.number().int().min(1).max(100).optional(),
+        paidAmount: nonNegativeMoney.optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
+        const paidBalance = resolvePaidBalance(input.amount, input.paidAmount);
         const category = await getAssetCategory(input.categoryId);
         if (!category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active asset category" });
         const { attachments: attachmentFiles, ...assetInput } = input;
         const asset = await createAssetRecord({
-          ...assetInput, businessDate: input.businessDate as any, categoryName: category.name, createdBy: ctx.user.id,
+          ...assetInput, ...paidBalance, businessDate: input.businessDate as any, categoryName: category.name, createdBy: ctx.user.id,
         } as any);
         await saveEntryAttachments("asset", asset.id, attachmentFiles, ctx.user.id);
         await logActivity(ctx.user.id, "asset.create", "asset_record", asset.id, `${category.code}:${input.amount}`);
@@ -1494,11 +1617,13 @@ export const platformRouter = router({
         location: z.string().max(160).optional(),
         status: z.enum(["active", "under_maintenance", "disposed"]).optional(),
         usefulLifeYears: z.number().int().min(1).max(100).nullable().optional(),
+        paidAmount: nonNegativeMoney.optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
-        const { id, categoryId, attachments: attachmentFiles, ...data } = input;
+        const { id, categoryId, attachments: attachmentFiles, paidAmount, ...data } = input;
         const existing = await getAssetRecord(id);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Asset record was not found" });
+        Object.assign(data, resolvePaidBalance(data.amount ?? String(existing.amount), paidAmount, existing as any));
         const category = categoryId ? await getAssetCategory(categoryId) : undefined;
         if (categoryId && !category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active asset category" });
         await updateAssetRecord(id, { ...data, ...(category ? { categoryId, categoryName: category.name } : {}) } as any);
@@ -1628,7 +1753,7 @@ export const platformRouter = router({
       // starts at 0.000 and is funded afterward through "Send a top-up",
       // so every allocation (including the first one) is logged the same
       // way instead of the opening balance silently bypassing that log.
-      createCustodian: superAdminProcedure.input(z.object({
+      createCustodian: configAdminProcedure.input(z.object({
         username: z.string().trim().min(3).max(64), name: z.string().trim().min(2).max(128),
         temporaryPassword: z.string().min(12).max(256),
       })).mutation(async ({ input, ctx }) => {
@@ -1645,7 +1770,7 @@ export const platformRouter = router({
       // edits the custodian's Full Name and Username instead. Keeps
       // openId (local:<username>) in sync so a later account created under
       // the old username doesn't collide with this one's stale openId.
-      updateCustodian: superAdminProcedure.input(z.object({
+      updateCustodian: configAdminProcedure.input(z.object({
         userId: z.number().int().positive(), name: z.string().trim().min(2).max(128), username: z.string().trim().min(3).max(64),
       })).mutation(async ({ input, ctx }) => {
         const nextUsername = input.username.toLowerCase();
@@ -1656,7 +1781,7 @@ export const platformRouter = router({
         await logActivity(ctx.user.id, "petty_cash_fund.update_custodian", "user", input.userId, nextUsername);
         return { id: user.id, name: user.name, username: user.username };
       }),
-      updateAmount: superAdminProcedure.input(z.object({
+      updateAmount: configAdminProcedure.input(z.object({
         id: z.number().int().positive(), fixedAmount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
       })).mutation(async ({ input, ctx }) => {
         const fund = await getPettyCashFund(input.id);
@@ -1668,7 +1793,7 @@ export const platformRouter = router({
       // PRD Round 5: a discrete, timestamped log of every top-up the Admin
       // sends to a custodian's fund — alongside updateAmount's raw (unlogged)
       // overwrite, which stays available for correcting a mistake.
-      allocate: superAdminProcedure.input(z.object({
+      allocate: configAdminProcedure.input(z.object({
         id: z.number().int().positive(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"), note: z.string().max(256).optional(),
       })).mutation(async ({ input, ctx }) => {
         const fund = await getPettyCashFund(input.id);
@@ -1701,6 +1826,10 @@ export const platformRouter = router({
       spend: protectedProcedure.input(z.object({
         businessDate: z.string(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
         description: z.string().min(1).max(256),
+        // PRD Round 16, item 11: the custodian picks the expense category,
+        // since every spend posts straight to the general ledger. Omitted =
+        // the "Petty Cash" category, exactly as before this round.
+        categoryId: z.number().int().positive().optional(),
         attachment: z.object({ dataBase64: z.string(), mimeType: z.string(), fileName: z.string().max(256) }).optional(),
       })).mutation(async ({ input, ctx }) => {
         if (ctx.user.role !== "petty_cash") throw new TRPCError({ code: "FORBIDDEN", message: "Only a petty cash custodian can log spending" });
@@ -1709,8 +1838,9 @@ export const platformRouter = router({
         const balance = await getPettyCashFundBalance(fund.id);
         if (Number(input.amount) > balance) throw new TRPCError({ code: "BAD_REQUEST", message: "This would exceed the remaining petty cash balance" });
         if (input.attachment && !isAllowedAttachmentMimeType(input.attachment.mimeType)) throw new TRPCError({ code: "BAD_REQUEST", message: "Attachment must be a JPEG, PNG, WEBP image, or a PDF" });
-        const category = await getExpenseCategoryByCode("PETTY_CASH");
-        if (!category) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Petty Cash expense category is missing" });
+        const category = input.categoryId ? await getExpenseCategory(input.categoryId) : await getExpenseCategoryByCode("PETTY_CASH");
+        if (!category) throw new TRPCError({ code: input.categoryId ? "BAD_REQUEST" : "INTERNAL_SERVER_ERROR", message: input.categoryId ? "Choose an active expense category" : "Petty Cash expense category is missing" });
+        if (input.categoryId && !category.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active expense category" });
         const saved = input.attachment ? await saveExpenseAttachment(input.attachment) : null;
         const spend = await createPettyCashSpendWithExpense({
           fundId: fund.id, businessDate: input.businessDate, amount: input.amount, description: input.description,
@@ -1719,6 +1849,53 @@ export const platformRouter = router({
         });
         await logActivity(ctx.user.id, "petty_cash_spend.create", "petty_cash_spend", spend.id, input.amount);
         return spend;
+      }),
+      // PRD Round 16, item 11: a custodian edits their own spends (a manager
+      // can correct anyone's). The new amount may never push the fund below
+      // zero — the spend's own old amount is added back before checking.
+      updateSpend: protectedProcedure.input(z.object({
+        id: z.number().int().positive(), businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
+        description: z.string().min(1).max(256), categoryId: z.number().int().positive(),
+      })).mutation(async ({ input, ctx }) => {
+        const spend = await getPettyCashSpend(input.id);
+        if (!spend) throw new TRPCError({ code: "NOT_FOUND", message: "Petty cash spend was not found" });
+        const isManagerRole = ["manager", "admin", "super_admin"].includes(ctx.user.role);
+        if (!isManagerRole) {
+          const ownFund = ctx.user.role === "petty_cash" ? await getPettyCashFundByCustodian(ctx.user.id) : undefined;
+          if (!ownFund || ownFund.id !== spend.fundId) throw new TRPCError({ code: "FORBIDDEN", message: "You can only edit your own petty cash transactions" });
+        }
+        const category = await getExpenseCategory(input.categoryId);
+        if (!category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active expense category" });
+        const available = (await getPettyCashFundBalance(spend.fundId)) + Number(spend.amount);
+        if (Number(input.amount) - available > 0.0005) throw new TRPCError({ code: "BAD_REQUEST", message: "This would exceed the remaining petty cash balance" });
+        const updated = await updatePettyCashSpendWithExpense(input.id, { businessDate: input.businessDate, amount: input.amount, description: input.description.trim(), categoryId: category.id, categoryName: category.name });
+        await logActivity(ctx.user.id, "petty_cash_spend.update", "petty_cash_spend", input.id, `${spend.amount}->${input.amount}`);
+        return updated;
+      }),
+      // PRD Round 16, item 14: normalize (zero out) or adjust a custodian's
+      // balance — logged as a signed entry in the fund's top-up history.
+      adjustBalance: configAdminProcedure.input(z.object({
+        id: z.number().int().positive(), mode: z.enum(["zero", "add", "deduct"]),
+        amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals").optional(),
+        note: z.string().max(256).optional(),
+      })).mutation(async ({ input, ctx }) => {
+        const fund = await getPettyCashFund(input.id);
+        if (!fund) throw new TRPCError({ code: "NOT_FOUND", message: "Petty cash fund was not found" });
+        const balanceMinor = Math.round((await getPettyCashFundBalance(fund.id)) * 1000);
+        let deltaMinor: number;
+        if (input.mode === "zero") deltaMinor = -balanceMinor;
+        else {
+          if (!input.amount) throw new TRPCError({ code: "BAD_REQUEST", message: "Enter an amount" });
+          const amountMinor = moneyToMinor(input.amount);
+          if (input.mode === "deduct" && amountMinor > balanceMinor) throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot deduct more than the custodian's current balance" });
+          deltaMinor = input.mode === "add" ? amountMinor : -amountMinor;
+        }
+        if (deltaMinor === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "The balance is already zero" });
+        const note = input.note?.trim() || (input.mode === "zero" ? "Balance zeroed out" : input.mode === "add" ? "Balance adjusted (added)" : "Balance adjusted (deducted)");
+        const updated = await adjustPettyCashFundBalance({ fundId: fund.id, deltaMinor, note, createdBy: ctx.user.id });
+        await logActivity(ctx.user.id, "petty_cash_fund.adjust_balance", "petty_cash_fund", fund.id, `${input.mode}:${(deltaMinor / 1000).toFixed(3)}`);
+        return updated;
       }),
       deleteSpend: managerProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
         const spend = await deletePettyCashSpendWithExpense(input.id);
@@ -1729,11 +1906,12 @@ export const platformRouter = router({
   }),
 
   admin: router({
-    listUsers: superAdminProcedure.query(async () => (await listUsers()).map(({ passwordHash: _passwordHash, ...user }) => user)),
-    createUser: superAdminProcedure.input(z.object({
+    listUsers: configAdminProcedure.query(async () => (await listUsers()).map(({ passwordHash: _passwordHash, ...user }) => user)),
+    createUser: configAdminProcedure.input(z.object({
       username: z.string().trim().min(3).max(64), name: z.string().trim().min(2).max(128), email: z.string().email().nullable().optional(),
-      role: z.enum(["staff", "manager", "admin", "guard", "super_admin", "petty_cash"]), temporaryPassword: z.string().min(12).max(256),
+      role: z.enum(["staff", "manager", "admin", "guard", "super_admin", "petty_cash", "cashier"]), temporaryPassword: z.string().min(12).max(256),
     })).mutation(async ({ input, ctx }) => {
+      assertCanManageAccount(ctx.user, undefined, input.role);
       const username = input.username.toLowerCase();
       if (await getUserByUsername(username)) throw new TRPCError({ code: "CONFLICT", message: "Username already exists" });
       const user = await createLocalUser({ username, name: input.name, email: input.email, role: input.role, passwordHash: await hashPassword(input.temporaryPassword), mustChangePassword: true });
@@ -1742,13 +1920,14 @@ export const platformRouter = router({
       const { passwordHash: _passwordHash, ...safeUser } = user;
       return safeUser;
     }),
-    updateUser: superAdminProcedure.input(z.object({
+    updateUser: configAdminProcedure.input(z.object({
       id: z.number(), name: z.string().trim().min(2).max(128).optional(), email: z.string().email().nullable().optional(),
-      role: z.enum(["staff", "manager", "admin", "guard", "super_admin", "petty_cash"]).optional(), isActive: z.boolean().optional(),
+      role: z.enum(["staff", "manager", "admin", "guard", "super_admin", "petty_cash", "cashier"]).optional(), isActive: z.boolean().optional(),
     })).mutation(async ({ input, ctx }) => {
-      if (input.id === ctx.user.id && (input.isActive === false || (input.role && input.role !== "super_admin"))) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot deactivate or demote your own Super Admin account" });
+      if (input.id === ctx.user.id && (input.isActive === false || (input.role && input.role !== ctx.user.role))) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot deactivate or change the role of your own account" });
       }
+      assertCanManageAccount(ctx.user, await getUserById(input.id), input.role);
       const { id, ...data } = input;
       const user = await updateLocalUser(id, data);
       if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "User account was not found" });
@@ -1757,21 +1936,47 @@ export const platformRouter = router({
       const { passwordHash: _passwordHash, ...safeUser } = user;
       return safeUser;
     }),
-    resetUserPassword: superAdminProcedure.input(z.object({ id: z.number(), temporaryPassword: z.string().min(12).max(256) }))
+    resetUserPassword: configAdminProcedure.input(z.object({ id: z.number(), temporaryPassword: z.string().min(12).max(256) }))
       .mutation(async ({ input, ctx }) => {
+        assertCanManageAccount(ctx.user, await getUserById(input.id));
         await updateLocalUser(input.id, { passwordHash: await hashPassword(input.temporaryPassword), mustChangePassword: true });
         await revokeAllUserSessions(input.id);
         await logActivity(ctx.user.id, "admin.user.password_reset", "user", input.id);
         return { success: true } as const;
       }),
-    updateUserRole: superAdminProcedure.input(z.object({
-      id: z.number(), role: z.enum(["staff", "manager", "admin", "guard", "super_admin", "petty_cash"]),
+    updateUserRole: configAdminProcedure.input(z.object({
+      id: z.number(), role: z.enum(["staff", "manager", "admin", "guard", "super_admin", "petty_cash", "cashier"]),
     })).mutation(async ({ input, ctx }) => {
-      if (input.id === ctx.user.id && input.role !== "super_admin") throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot demote your own Super Admin account" });
+      if (input.id === ctx.user.id && input.role !== ctx.user.role) throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot change the role of your own account" });
+      assertCanManageAccount(ctx.user, await getUserById(input.id), input.role);
       await updateUserRole(input.id, input.role);
       await logActivity(ctx.user.id, "admin.role.update", "user", input.id, input.role);
     }),
-    linkStaff: superAdminProcedure.input(z.object({ staffId: z.number(), userId: z.number() }))
+    // PRD Round 16, item 13: users could only be disabled; now they can be
+    // permanently deleted. Guarded so nobody can delete themselves or the
+    // last active Super Admin, and a petty cash custodian whose fund still
+    // holds money must be zeroed out first (Round 16, item 14) so no cash
+    // goes unaccounted for.
+    deleteUser: configAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+      if (input.id === ctx.user.id) throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot delete your own account" });
+      const target = await getUserById(input.id);
+      if (!target) throw new TRPCError({ code: "NOT_FOUND", message: "User account was not found" });
+      assertCanManageAccount(ctx.user, target);
+      if (target.role === "super_admin") {
+        const remaining = (await listUsers()).filter((user) => user.role === "super_admin" && user.isActive && user.id !== target.id);
+        if (!remaining.length) throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot delete the last active Super Admin" });
+      }
+      const fund = await getPettyCashFundByCustodian(target.id);
+      if (fund) {
+        const balance = await getPettyCashFundBalance(fund.id);
+        if (Math.abs(balance) >= 0.0005) throw new TRPCError({ code: "BAD_REQUEST", message: "This custodian's petty cash balance must be zeroed out before the account can be deleted" });
+        await setPettyCashFundActive(fund.id, false);
+      }
+      await deleteLocalUser(target.id);
+      await logActivity(ctx.user.id, "admin.user.delete", "user", target.id, `${target.username || target.name}:${target.role}`);
+      return { success: true } as const;
+    }),
+    linkStaff: configAdminProcedure.input(z.object({ staffId: z.number(), userId: z.number() }))
       .mutation(async ({ input, ctx }) => {
         await linkStaffToUser(input.staffId, input.userId);
         await logActivity(ctx.user.id, "admin.staff.link", "staff_profile", input.staffId);

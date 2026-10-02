@@ -9,7 +9,7 @@ export const users = mysqlTable("users", {
   name: text("name"),
   email: varchar("email", { length: 320 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
-  role: mysqlEnum("role", ["staff", "manager", "admin", "guard", "super_admin", "petty_cash"]).default("staff").notNull(),
+  role: mysqlEnum("role", ["staff", "manager", "admin", "guard", "super_admin", "petty_cash", "cashier"]).default("staff").notNull(),
   username: varchar("username", { length: 64 }).unique(),
   passwordHash: text("passwordHash"),
   mustChangePassword: boolean("mustChangePassword").default(true).notNull(),
@@ -569,6 +569,9 @@ export const expenseCategories = mysqlTable("expense_categories", {
   id: int("id").autoincrement().primaryKey(),
   name: varchar("name", { length: 160 }).notNull().unique(),
   code: varchar("code", { length: 32 }).notNull().unique(),
+  // PRD Round 16, item 2: NULL = a main category; otherwise the id of its
+  // (top-level) parent. One level deep only.
+  parentId: int("parentId"),
   isActive: boolean("isActive").default(true).notNull(),
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -639,6 +642,10 @@ export const expenseRecords = mysqlTable("expense_records", {
   categoryId: int("categoryId"),
   categoryName: varchar("categoryName", { length: 160 }).notNull(),
   amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
+  // PRD Round 16, item 4: `amount` stays the Total. paidAmount NULL is
+  // treated as fully paid (= amount); balanceAmount = amount - paid.
+  paidAmount: decimal("paidAmount", { precision: 12, scale: 3 }),
+  balanceAmount: decimal("balanceAmount", { precision: 12, scale: 3 }).default("0").notNull(),
   payee: varchar("payee", { length: 128 }),
   description: varchar("description", { length: 256 }).notNull(),
   receiptNumber: varchar("receiptNumber", { length: 64 }),
@@ -660,6 +667,9 @@ export const revenueCategories = mysqlTable("revenue_categories", {
   id: int("id").autoincrement().primaryKey(),
   name: varchar("name", { length: 160 }).notNull().unique(),
   code: varchar("code", { length: 32 }).notNull().unique(),
+  // PRD Round 16, item 2: NULL = a main category; otherwise the id of its
+  // (top-level) parent. One level deep only.
+  parentId: int("parentId"),
   isActive: boolean("isActive").default(true).notNull(),
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -673,6 +683,10 @@ export const revenueRecords = mysqlTable("revenue_records", {
   categoryId: int("categoryId"),
   categoryName: varchar("categoryName", { length: 160 }).notNull(),
   amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
+  // PRD Round 16, item 4: `amount` stays the Total. paidAmount NULL is
+  // treated as fully paid (= amount); balanceAmount = amount - paid.
+  paidAmount: decimal("paidAmount", { precision: 12, scale: 3 }),
+  balanceAmount: decimal("balanceAmount", { precision: 12, scale: 3 }).default("0").notNull(),
   source: varchar("source", { length: 128 }),
   description: varchar("description", { length: 256 }).notNull(),
   receiptNumber: varchar("receiptNumber", { length: 64 }),
@@ -839,6 +853,21 @@ export const systemSettings = mysqlTable("system_settings", {
 });
 export type SystemSettings = typeof systemSettings.$inferSelect;
 
+// PRD Round 16, items 6/7/10: the Cash Flow balance is computed from
+// existing records (revenue in, paid expenses/capital expenditure out); this
+// only holds what the Admin enters by hand — an opening balance and manual
+// add/deduct adjustments.
+export const cashFlowAdjustments = mysqlTable("cash_flow_adjustments", {
+  id: int("id").autoincrement().primaryKey(),
+  businessDate: date("businessDate").notNull(),
+  type: mysqlEnum("type", ["opening", "add", "deduct"]).notNull(),
+  amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
+  note: varchar("note", { length: 512 }),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type CashFlowAdjustment = typeof cashFlowAdjustments.$inferSelect;
+
 export const facilityBookingAddons = mysqlTable("facility_booking_addons", {
   id: int("id").autoincrement().primaryKey(),
   bookingId: int("bookingId").notNull(),
@@ -904,6 +933,9 @@ export const assetCategories = mysqlTable("asset_categories", {
   id: int("id").autoincrement().primaryKey(),
   name: varchar("name", { length: 160 }).notNull().unique(),
   code: varchar("code", { length: 32 }).notNull().unique(),
+  // PRD Round 16, item 2: NULL = a main category; otherwise the id of its
+  // (top-level) parent. One level deep only.
+  parentId: int("parentId"),
   isActive: boolean("isActive").default(true).notNull(),
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -922,6 +954,10 @@ export const assetRecords = mysqlTable("asset_records", {
   categoryId: int("categoryId"),
   categoryName: varchar("categoryName", { length: 160 }).notNull(),
   amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
+  // PRD Round 16, item 4: `amount` stays the Total. paidAmount NULL is
+  // treated as fully paid (= amount); balanceAmount = amount - paid.
+  paidAmount: decimal("paidAmount", { precision: 12, scale: 3 }),
+  balanceAmount: decimal("balanceAmount", { precision: 12, scale: 3 }).default("0").notNull(),
   vendor: varchar("vendor", { length: 128 }),
   description: varchar("description", { length: 256 }).notNull(),
   receiptNumber: varchar("receiptNumber", { length: 64 }),

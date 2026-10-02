@@ -4,7 +4,7 @@ import { alias } from "drizzle-orm/mysql-core";
 import {
   addonServices, assetAdjustments, assetCategories, assetRecords, attachments, expenseAdjustments, expenseCategories, expenseRecords, facilityBookingAddons, facilityBookings, facilityTypes, guests, partnerEntities, partnerDiscountRules, pettyCashAllocations, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
   serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers, ticketTypes, visitorCategories, ticketPrices,
-  ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries, users, systemSettings,
+  ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries, users, systemSettings, cashFlowAdjustments,
 } from "../drizzle/schema";
 import { getDb } from "./db";
 import { calculateOperationalNet, calculatePrdPurchasePricing, decideGateEntry, formatPrdTicketNumber, formatTicketNumber, minorToMoney, moneyToMinor, validateMixedPaymentBreakdown, type PrdDiscountTierInput, type PrdTicketLineInput } from "./ticketingRules";
@@ -264,9 +264,10 @@ export async function createPrdTicketPurchase(data: {
   });
 }
 
-export async function listPrdTicketPurchases(query?: string, from?: string, to?: string) {
+export async function listPrdTicketPurchases(query?: string, from?: string, to?: string, issuedBy?: number) {
   const db = await getDb(); if (!db) return [];
   const conditions: any[] = [];
+  if (issuedBy !== undefined) conditions.push(eq(ticketPurchases.issuedBy, issuedBy));
   if (from) conditions.push(sql`${ticketPurchases.visitDate} >= ${from}`);
   if (to) conditions.push(sql`${ticketPurchases.visitDate} <= ${to}`);
   if (query?.trim()) {
@@ -1019,9 +1020,10 @@ export async function findFacilityBookingConflict(facilityTypeId: number, fromDa
 
 const cancellers = alias(users, "cancellers");
 
-export async function listFacilityBookings(from?: string, to?: string, query?: string) {
+export async function listFacilityBookings(from?: string, to?: string, query?: string, createdBy?: number) {
   const db = await getDb(); if (!db) return [];
   const conditions: any[] = [];
+  if (createdBy !== undefined) conditions.push(eq(facilityBookings.createdBy, createdBy));
   if (from) conditions.push(sql`${facilityBookings.bookingDate} >= ${from}`);
   if (to) conditions.push(sql`${facilityBookings.bookingDate} <= ${to}`);
   if (query?.trim()) {
@@ -1662,9 +1664,65 @@ export async function listPettyCashAllocations(fundId: number) {
     .orderBy(desc(pettyCashAllocations.createdAt));
 }
 
+// PRD Round 16, item 11: each spend now carries the expense category the
+// custodian chose — stored on its linked expense record, so it's joined in
+// here rather than duplicated onto petty_cash_spends.
 export async function listPettyCashSpends(fundId: number) {
   const db = await getDb(); if (!db) return [];
-  return db.select().from(pettyCashSpends).where(eq(pettyCashSpends.fundId, fundId)).orderBy(desc(pettyCashSpends.businessDate), desc(pettyCashSpends.id));
+  const rows = await db.select({ spend: pettyCashSpends, categoryId: expenseRecords.categoryId, categoryName: expenseRecords.categoryName }).from(pettyCashSpends)
+    .leftJoin(expenseRecords, eq(pettyCashSpends.expenseRecordId, expenseRecords.id))
+    .where(eq(pettyCashSpends.fundId, fundId)).orderBy(desc(pettyCashSpends.businessDate), desc(pettyCashSpends.id));
+  return rows.map((row) => ({ ...row.spend, categoryId: row.categoryId, categoryName: row.categoryName }));
+}
+
+export async function setPettyCashFundActive(fundId: number, isActive: boolean) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(pettyCashFunds).set({ isActive }).where(eq(pettyCashFunds.id, fundId));
+}
+
+// PRD Round 16, item 14: normalize (zero out) or adjust a custodian's
+// balance. Logged as a signed allocation (negative = money taken back), so
+// the adjustment appears in the same top-up history as every other change
+// to the fund rather than silently overwriting fixedAmount.
+export async function adjustPettyCashFundBalance(data: { fundId: number; deltaMinor: number; note?: string; createdBy: number }) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  return db.transaction(async (tx) => {
+    const fundRows = await tx.select().from(pettyCashFunds).where(eq(pettyCashFunds.id, data.fundId)).limit(1);
+    const fund = fundRows[0];
+    if (!fund) throw new Error("Petty cash fund was not found");
+    const currentMinor = Math.round(Number(fund.fixedAmount) * 1000);
+    await tx.update(pettyCashFunds).set({ fixedAmount: minorToMoney(currentMinor + data.deltaMinor) }).where(eq(pettyCashFunds.id, data.fundId));
+    await tx.insert(pettyCashAllocations).values({ fundId: data.fundId, amount: minorToMoney(data.deltaMinor), note: data.note || null, createdBy: data.createdBy } as any);
+    const updatedFundRows = await tx.select().from(pettyCashFunds).where(eq(pettyCashFunds.id, data.fundId)).limit(1);
+    return updatedFundRows[0]!;
+  });
+}
+
+// PRD Round 16, item 11: the custodian (or a manager) can correct a spend
+// already logged — the spend, its linked expense record, and that record's
+// finance entry are all updated together so the ledger never disagrees with
+// the petty cash history.
+export async function updatePettyCashSpendWithExpense(id: number, data: {
+  businessDate: string; amount: string; description: string; categoryId: number; categoryName: string;
+}) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  return db.transaction(async (tx) => {
+    const spendRows = await tx.select().from(pettyCashSpends).where(eq(pettyCashSpends.id, id)).limit(1);
+    const spend = spendRows[0];
+    if (!spend) throw new Error("Petty cash spend was not found");
+    await tx.update(pettyCashSpends).set({ businessDate: data.businessDate as any, amount: data.amount, description: data.description }).where(eq(pettyCashSpends.id, id));
+    if (spend.expenseRecordId) {
+      const expenseRows = await tx.select().from(expenseRecords).where(eq(expenseRecords.id, spend.expenseRecordId)).limit(1);
+      const record = expenseRows[0];
+      await tx.update(expenseRecords).set({
+        businessDate: data.businessDate as any, amount: data.amount, paidAmount: data.amount, balanceAmount: "0.000",
+        description: data.description, categoryId: data.categoryId, categoryName: data.categoryName,
+      } as any).where(eq(expenseRecords.id, spend.expenseRecordId));
+      if (record?.financeEntryId) await tx.update(financeEntries).set({ date: data.businessDate as any, amount: data.amount, description: `Petty cash — ${data.description}` } as any).where(eq(financeEntries.id, record.financeEntryId));
+    }
+    const updated = await tx.select().from(pettyCashSpends).where(eq(pettyCashSpends.id, id)).limit(1);
+    return updated[0]!;
+  });
 }
 
 export async function getPettyCashFundBalance(fundId: number) {
@@ -1713,6 +1771,7 @@ export async function createPettyCashSpendWithExpense(data: {
     const financeEntry = financeRows[0]!;
     await tx.insert(expenseRecords).values({
       businessDate: data.businessDate, categoryId: data.categoryId, categoryName: data.categoryName, amount: data.amount,
+      paidAmount: data.amount, balanceAmount: "0.000",
       payee: data.payee, description: data.description, department: "general", financeEntryId: financeEntry.id, createdBy: data.createdBy,
       attachmentPath: data.attachmentPath ?? null, attachmentOriginalName: data.attachmentOriginalName ?? null,
     } as any);
@@ -1846,7 +1905,15 @@ export async function listRevenueCategoryOptionsForRecording() {
     options.push({ categoryId, name: type.name });
   }
   for (const facility of activeFacilityTypes) options.push({ categoryId: facility.revenueCategoryId, name: facility.name });
-  return options;
+  // PRD Round 16, item 2: any active sub-category the Admin has placed under
+  // one of these Ticket/Facility Type categories is offered right beneath it.
+  const subCategories = (await listRevenueCategories(false)).filter((category) => category.parentId);
+  const withChildren: { categoryId: number; name: string; parentCategoryId: number | null }[] = [];
+  for (const option of options) {
+    withChildren.push({ ...option, parentCategoryId: null });
+    for (const child of subCategories.filter((category) => category.parentId === option.categoryId)) withChildren.push({ categoryId: child.id, name: child.name, parentCategoryId: option.categoryId });
+  }
+  return withChildren;
 }
 
 // PRD Round 9, Section 10: before an Admin retires or removes a library
@@ -1934,9 +2001,192 @@ export async function resetAllOperationalData(performedBy: number) {
     await tx.delete(assetAdjustments);
     await tx.delete(pettyCashAllocations);
     await tx.delete(pettyCashSpends);
+    // Round 15 said Petty Cash "logs/balances" — clearing the logs alone
+    // left each fund's allocated total behind, so balances survived the
+    // reset. The custodian accounts themselves (configuration) stay.
+    await tx.update(pettyCashFunds).set({ fixedAmount: "0.000" });
     await tx.delete(financeEntries);
     await tx.delete(guests);
     await tx.insert(systemSettings).values({ id: 1, resetAllDataToolEnabled: false, lastResetAt: new Date(), lastResetBy: performedBy })
       .onDuplicateKeyUpdate({ set: { resetAllDataToolEnabled: false, lastResetAt: new Date(), lastResetBy: performedBy } });
   });
+}
+
+// ─── PRD Round 16, item 4: Payable Account ─────────────────────────────────
+// Every Operating Expense, Revenue, or Capital Expenditure transaction that
+// still has a Balance Amount outstanding — one combined list, newest first.
+export async function listPayables() {
+  const db = await getDb(); if (!db) return [];
+  const dateOf = (column: any) => sql<string>`DATE_FORMAT(${column}, '%Y-%m-%d')`;
+  const [expenses, revenues, assets] = await Promise.all([
+    db.select({ id: expenseRecords.id, businessDate: dateOf(expenseRecords.businessDate), categoryName: expenseRecords.categoryName, description: expenseRecords.description, counterparty: expenseRecords.payee, amount: expenseRecords.amount, paidAmount: expenseRecords.paidAmount, balanceAmount: expenseRecords.balanceAmount })
+      .from(expenseRecords).where(sql`${expenseRecords.balanceAmount} > 0`),
+    db.select({ id: revenueRecords.id, businessDate: dateOf(revenueRecords.businessDate), categoryName: revenueRecords.categoryName, description: revenueRecords.description, counterparty: revenueRecords.source, amount: revenueRecords.amount, paidAmount: revenueRecords.paidAmount, balanceAmount: revenueRecords.balanceAmount })
+      .from(revenueRecords).where(sql`${revenueRecords.balanceAmount} > 0`),
+    db.select({ id: assetRecords.id, businessDate: dateOf(assetRecords.businessDate), categoryName: assetRecords.categoryName, description: assetRecords.description, counterparty: assetRecords.vendor, amount: assetRecords.amount, paidAmount: assetRecords.paidAmount, balanceAmount: assetRecords.balanceAmount })
+      .from(assetRecords).where(sql`${assetRecords.balanceAmount} > 0`),
+  ]);
+  return [
+    ...expenses.map((row) => ({ ...row, type: "expense" as const })),
+    ...revenues.map((row) => ({ ...row, type: "revenue" as const })),
+    ...assets.map((row) => ({ ...row, type: "asset" as const })),
+  ].sort((a, b) => b.businessDate.localeCompare(a.businessDate) || b.id - a.id);
+}
+
+// Settling only ever changes Paid/Balance — Total, category, date and the
+// linked finance entry are untouched, so the Financial Status report (which
+// counts Totals) doesn't move; only Cash Flow and the Payable list do.
+export async function setRecordPaidAmount(type: "expense" | "revenue" | "asset", id: number, paidAmount: string, balanceAmount: string) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const table = type === "expense" ? expenseRecords : type === "revenue" ? revenueRecords : assetRecords;
+  await db.update(table).set({ paidAmount, balanceAmount } as any).where(eq(table.id, id));
+}
+
+// ─── PRD Round 16, items 6/7/10: Cash Flow ─────────────────────────────────
+// Calculated entirely from existing records — nothing historical is changed:
+//   + every Revenue finance entry (ticket sales, facility bookings, manual
+//     revenue, revenue opening balances) at its PAID amount when it has a
+//     linked revenue record, otherwise its full amount
+//   − every Expense finance entry at its linked record's PAID amount
+//   − every Capital Expenditure record's PAID amount
+//   ± the Admin's opening balance and manual adjustments (Commercial Settings)
+// Records created before Round 16 are fully paid (backfilled), so for them
+// paid = amount and this matches the Financial Status totals exactly.
+export async function listCashFlowAdjustments() {
+  const db = await getDb(); if (!db) return [];
+  return db.select({ adjustment: cashFlowAdjustments, createdByName: users.name }).from(cashFlowAdjustments)
+    .leftJoin(users, eq(cashFlowAdjustments.createdBy, users.id))
+    .orderBy(desc(cashFlowAdjustments.businessDate), desc(cashFlowAdjustments.id));
+}
+
+export async function createCashFlowAdjustment(data: { businessDate: string; type: "opening" | "add" | "deduct"; amount: string; note?: string; createdBy: number }) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(cashFlowAdjustments).values({ ...data, businessDate: data.businessDate as any, note: data.note || null } as any);
+  const rows = await db.select().from(cashFlowAdjustments).orderBy(desc(cashFlowAdjustments.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function deleteCashFlowAdjustment(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.delete(cashFlowAdjustments).where(eq(cashFlowAdjustments.id, id));
+}
+
+type CashMovement = { date: string; kind: "tickets" | "facilities" | "otherRevenue" | "expense" | "capex" | "adjustment"; description: string; inAmount: number; outAmount: number };
+
+async function listCashMovements(range: { before?: string; from?: string; to?: string }): Promise<CashMovement[]> {
+  const db = await getDb(); if (!db) return [];
+  const within = (column: any) => range.before
+    ? sql`${column} < ${range.before}`
+    : and(sql`${column} >= ${range.from}`, sql`${column} <= ${range.to}`);
+  const dateOf = (column: any) => sql<string>`DATE_FORMAT(${column}, '%Y-%m-%d')`;
+  // Pre-go-live "Opening balance" entries (Commercial Settings) describe
+  // history, not cash that moved in the system — the Cash Flow opening
+  // balance is the single figure for the cash position at go-live, so they
+  // are left out here rather than counted twice.
+  const notOpening = (column: any) => sql`(${column} IS NULL OR ${column} NOT LIKE 'Opening balance%')`;
+  const [revenueRows, expenseRows, assetRows, adjustmentRows] = await Promise.all([
+    db.select({ date: dateOf(financeEntries.date), description: financeEntries.description, referenceType: financeEntries.referenceType, amount: financeEntries.amount, linkedPaid: revenueRecords.paidAmount, linkedAmount: revenueRecords.amount })
+      .from(financeEntries).leftJoin(revenueRecords, eq(revenueRecords.financeEntryId, financeEntries.id))
+      .where(and(eq(financeEntries.type, "revenue"), within(financeEntries.date), notOpening(financeEntries.description))),
+    db.select({ date: dateOf(financeEntries.date), description: financeEntries.description, amount: financeEntries.amount, linkedPaid: expenseRecords.paidAmount, linkedAmount: expenseRecords.amount })
+      .from(financeEntries).leftJoin(expenseRecords, eq(expenseRecords.financeEntryId, financeEntries.id))
+      .where(and(eq(financeEntries.type, "expense"), within(financeEntries.date), notOpening(financeEntries.description))),
+    db.select({ date: dateOf(assetRecords.businessDate), description: assetRecords.description, amount: assetRecords.amount, paidAmount: assetRecords.paidAmount })
+      .from(assetRecords).where(and(within(assetRecords.businessDate), notOpening(assetRecords.description))),
+    db.select({ date: dateOf(cashFlowAdjustments.businessDate), type: cashFlowAdjustments.type, amount: cashFlowAdjustments.amount, note: cashFlowAdjustments.note })
+      .from(cashFlowAdjustments).where(within(cashFlowAdjustments.businessDate)),
+  ]);
+  const paidOf = (linkedPaid: unknown, linkedAmount: unknown, entryAmount: unknown) =>
+    Number(linkedPaid ?? linkedAmount ?? entryAmount ?? 0);
+  const movements: CashMovement[] = [];
+  for (const row of revenueRows) {
+    const kind = row.referenceType === "prd_ticket_purchase" ? "tickets" : row.referenceType === "facility_booking" || row.referenceType === "facility_booking_addon" ? "facilities" : "otherRevenue";
+    movements.push({ date: row.date, kind, description: row.description || "", inAmount: paidOf(row.linkedPaid, row.linkedAmount, row.amount), outAmount: 0 });
+  }
+  for (const row of expenseRows) movements.push({ date: row.date, kind: "expense", description: row.description || "", inAmount: 0, outAmount: paidOf(row.linkedPaid, row.linkedAmount, row.amount) });
+  for (const row of assetRows) movements.push({ date: row.date, kind: "capex", description: row.description || "", inAmount: 0, outAmount: Number(row.paidAmount ?? row.amount ?? 0) });
+  for (const row of adjustmentRows) {
+    const amount = Number(row.amount || 0);
+    const label = row.type === "opening" ? "Opening balance" : row.type === "add" ? "Adjustment (added)" : "Adjustment (deducted)";
+    movements.push({ date: row.date, kind: "adjustment", description: row.note ? `${label} — ${row.note}` : label, inAmount: row.type === "deduct" ? 0 : amount, outAmount: row.type === "deduct" ? amount : 0 });
+  }
+  return movements.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+export async function getCashFlowStatus(from: string, to: string) {
+  const [before, period] = await Promise.all([listCashMovements({ before: from }), listCashMovements({ from, to })]);
+  const round = (value: number) => Math.round(value * 1000) / 1000;
+  const sumOf = (rows: CashMovement[], pick: (row: CashMovement) => number) => round(rows.reduce((total, row) => total + pick(row), 0));
+  const openingBalance = sumOf(before, (row) => row.inAmount - row.outAmount);
+  const byKind = (kind: CashMovement["kind"], side: "inAmount" | "outAmount") => sumOf(period.filter((row) => row.kind === kind), (row) => row[side]);
+  const inflows = { tickets: byKind("tickets", "inAmount"), facilities: byKind("facilities", "inAmount"), otherRevenue: byKind("otherRevenue", "inAmount") };
+  const outflows = { expenses: byKind("expense", "outAmount"), capex: byKind("capex", "outAmount") };
+  const adjustments = { added: byKind("adjustment", "inAmount"), deducted: byKind("adjustment", "outAmount") };
+  const totalIn = round(inflows.tickets + inflows.facilities + inflows.otherRevenue);
+  const totalOut = round(outflows.expenses + outflows.capex);
+  const closingBalance = round(openingBalance + totalIn - totalOut + adjustments.added - adjustments.deducted);
+  return { from, to, openingBalance, inflows: { ...inflows, total: totalIn }, outflows: { ...outflows, total: totalOut }, adjustments, closingBalance, movements: period };
+}
+
+// ─── PRD Round 16, item 2: one-level category hierarchy ─────────────────────
+export async function assertValidCategoryParent(kind: "expense" | "revenue" | "asset", categoryId: number | undefined, parentId: number | null | undefined) {
+  if (parentId === undefined || parentId === null) return;
+  const table = kind === "expense" ? expenseCategories : kind === "revenue" ? revenueCategories : assetCategories;
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  if (categoryId !== undefined && parentId === categoryId) throw new Error("A category cannot be its own parent");
+  const parentRows = await db.select().from(table).where(eq(table.id, parentId)).limit(1);
+  const parent = parentRows[0];
+  if (!parent) throw new Error("The chosen main category was not found");
+  if (parent.parentId) throw new Error("Sub-categories can only be placed under a main category");
+  if (categoryId !== undefined) {
+    const children = await db.select({ id: table.id }).from(table).where(eq(table.parentId, categoryId)).limit(1);
+    if (children.length) throw new Error("This category has sub-categories of its own, so it can't become a sub-category");
+  }
+}
+
+// PRD Round 16, item 2: a report on one category — a main category covers
+// itself and all its sub-categories; a sub-category covers only itself.
+// Revenue also includes ticket sales, attributed through each ticket type's
+// own revenue category (the same per-line totals as the ticket breakdown).
+export async function getCategoryReport(kind: "expense" | "revenue" | "asset", categoryId: number, from?: string, to?: string) {
+  const db = await getDb(); if (!db) return { categoryIds: [], rows: [] };
+  const categoryTable = kind === "expense" ? expenseCategories : kind === "revenue" ? revenueCategories : assetCategories;
+  const children = await db.select({ id: categoryTable.id }).from(categoryTable).where(eq(categoryTable.parentId, categoryId));
+  const categoryIds = [categoryId, ...children.map((child) => child.id)];
+  const recordTable = kind === "expense" ? expenseRecords : kind === "revenue" ? revenueRecords : assetRecords;
+  const conditions: any[] = [inArray(recordTable.categoryId, categoryIds)];
+  if (from) conditions.push(sql`${recordTable.businessDate} >= ${from}`);
+  if (to) conditions.push(sql`${recordTable.businessDate} <= ${to}`);
+  const records = await db.select().from(recordTable).where(and(...conditions)).orderBy(desc(recordTable.businessDate), desc(recordTable.id));
+  const rows = records.map((record: any) => ({
+    date: String(record.businessDate instanceof Date ? record.businessDate.toISOString() : record.businessDate).slice(0, 10),
+    categoryName: record.categoryName,
+    description: record.description || record.payee || record.source || record.vendor || "",
+    amount: String(record.amount),
+    paidAmount: String(record.paidAmount ?? record.amount),
+    balanceAmount: String(record.balanceAmount ?? "0.000"),
+  }));
+  if (kind === "revenue") {
+    const ticketConditions: any[] = [eq(ticketPurchases.status, "issued"), inArray(ticketTypes.revenueCategoryId, categoryIds)];
+    if (from) ticketConditions.push(sql`${ticketPurchases.visitDate} >= ${from}`);
+    if (to) ticketConditions.push(sql`${ticketPurchases.visitDate} <= ${to}`);
+    const ticketRows = await db.select({
+      purchaseId: ticketPurchases.id,
+      date: sql<string>`DATE_FORMAT(${ticketPurchases.visitDate}, '%Y-%m-%d')`,
+      ticketTypeName: ticketTypes.name,
+      ticketCount: sql<number>`COUNT(*)`,
+      totalAmount: sql<string>`SUM(${ticketPurchaseLines.totalAmount})`,
+    })
+      .from(ticketPurchaseLines)
+      .innerJoin(ticketPurchases, eq(ticketPurchaseLines.purchaseId, ticketPurchases.id))
+      .innerJoin(ticketTypes, eq(ticketPurchaseLines.ticketTypeId, ticketTypes.id))
+      .where(and(...ticketConditions))
+      .groupBy(ticketPurchases.id, ticketPurchases.visitDate, ticketTypes.name);
+    for (const row of ticketRows) {
+      const amount = Number(row.totalAmount || 0).toFixed(3);
+      rows.push({ date: row.date, categoryName: row.ticketTypeName, description: `Ticket sale #${row.purchaseId} — ${row.ticketCount} × ${row.ticketTypeName}`, amount, paidAmount: amount, balanceAmount: "0.000" });
+    }
+    rows.sort((a, b) => b.date.localeCompare(a.date));
+  }
+  return { categoryIds, rows };
 }

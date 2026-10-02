@@ -41,7 +41,7 @@ export async function getUserByUsername(username: string) {
 
 export async function createLocalUser(data: {
   username: string; passwordHash: string; name: string; email?: string | null;
-  role: "staff" | "manager" | "admin" | "guard" | "super_admin" | "petty_cash";
+  role: "staff" | "manager" | "admin" | "guard" | "super_admin" | "petty_cash" | "cashier";
   mustChangePassword?: boolean; isActive?: boolean;
 }) {
   const db = await getDb(); if (!db) throw new Error("Database is not configured");
@@ -56,7 +56,7 @@ export async function createLocalUser(data: {
 }
 
 export async function updateLocalUser(id: number, data: Partial<{
-  name: string; email: string | null; role: "staff" | "manager" | "admin" | "guard" | "super_admin" | "petty_cash";
+  name: string; email: string | null; role: "staff" | "manager" | "admin" | "guard" | "super_admin" | "petty_cash" | "cashier";
   passwordHash: string; mustChangePassword: boolean; isActive: boolean; lastSignedIn: Date;
   username: string; openId: string;
 }>) {
@@ -495,7 +495,21 @@ export async function listUsers() {
   const db = await getDb(); if (!db) return [];
   return db.select().from(users).orderBy(users.name);
 }
-export async function updateUserRole(id: number, role: "staff" | "manager" | "admin" | "guard" | "super_admin" | "petty_cash") {
+export async function getUserById(id: number) {
+  const db = await getDb(); if (!db) return undefined;
+  const r = await db.select().from(users).where(eq(users.id, id)).limit(1);
+  return r[0];
+}
+// PRD Round 16, item 13: permanent deletion. Sessions go first so the
+// account can't be used between the two statements; historical records
+// that reference this user by id (createdBy, issuedBy, ...) are kept as-is
+// and simply show a "deleted user" fallback name.
+export async function deleteLocalUser(id: number) {
+  const db = await getDb(); if (!db) throw new Error("no db");
+  await db.delete(userSessions).where(eq(userSessions.userId, id));
+  await db.delete(users).where(eq(users.id, id));
+}
+export async function updateUserRole(id: number, role: "staff" | "manager" | "admin" | "guard" | "super_admin" | "petty_cash" | "cashier") {
   const db = await getDb(); if (!db) throw new Error("no db");
   await db.update(users).set({ role }).where(eq(users.id, id));
 }

@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { exportSpreadsheet } from "@/lib/spreadsheetExport";
 import { ArrowRightLeft, CircleDollarSign, Download, ListChecks, MinusCircle, PlusCircle, ReceiptText, TrendingDown, TrendingUp } from "lucide-react";
 import { toast } from "sonner";
 import { Field, MetricCard, PageHeader, PrimaryButton, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, cx } from "@/components/MarasiUI";
@@ -18,7 +19,8 @@ const blankExpenseForm = { businessDate: today(), categoryId: "", amount: "", pa
 const blankAdjustmentForm = { mode: "adjust" as "adjust" | "transfer", businessDate: today(), categoryId: "", toCategoryId: "", type: "add" as "add" | "deduct", amount: "", note: "" };
 const adjustmentTypeKeys: Record<string, TranslationKey> = { add: "finance.typeAdded", deduct: "finance.typeDeducted", transfer_out: "finance.typeTransferOut", transfer_in: "finance.typeTransferIn" };
 
-function exportCsv(filename: string, rows: string[][]) { const csv = rows.map((row) => row.map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`).join(",")).join("\n"); const blob = new Blob([csv], { type: "text/csv;charset=utf-8" }); const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; anchor.click(); URL.revokeObjectURL(url); }
+// PRD Round 16, item 15: a real Excel workbook, one value per column.
+const exportCsv = exportSpreadsheet;
 
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
