@@ -28,7 +28,7 @@ import {
   listTicketTypes, getTicketType, getTicketTypeByCode, createTicketType, updateTicketType, deleteTicketType, listVisitorCategories, createVisitorCategory, updateVisitorCategory, listTicketPrices, upsertTicketPrice,
   summariseTicketRevenueByType, summariseFacilityRevenueByType, listRevenueCategoryOptionsForRecording, describeSettingDependents,
   getSystemSettings, setResetAllDataToolEnabled, resetAllOperationalData,
-  listPayables, setRecordPaidAmount, listCashFlowAdjustments, createCashFlowAdjustment, deleteCashFlowAdjustment, getCashFlowStatus, assertValidCategoryParent, getCategoryReport,
+  listPayables, recordSettlement, listSettlementsFor, getSettledTotal, listCashFlowAdjustments, createCashFlowAdjustment, deleteCashFlowAdjustment, getCashFlowStatus, assertValidCategoryParent, getCategoryReport,
   listPartnerEntities, getPartnerEntity, createPartnerEntity, updatePartnerEntity, deletePartnerEntity,
   listPartnerDiscountRules, createPartnerDiscountRule, updatePartnerDiscountRule, deletePartnerDiscountRule, resolveActivePartnerDiscountRule,
   listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
@@ -271,6 +271,15 @@ function assertCanManageAccount(actor: { role: string }, target: { role: string 
 // Total (exactly how every transaction behaved before this round), and
 // Balance is always derived — never entered — so the three can't disagree.
 const nonNegativeMoney = z.string().regex(/^\d+(\.\d{1,3})?$/, "Enter an amount with up to three decimals");
+// An edit may correct a transaction's Paid amount, but never below what has
+// already been paid through later settlements (those payments happened).
+async function assertPaidCoversSettlements(type: "expense" | "revenue" | "asset", id: number, paidAmount: string) {
+  const settled = await getSettledTotal(type, id);
+  if (settled > 0 && Number(paidAmount) + 0.0005 < settled) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: `OMR ${settled.toFixed(3)} has already been paid against this transaction's balance, so its Paid amount can't be lower than that` });
+  }
+}
+
 function resolvePaidBalance(total: string, paid: string | undefined, existing?: { amount: string; paidAmount: string | null; balanceAmount: string }) {
   const totalMinor = moneyToMinor(total);
   let paidMinor: number;
@@ -1337,16 +1346,24 @@ export const platformRouter = router({
     payables: financeProcedure.query(() => listPayables()),
     // Raises (or lowers) only the Paid amount of one transaction — Finance
     // staff can settle a payable without full edit rights to the record.
+    // Records one payment against an outstanding Balance. The settlement
+    // date is captured automatically (today, Oman time) and is the date Cash
+    // Flow counts this payment on — never the transaction's original date.
     settlePayable: financeProcedure.input(z.object({
-      type: z.enum(["expense", "revenue", "asset"]), id: z.number().int().positive(), paidAmount: nonNegativeMoney,
+      type: z.enum(["expense", "revenue", "asset"]), id: z.number().int().positive(),
+      amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
     })).mutation(async ({ input, ctx }) => {
-      const existing = input.type === "expense" ? await getExpenseRecord(input.id) : input.type === "revenue" ? await getRevenueRecord(input.id) : await getAssetRecord(input.id);
-      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Transaction was not found" });
-      const { paidAmount, balanceAmount } = resolvePaidBalance(String(existing.amount), input.paidAmount);
-      await setRecordPaidAmount(input.type, input.id, paidAmount, balanceAmount);
-      await logActivity(ctx.user.id, `${input.type}.settle`, `${input.type}_record`, input.id, `paid ${paidAmount} / balance ${balanceAmount}`);
-      return { paidAmount, balanceAmount };
+      try {
+        const result = await recordSettlement(input.type, input.id, input.amount, ctx.user.id);
+        await logActivity(ctx.user.id, `${input.type}.settle`, `${input.type}_record`, input.id, `paid ${input.amount} on ${result.settlementDate} / balance ${result.balanceAmount}`);
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Payment could not be recorded";
+        throw new TRPCError({ code: message === "Transaction was not found" ? "NOT_FOUND" : "BAD_REQUEST", message });
+      }
     }),
+    payableSettlements: financeProcedure.input(z.object({ type: z.enum(["expense", "revenue", "asset"]), id: z.number().int().positive() }))
+      .query(({ input }) => listSettlementsFor(input.type, input.id)),
     // PRD Round 16, items 6/7/10: Cash Flow status (Finance Reports) plus the
     // Admin's opening balance / manual adjustments (Commercial Settings).
     cashFlow: router({
@@ -1457,6 +1474,7 @@ export const platformRouter = router({
         const existing = await getExpenseRecord(id);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Expense record was not found" });
         Object.assign(data, resolvePaidBalance(data.amount ?? String(existing.amount), paidAmount, existing as any));
+        await assertPaidCoversSettlements("expense", id, (data as any).paidAmount);
         const category = categoryId ? await getExpenseCategory(categoryId) : undefined;
         if (categoryId && !category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active expense category" });
         await updateExpenseRecord(id, { ...data, ...(category ? { categoryId, categoryName: category.name } : {}) } as any);
@@ -1541,6 +1559,7 @@ export const platformRouter = router({
         const existing = await getRevenueRecord(id);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Revenue record was not found" });
         Object.assign(data, resolvePaidBalance(data.amount ?? String(existing.amount), paidAmount, existing as any));
+        await assertPaidCoversSettlements("revenue", id, (data as any).paidAmount);
         const category = categoryId ? await getRevenueCategory(categoryId) : undefined;
         if (categoryId && !category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active revenue category" });
         await updateRevenueRecord(id, { ...data, ...(category ? { categoryId, categoryName: category.name } : {}) } as any);
@@ -1624,6 +1643,7 @@ export const platformRouter = router({
         const existing = await getAssetRecord(id);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Asset record was not found" });
         Object.assign(data, resolvePaidBalance(data.amount ?? String(existing.amount), paidAmount, existing as any));
+        await assertPaidCoversSettlements("asset", id, (data as any).paidAmount);
         const category = categoryId ? await getAssetCategory(categoryId) : undefined;
         if (categoryId && !category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active asset category" });
         await updateAssetRecord(id, { ...data, ...(category ? { categoryId, categoryName: category.name } : {}) } as any);

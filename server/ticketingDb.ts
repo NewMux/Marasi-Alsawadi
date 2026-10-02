@@ -4,7 +4,7 @@ import { alias } from "drizzle-orm/mysql-core";
 import {
   addonServices, assetAdjustments, assetCategories, assetRecords, attachments, expenseAdjustments, expenseCategories, expenseRecords, facilityBookingAddons, facilityBookings, facilityTypes, guests, partnerEntities, partnerDiscountRules, pettyCashAllocations, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
   serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers, ticketTypes, visitorCategories, ticketPrices,
-  ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries, users, systemSettings, cashFlowAdjustments,
+  ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries, users, systemSettings, cashFlowAdjustments, financeSettlements,
 } from "../drizzle/schema";
 import { getDb } from "./db";
 import { calculateOperationalNet, calculatePrdPurchasePricing, decideGateEntry, formatPrdTicketNumber, formatTicketNumber, minorToMoney, moneyToMinor, validateMixedPaymentBreakdown, type PrdDiscountTierInput, type PrdTicketLineInput } from "./ticketingRules";
@@ -1231,6 +1231,7 @@ export async function updateExpenseRecord(id: number, data: Partial<typeof expen
 export async function deleteExpenseRecord(id: number) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   await db.delete(expenseRecords).where(eq(expenseRecords.id, id));
+  await db.delete(financeSettlements).where(and(eq(financeSettlements.recordType, "expense"), eq(financeSettlements.recordId, id)));
 }
 
 // PRD Round 5: multiple attachments per expense/revenue/asset entry,
@@ -1332,6 +1333,7 @@ export async function updateRevenueRecord(id: number, data: Partial<typeof reven
 export async function deleteRevenueRecord(id: number) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   await db.delete(revenueRecords).where(eq(revenueRecords.id, id));
+  await db.delete(financeSettlements).where(and(eq(financeSettlements.recordType, "revenue"), eq(financeSettlements.recordId, id)));
 }
 
 // ─── Expense category adjustments (+/- and transfers) ──────────────────────
@@ -1533,6 +1535,7 @@ export async function updateAssetRecord(id: number, data: Partial<typeof assetRe
 export async function deleteAssetRecord(id: number) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   await db.delete(assetRecords).where(eq(assetRecords.id, id));
+  await db.delete(financeSettlements).where(and(eq(financeSettlements.recordType, "asset"), eq(financeSettlements.recordId, id)));
 }
 
 export async function listAssetAdjustments(from?: string, to?: string) {
@@ -1993,6 +1996,7 @@ export async function resetAllOperationalData(performedBy: number) {
     await tx.delete(ticketPurchases);
     await tx.delete(facilityBookingAddons);
     await tx.delete(facilityBookings);
+    await tx.delete(financeSettlements);
     await tx.delete(revenueRecords);
     await tx.delete(expenseRecords);
     await tx.delete(assetRecords);
@@ -2019,11 +2023,11 @@ export async function listPayables() {
   const db = await getDb(); if (!db) return [];
   const dateOf = (column: any) => sql<string>`DATE_FORMAT(${column}, '%Y-%m-%d')`;
   const [expenses, revenues, assets] = await Promise.all([
-    db.select({ id: expenseRecords.id, businessDate: dateOf(expenseRecords.businessDate), categoryName: expenseRecords.categoryName, description: expenseRecords.description, counterparty: expenseRecords.payee, amount: expenseRecords.amount, paidAmount: expenseRecords.paidAmount, balanceAmount: expenseRecords.balanceAmount })
+    db.select({ id: expenseRecords.id, businessDate: dateOf(expenseRecords.businessDate), categoryName: expenseRecords.categoryName, description: expenseRecords.description, counterparty: expenseRecords.payee, amount: expenseRecords.amount, paidAmount: expenseRecords.paidAmount, balanceAmount: expenseRecords.balanceAmount, lastSettlementDate: sql<string | null>`(SELECT DATE_FORMAT(MAX(fs.settlementDate), '%Y-%m-%d') FROM finance_settlements fs WHERE fs.recordType = 'expense' AND fs.recordId = ${sql.raw("`expense_records`.`id`")})` })
       .from(expenseRecords).where(sql`${expenseRecords.balanceAmount} > 0`),
-    db.select({ id: revenueRecords.id, businessDate: dateOf(revenueRecords.businessDate), categoryName: revenueRecords.categoryName, description: revenueRecords.description, counterparty: revenueRecords.source, amount: revenueRecords.amount, paidAmount: revenueRecords.paidAmount, balanceAmount: revenueRecords.balanceAmount })
+    db.select({ id: revenueRecords.id, businessDate: dateOf(revenueRecords.businessDate), categoryName: revenueRecords.categoryName, description: revenueRecords.description, counterparty: revenueRecords.source, amount: revenueRecords.amount, paidAmount: revenueRecords.paidAmount, balanceAmount: revenueRecords.balanceAmount, lastSettlementDate: sql<string | null>`(SELECT DATE_FORMAT(MAX(fs.settlementDate), '%Y-%m-%d') FROM finance_settlements fs WHERE fs.recordType = 'revenue' AND fs.recordId = ${sql.raw("`revenue_records`.`id`")})` })
       .from(revenueRecords).where(sql`${revenueRecords.balanceAmount} > 0`),
-    db.select({ id: assetRecords.id, businessDate: dateOf(assetRecords.businessDate), categoryName: assetRecords.categoryName, description: assetRecords.description, counterparty: assetRecords.vendor, amount: assetRecords.amount, paidAmount: assetRecords.paidAmount, balanceAmount: assetRecords.balanceAmount })
+    db.select({ id: assetRecords.id, businessDate: dateOf(assetRecords.businessDate), categoryName: assetRecords.categoryName, description: assetRecords.description, counterparty: assetRecords.vendor, amount: assetRecords.amount, paidAmount: assetRecords.paidAmount, balanceAmount: assetRecords.balanceAmount, lastSettlementDate: sql<string | null>`(SELECT DATE_FORMAT(MAX(fs.settlementDate), '%Y-%m-%d') FROM finance_settlements fs WHERE fs.recordType = 'asset' AND fs.recordId = ${sql.raw("`asset_records`.`id`")})` })
       .from(assetRecords).where(sql`${assetRecords.balanceAmount} > 0`),
   ]);
   return [
@@ -2033,13 +2037,56 @@ export async function listPayables() {
   ].sort((a, b) => b.businessDate.localeCompare(a.businessDate) || b.id - a.id);
 }
 
-// Settling only ever changes Paid/Balance — Total, category, date and the
-// linked finance entry are untouched, so the Financial Status report (which
-// counts Totals) doesn't move; only Cash Flow and the Payable list do.
-export async function setRecordPaidAmount(type: "expense" | "revenue" | "asset", id: number, paidAmount: string, balanceAmount: string) {
+// The resort's own calendar day (Oman, UTC+4) — a payment recorded just
+// after midnight belongs to the new day, not to UTC's previous one.
+export function businessToday(now = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Muscat", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+}
+
+const recordTableFor = (type: "expense" | "revenue" | "asset") => type === "expense" ? expenseRecords : type === "revenue" ? revenueRecords : assetRecords;
+
+// Round 16 follow-up: settling a Balance records the payment itself, dated
+// automatically to the day it is entered (the settlement date), and raises
+// the transaction's Paid / lowers its Balance in the same database
+// transaction. Total, category, date and the linked finance entry are never
+// touched, so Financial Status (which counts Totals) doesn't move — and Cash
+// Flow counts this payment on its settlement date, so an earlier, closed
+// period's Cash Flow stays exactly as it was reported.
+export async function recordSettlement(type: "expense" | "revenue" | "asset", id: number, amount: string, createdBy: number) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
-  const table = type === "expense" ? expenseRecords : type === "revenue" ? revenueRecords : assetRecords;
-  await db.update(table).set({ paidAmount, balanceAmount } as any).where(eq(table.id, id));
+  const table = recordTableFor(type);
+  return db.transaction(async (tx) => {
+    const [record] = await tx.select().from(table).where(eq(table.id, id)).for("update");
+    if (!record) throw new Error("Transaction was not found");
+    const totalMinor = moneyToMinor(String(record.amount));
+    const paidMinor = moneyToMinor(String(record.paidAmount ?? record.amount));
+    const payMinor = moneyToMinor(amount);
+    if (payMinor <= 0) throw new Error("Enter a payment amount");
+    if (paidMinor + payMinor > totalMinor) throw new Error("This payment is more than the balance still owed");
+    const paidAmount = minorToMoney(paidMinor + payMinor);
+    const balanceAmount = minorToMoney(totalMinor - paidMinor - payMinor);
+    const settlementDate = businessToday();
+    await tx.update(table).set({ paidAmount, balanceAmount } as any).where(eq(table.id, id));
+    await tx.insert(financeSettlements).values({ recordType: type, recordId: id, amount: minorToMoney(payMinor), settlementDate: settlementDate as any, createdBy });
+    return { paidAmount, balanceAmount, settlementDate };
+  });
+}
+
+export async function listSettlementsFor(type: "expense" | "revenue" | "asset", id: number) {
+  const db = await getDb(); if (!db) return [];
+  return db.select({ id: financeSettlements.id, amount: financeSettlements.amount, settlementDate: sql<string>`DATE_FORMAT(${financeSettlements.settlementDate}, '%Y-%m-%d')`, createdBy: financeSettlements.createdBy, createdByName: users.name, createdAt: financeSettlements.createdAt })
+    .from(financeSettlements).leftJoin(users, eq(users.id, financeSettlements.createdBy))
+    .where(and(eq(financeSettlements.recordType, type), eq(financeSettlements.recordId, id)))
+    .orderBy(desc(financeSettlements.settlementDate), desc(financeSettlements.id));
+}
+
+/** Total already paid through later settlements — an edit may never set a
+ * transaction's Paid below this, or those payments would be undone. */
+export async function getSettledTotal(type: "expense" | "revenue" | "asset", id: number) {
+  const db = await getDb(); if (!db) return 0;
+  const [row] = await db.select({ total: sql<string>`COALESCE(SUM(${financeSettlements.amount}), 0)` }).from(financeSettlements)
+    .where(and(eq(financeSettlements.recordType, type), eq(financeSettlements.recordId, id)));
+  return Number(row?.total || 0);
 }
 
 // ─── PRD Round 16, items 6/7/10: Cash Flow ─────────────────────────────────
@@ -2049,6 +2096,8 @@ export async function setRecordPaidAmount(type: "expense" | "revenue" | "asset",
 //     linked revenue record, otherwise its full amount
 //   − every Expense finance entry at its linked record's PAID amount
 //   − every Capital Expenditure record's PAID amount
+//   (in each case less any later payments — see below)
+//   ± each later payment against a Balance, on its own settlement date
 //   ± the Admin's opening balance and manual adjustments (Commercial Settings)
 // Records created before Round 16 are fully paid (backfilled), so for them
 // paid = amount and this matches the Financial Status totals exactly.
@@ -2084,27 +2133,48 @@ async function listCashMovements(range: { before?: string; from?: string; to?: s
   // balance is the single figure for the cash position at go-live, so they
   // are left out here rather than counted twice.
   const notOpening = (column: any) => sql`(${column} IS NULL OR ${column} NOT LIKE 'Opening balance%')`;
-  const [revenueRows, expenseRows, assetRows, adjustmentRows] = await Promise.all([
-    db.select({ date: dateOf(financeEntries.date), description: financeEntries.description, referenceType: financeEntries.referenceType, amount: financeEntries.amount, linkedPaid: revenueRecords.paidAmount, linkedAmount: revenueRecords.amount })
+  // Payments made later against a Balance are counted on their own
+  // settlement date (below), so a transaction's own date carries only what
+  // was paid when it was recorded: Paid minus everything settled since.
+  // The record table is named explicitly: in a single-table select Drizzle
+  // renders a bare `id`, which inside this subquery would bind to fs.id.
+  const settledFor = (type: "expense" | "revenue" | "asset") =>
+    sql<string>`(SELECT COALESCE(SUM(fs.amount), 0) FROM finance_settlements fs WHERE fs.recordType = ${type} AND fs.recordId = ${sql.raw(`\`${type}_records\`.\`id\``)})`;
+  const settlementJoin = (type: "expense" | "revenue" | "asset") => and(eq(financeSettlements.recordType, type), within(financeSettlements.settlementDate));
+  const [revenueRows, expenseRows, assetRows, adjustmentRows, revenueSettlements, expenseSettlements, assetSettlements] = await Promise.all([
+    db.select({ date: dateOf(financeEntries.date), description: financeEntries.description, referenceType: financeEntries.referenceType, amount: financeEntries.amount, linkedPaid: revenueRecords.paidAmount, linkedAmount: revenueRecords.amount, settled: settledFor("revenue") })
       .from(financeEntries).leftJoin(revenueRecords, eq(revenueRecords.financeEntryId, financeEntries.id))
       .where(and(eq(financeEntries.type, "revenue"), within(financeEntries.date), notOpening(financeEntries.description))),
-    db.select({ date: dateOf(financeEntries.date), description: financeEntries.description, amount: financeEntries.amount, linkedPaid: expenseRecords.paidAmount, linkedAmount: expenseRecords.amount })
+    db.select({ date: dateOf(financeEntries.date), description: financeEntries.description, amount: financeEntries.amount, linkedPaid: expenseRecords.paidAmount, linkedAmount: expenseRecords.amount, settled: settledFor("expense") })
       .from(financeEntries).leftJoin(expenseRecords, eq(expenseRecords.financeEntryId, financeEntries.id))
       .where(and(eq(financeEntries.type, "expense"), within(financeEntries.date), notOpening(financeEntries.description))),
-    db.select({ date: dateOf(assetRecords.businessDate), description: assetRecords.description, amount: assetRecords.amount, paidAmount: assetRecords.paidAmount })
+    db.select({ date: dateOf(assetRecords.businessDate), description: assetRecords.description, amount: assetRecords.amount, paidAmount: assetRecords.paidAmount, settled: settledFor("asset") })
       .from(assetRecords).where(and(within(assetRecords.businessDate), notOpening(assetRecords.description))),
     db.select({ date: dateOf(cashFlowAdjustments.businessDate), type: cashFlowAdjustments.type, amount: cashFlowAdjustments.amount, note: cashFlowAdjustments.note })
       .from(cashFlowAdjustments).where(within(cashFlowAdjustments.businessDate)),
+    db.select({ date: dateOf(financeSettlements.settlementDate), amount: financeSettlements.amount, description: revenueRecords.description, referenceType: financeEntries.referenceType })
+      .from(financeSettlements).innerJoin(revenueRecords, eq(revenueRecords.id, financeSettlements.recordId))
+      .leftJoin(financeEntries, eq(financeEntries.id, revenueRecords.financeEntryId))
+      .where(and(settlementJoin("revenue"), notOpening(revenueRecords.description))),
+    db.select({ date: dateOf(financeSettlements.settlementDate), amount: financeSettlements.amount, description: expenseRecords.description })
+      .from(financeSettlements).innerJoin(expenseRecords, eq(expenseRecords.id, financeSettlements.recordId))
+      .where(and(settlementJoin("expense"), notOpening(expenseRecords.description))),
+    db.select({ date: dateOf(financeSettlements.settlementDate), amount: financeSettlements.amount, description: assetRecords.description })
+      .from(financeSettlements).innerJoin(assetRecords, eq(assetRecords.id, financeSettlements.recordId))
+      .where(and(settlementJoin("asset"), notOpening(assetRecords.description))),
   ]);
-  const paidOf = (linkedPaid: unknown, linkedAmount: unknown, entryAmount: unknown) =>
-    Number(linkedPaid ?? linkedAmount ?? entryAmount ?? 0);
+  const paidOf = (linkedPaid: unknown, linkedAmount: unknown, entryAmount: unknown, settled: unknown = 0) =>
+    Math.round((Number(linkedPaid ?? linkedAmount ?? entryAmount ?? 0) - Number(settled || 0)) * 1000) / 1000;
+  const revenueKind = (referenceType: unknown): CashMovement["kind"] => referenceType === "prd_ticket_purchase" ? "tickets" : referenceType === "facility_booking" || referenceType === "facility_booking_addon" ? "facilities" : "otherRevenue";
   const movements: CashMovement[] = [];
   for (const row of revenueRows) {
-    const kind = row.referenceType === "prd_ticket_purchase" ? "tickets" : row.referenceType === "facility_booking" || row.referenceType === "facility_booking_addon" ? "facilities" : "otherRevenue";
-    movements.push({ date: row.date, kind, description: row.description || "", inAmount: paidOf(row.linkedPaid, row.linkedAmount, row.amount), outAmount: 0 });
+    movements.push({ date: row.date, kind: revenueKind(row.referenceType), description: row.description || "", inAmount: paidOf(row.linkedPaid, row.linkedAmount, row.amount, row.settled), outAmount: 0 });
   }
-  for (const row of expenseRows) movements.push({ date: row.date, kind: "expense", description: row.description || "", inAmount: 0, outAmount: paidOf(row.linkedPaid, row.linkedAmount, row.amount) });
-  for (const row of assetRows) movements.push({ date: row.date, kind: "capex", description: row.description || "", inAmount: 0, outAmount: Number(row.paidAmount ?? row.amount ?? 0) });
+  for (const row of expenseRows) movements.push({ date: row.date, kind: "expense", description: row.description || "", inAmount: 0, outAmount: paidOf(row.linkedPaid, row.linkedAmount, row.amount, row.settled) });
+  for (const row of assetRows) movements.push({ date: row.date, kind: "capex", description: row.description || "", inAmount: 0, outAmount: paidOf(row.paidAmount, row.amount, 0, row.settled) });
+  for (const row of revenueSettlements) movements.push({ date: row.date, kind: revenueKind(row.referenceType), description: `${row.description || ""} — balance received`, inAmount: Number(row.amount || 0), outAmount: 0 });
+  for (const row of expenseSettlements) movements.push({ date: row.date, kind: "expense", description: `${row.description || ""} — balance paid`, inAmount: 0, outAmount: Number(row.amount || 0) });
+  for (const row of assetSettlements) movements.push({ date: row.date, kind: "capex", description: `${row.description || ""} — balance paid`, inAmount: 0, outAmount: Number(row.amount || 0) });
   for (const row of adjustmentRows) {
     const amount = Number(row.amount || 0);
     const label = row.type === "opening" ? "Opening balance" : row.type === "add" ? "Adjustment (added)" : "Adjustment (deducted)";

@@ -54,6 +54,7 @@ const MIGRATION_FILES = [
   "drizzle/migrations/0042_paid_balance_amounts.sql",
   "drizzle/migrations/0043_cash_flow_adjustments.sql",
   "drizzle/migrations/0044_cashier_role.sql",
+  "drizzle/migrations/0045_finance_settlements.sql",
 ];
 
 // A schema-object-already-exists error (duplicate column/key/table) from a

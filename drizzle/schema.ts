@@ -868,6 +868,20 @@ export const cashFlowAdjustments = mysqlTable("cash_flow_adjustments", {
 });
 export type CashFlowAdjustment = typeof cashFlowAdjustments.$inferSelect;
 
+// Round 16 follow-up: one row per payment made against an outstanding
+// Balance — the settlement date is when the cash actually moved, which is
+// the date Cash Flow counts that payment on.
+export const financeSettlements = mysqlTable("finance_settlements", {
+  id: int("id").autoincrement().primaryKey(),
+  recordType: mysqlEnum("recordType", ["expense", "revenue", "asset"]).notNull(),
+  recordId: int("recordId").notNull(),
+  amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
+  settlementDate: date("settlementDate").notNull(),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type FinanceSettlement = typeof financeSettlements.$inferSelect;
+
 export const facilityBookingAddons = mysqlTable("facility_booking_addons", {
   id: int("id").autoincrement().primaryKey(),
   bookingId: int("bookingId").notNull(),
