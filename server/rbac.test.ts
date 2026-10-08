@@ -39,6 +39,19 @@ describe("Commercial Settings configuration boundary", () => {
     await expectForbidden(caller.platform.settings.systemReset.execute({ confirmationPhrase: "RESET" }));
   });
 
+  // PRD Round 17, item 5.4: restore requests are Super-Admin-only to file,
+  // and only NewMux support accounts may change their status — never the
+  // client's own Super Admin.
+  it("keeps Backup & Restore requests to Super Admins and status changes to NewMux support", async () => {
+    for (const user of [staff, manager, admin, guard, cashier]) {
+      const caller = callerFor(user);
+      await expectForbidden(caller.platform.settings.dataRestore.list());
+      await expectForbidden(caller.platform.settings.dataRestore.create({ restorePoint: "2026-01-01T09:00", reason: "Wrong records deleted" }));
+    }
+    const clientSuperAdmin = callerFor({ id: 7, role: "super_admin", name: "Owner", username: "owner", passwordHash: null });
+    await expectForbidden(clientSuperAdmin.platform.settings.dataRestore.updateStatus({ id: 1, status: "completed" }));
+  });
+
   it("never lets Admin Operations create a Super Admin account", async () => {
     const caller = callerFor(admin);
     await expectForbidden(caller.platform.admin.createUser({ username: "owner2", name: "Second Owner", role: "super_admin", temporaryPassword: "temporary-password-123" }));

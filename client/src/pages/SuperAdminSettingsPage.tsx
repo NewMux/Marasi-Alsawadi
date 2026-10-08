@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { DateField, Field as UiField, formatDateDmy, PageHeader, PrimaryButton, SelectField, Surface, TextField, toIsoDateString, cx as join } from "@/components/MarasiUI";
-import { AlertTriangle, Building2, Download, Landmark, ListChecks, Package, Printer, ReceiptText, ShieldCheck, Ticket, TrendingUp, Users, X } from "lucide-react";
+import { AlertTriangle, Building2, DatabaseBackup, Download, Landmark, ListChecks, Package, Printer, ReceiptText, ShieldCheck, Ticket, TrendingUp, Users, X } from "lucide-react";
 import { printReport, ReportDocument, ReportSection, ReportTable } from "@/components/PrintableReport";
 import { exportSpreadsheet } from "@/lib/spreadsheetExport";
 import { useState } from "react";
@@ -13,7 +13,7 @@ import { useT, type TranslationKey } from "@/lib/i18n";
 const money = (value: unknown) => `OMR ${Number(value || 0).toFixed(3)}`;
 const today = new Date().toISOString().slice(0, 10);
 const OPENING_BALANCE_MARKER = "Opening balance";
-type Tab = "pricing" | "categoryPricing" | "fees" | "discounts" | "partnerEntities" | "facilityTypes" | "facilityCategories" | "addonServices" | "categories" | "revenueCategories" | "assetCategories" | "opening" | "users" | "audit" | "dangerZone";
+type Tab = "pricing" | "categoryPricing" | "fees" | "discounts" | "partnerEntities" | "facilityTypes" | "facilityCategories" | "addonServices" | "categories" | "revenueCategories" | "assetCategories" | "opening" | "users" | "audit" | "dangerZone" | "backup";
 type Role = "staff" | "manager" | "admin" | "guard" | "super_admin" | "petty_cash" | "cashier";
 const STREAM_KEYS: Record<string, TranslationKey> = { rooms: "reports.streamRooms", aqua_park: "reports.streamAquaPark", fnb: "reports.streamFnb", extras: "reports.streamExtras" };
 
@@ -107,9 +107,23 @@ export default function SuperAdminSettingsPage() {
   ].sort((a, b) => String(b.date).localeCompare(String(a.date)));
   const { data: allAssetRecords = [] } = trpc.platform.finance.assets.list.useQuery(undefined, { enabled: tab === "opening" });
   const capexOpeningBalances = (allAssetRecords as any[]).filter((entry) => String(entry.description || "").startsWith(OPENING_BALANCE_MARKER)).sort((a, b) => String(b.businessDate).localeCompare(String(a.businessDate)));
-  const { data: cashFlowAdjustments = [] } = trpc.platform.finance.cashFlow.adjustments.useQuery(undefined, { enabled: tab === "opening" });
+  const { data: cashFlowAdjustmentRows = [] } = trpc.platform.finance.cashFlow.adjustments.useQuery(undefined, { enabled: tab === "opening" });
+  // The API returns { adjustment, createdByName } rows; this list (and its
+  // Remove button) needs the adjustment's own fields — reading them off the
+  // wrapper showed every entry as 0.000 and sent no id to remove.
+  const cashFlowAdjustments = (cashFlowAdjustmentRows as any[]).map((row: any) => ({ ...(row.adjustment ?? row), createdByName: row.createdByName ?? null }));
   const expenseOpeningBalances = [...(expenseRecords as any[])].sort((a, b) => String(b.businessDate).localeCompare(String(a.businessDate)));
   const { data: systemResetSettings } = trpc.platform.settings.systemReset.get.useQuery(undefined, { enabled: isSuperAdmin });
+  // PRD Round 17, item 5.4: Backup & Restore.
+  const { data: restoreData } = trpc.platform.settings.dataRestore.list.useQuery(undefined, { enabled: isSuperAdmin && tab === "backup" });
+  const [restoreForm, setRestoreForm] = useState({ restorePoint: "", reason: "" });
+  const [restoreNotes, setRestoreNotes] = useState<Record<number, string>>({});
+  const refreshRestore = () => utils.platform.settings.dataRestore.list.invalidate();
+  const restoreCreate = trpc.platform.settings.dataRestore.create.useMutation({ onSuccess: () => { refreshRestore(); setRestoreForm({ restorePoint: "", reason: "" }); toast.success(t("backup.requestSent")); }, onError: (error) => toast.error(error.message) });
+  const restoreCancel = trpc.platform.settings.dataRestore.cancel.useMutation({ onSuccess: () => { refreshRestore(); toast.success(t("backup.requestCancelled")); }, onError: (error) => toast.error(error.message) });
+  const restoreUpdate = trpc.platform.settings.dataRestore.updateStatus.useMutation({ onSuccess: () => { refreshRestore(); toast.success(t("backup.statusSaved")); }, onError: (error) => toast.error(error.message) });
+  const restoreStatusLabel = (status: string) => ({ pending: t("backup.statusPending"), in_progress: t("backup.statusInProgress"), completed: t("backup.statusCompleted"), rejected: t("backup.statusRejected"), cancelled: t("backup.statusCancelled") } as Record<string, string>)[status] ?? status;
+  const omanDateTime = (value: unknown) => { const date = new Date(value as string); return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("en-GB", { timeZone: "Asia/Muscat", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); };
   const resetToolEnabled = systemResetSettings?.resetAllDataToolEnabled ?? true;
   const setResetToolEnabled = trpc.platform.settings.systemReset.setToolEnabled.useMutation({
     onSuccess: () => { utils.platform.settings.systemReset.get.invalidate(); toast.success(t("settings.resetToolStateSaved")); },
@@ -230,6 +244,7 @@ export default function SuperAdminSettingsPage() {
     { id: "users", label: t("settings.tabUsers"), icon: Users },
     ...(isSuperAdmin ? [
       { id: "audit" as Tab, label: t("settings.tabAudit"), icon: ShieldCheck },
+      { id: "backup" as Tab, label: t("backup.tab"), icon: DatabaseBackup },
       { id: "dangerZone" as Tab, label: t("settings.tabDangerZone"), icon: AlertTriangle },
     ] : []),
   ];
@@ -557,6 +572,47 @@ export default function SuperAdminSettingsPage() {
 
     {tab === "audit" && <Card><h2 className="font-serif text-2xl tracking-[-.035em]">{t("settings.configAuditTrail")}</h2><p className="mt-2 text-xs leading-5 text-muted">{t("settings.recentChangesHint")}</p><div className="mt-5 overflow-hidden rounded-2xl border border-divider"><div className="grid grid-cols-[1fr_.8fr_.7fr] gap-3 bg-well px-4 py-2 text-[10px] font-semibold uppercase tracking-wide text-subtle"><span>{t("settings.actionCol")}</span><span>{t("settings.userCol")}</span><span>{t("settings.whenCol")}</span></div>{activity.map((entry: any) => <div key={entry.l.id} className="grid grid-cols-[1fr_.8fr_.7fr] gap-3 border-t border-divider px-4 py-3 text-xs"><div><b className="font-medium text-ink">{entry.l.action}</b><div className="mt-1 truncate text-subtle">{entry.l.details || entry.l.entityType || "—"}</div></div><span className="text-muted">{entry.u?.name || t("settings.systemFallback")}</span><span className="text-muted">{new Date(entry.l.createdAt).toLocaleString()}</span></div>)}</div></Card>}
 
+    {tab === "backup" && <div className="grid gap-6 xl:grid-cols-2">
+      <Card>
+        <h2 className="font-serif text-2xl tracking-[-.035em]">{t("backup.downloadTitle")}</h2>
+        <p className="mt-2 text-xs leading-5 text-muted">{t("backup.downloadHint")}</p>
+        <a href="/api/backup" className="mt-5 inline-flex items-center rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white hover:opacity-90"><Download size={15} className="mr-2"/>{t("backup.downloadButton")}</a>
+        <p className="mt-3 text-[11px] leading-4 text-subtle">{t("backup.downloadNote")}</p>
+      </Card>
+      <Card>
+        <h2 className="font-serif text-2xl tracking-[-.035em]">{t("backup.requestTitle")}</h2>
+        <p className="mt-2 text-xs leading-5 text-muted">{t("backup.requestHint")}</p>
+        <div className="mt-5 grid gap-4">
+          <Field label={t("backup.restorePoint")} hint={t("backup.restorePointHint")}><Input type="datetime-local" max={new Date(Date.now() + 4 * 3600 * 1000).toISOString().slice(0, 16)} value={restoreForm.restorePoint} onChange={(e) => setRestoreForm({ ...restoreForm, restorePoint: e.target.value })}/></Field>
+          <Field label={t("backup.reason")}><textarea value={restoreForm.reason} onChange={(e) => setRestoreForm({ ...restoreForm, reason: e.target.value })} rows={3} className="w-full rounded-xl border border-line bg-white px-3.5 py-2.5 text-sm outline-none focus:border-accent"/></Field>
+        </div>
+        <Button className="mt-5 rounded-full bg-accent text-white" disabled={restoreCreate.isPending} onClick={() => {
+          if (!restoreForm.restorePoint) return toast.error(t("backup.chooseRestorePoint"));
+          if (restoreForm.reason.trim().length < 5) return toast.error(t("backup.addReason"));
+          if (!window.confirm(t("backup.confirmRequest"))) return;
+          restoreCreate.mutate({ restorePoint: restoreForm.restorePoint, reason: restoreForm.reason.trim() });
+        }}>{t("backup.requestButton")}</Button>
+      </Card>
+      <Card className="xl:col-span-2">
+        <h2 className="font-serif text-2xl tracking-[-.035em]">{t("backup.requestsTitle")}</h2>
+        <p className="mt-2 text-xs leading-5 text-muted">{restoreData?.canManage ? t("backup.requestsHintSupport") : t("backup.requestsHint")}</p>
+        <div className="mt-4 divide-y divide-divider">{restoreData?.requests.length ? restoreData.requests.map((request: any) => <div key={request.id} className="grid gap-3 py-4 md:grid-cols-[1fr_auto] md:items-start">
+          <div className="min-w-0 text-xs">
+            <div className="flex flex-wrap items-center gap-2"><b className="text-sm">{t("backup.restoreTo", { date: omanDateTime(request.restorePoint) })}</b><span className={join("rounded-full px-2 py-0.5 text-[10px] font-semibold", request.status === "completed" ? "bg-success-bg text-success" : request.status === "rejected" || request.status === "cancelled" ? "bg-danger-bg text-danger" : "bg-warning-bg text-warning")}>{restoreStatusLabel(request.status)}</span></div>
+            <div className="mt-1 text-muted">{t("backup.requestedBy", { name: request.requestedByName || "—", date: omanDateTime(request.createdAt) })}</div>
+            <div className="mt-1.5 whitespace-pre-wrap text-body">{request.reason}</div>
+            {request.handledNote && <div className="mt-1.5 rounded-lg bg-well px-2.5 py-1.5 text-muted"><b>{t("backup.newmuxNote")}</b> {request.handledNote}{request.handledByName ? ` — ${request.handledByName}` : ""}</div>}
+          </div>
+          <div className="flex flex-wrap items-center gap-2 md:justify-end">
+            {request.status === "pending" && <Button size="sm" variant="outline" onClick={() => window.confirm(t("backup.confirmCancel")) && restoreCancel.mutate({ id: request.id })}>{t("backup.cancelRequest")}</Button>}
+            {restoreData.canManage && request.status !== "cancelled" && <>
+              <Input placeholder={t("backup.notePlaceholder")} value={restoreNotes[request.id] ?? ""} onChange={(e) => setRestoreNotes({ ...restoreNotes, [request.id]: e.target.value })} className="w-48"/>
+              <Select value={request.status} onChange={(e) => restoreUpdate.mutate({ id: request.id, status: e.target.value as any, note: restoreNotes[request.id] || undefined })} className="w-40"><option value="pending">{t("backup.statusPending")}</option><option value="in_progress">{t("backup.statusInProgress")}</option><option value="completed">{t("backup.statusCompleted")}</option><option value="rejected">{t("backup.statusRejected")}</option></Select>
+            </>}
+          </div>
+        </div>) : <p className="py-6 text-center text-sm text-muted">{t("backup.noRequests")}</p>}</div>
+      </Card>
+    </div>}
     {tab === "dangerZone" && <div className="grid gap-6 xl:grid-cols-[.9fr_1.1fr]">
       <Card className="border-2 border-danger/30">
         <div className="flex items-start gap-3"><AlertTriangle size={22} className="mt-0.5 shrink-0 text-danger"/><div><h2 className="font-serif text-2xl tracking-[-.035em] text-danger">{t("settings.resetAllDataTitle")}</h2><p className="mt-2 text-xs leading-5 text-muted">{t("settings.resetAllDataHint")}</p></div></div>

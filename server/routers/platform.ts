@@ -51,6 +51,7 @@ import {
 } from "../ticketingDb";
 import { applyFacilityDiscount, calculateFacilityFees, calculateFacilityLineAmount, calculateFacilityVat, calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE, minorToMoney, moneyToMinor, percentageToBasisPoints } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
+import { createRestoreRequest, getRestoreRequest, isRestoreSupportUser, listRestoreRequests, updateRestoreRequest } from "../backup";
 import { publicTicketUrl, requestOrigin } from "../ticketUrl";
 import { deleteAttachmentFile, isAllowedAttachmentMimeType, saveExpenseAttachment } from "../attachments";
 
@@ -436,6 +437,48 @@ export const platformRouter = router({
     // a persisted enabled flag (disabled automatically after use, per the
     // client's explicit request to keep the tool intact for a future
     // season) and a typed "RESET" confirmation phrase.
+    // PRD Round 17, item 5.4: "Request Data Restore". The client's Super
+    // Admin files a request for a point in time; it is never executed by the
+    // app. NewMux (accounts listed in NEWMUX_SUPPORT_USERNAMES on the server)
+    // works the queue in-app and performs the actual restore server-side.
+    dataRestore: router({
+      list: protectedProcedure.query(async ({ ctx }) => {
+        const support = isRestoreSupportUser(ctx.user);
+        if (ctx.user.role !== "super_admin" && !support) throw new TRPCError({ code: "FORBIDDEN", message: "Super Admin required" });
+        return { requests: await listRestoreRequests(), canManage: support };
+      }),
+      create: superAdminProcedure.input(z.object({
+        restorePoint: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, "Choose the date and time to restore to"),
+        reason: z.string().trim().min(5, "Say briefly why the restore is needed").max(2000),
+      })).mutation(async ({ input, ctx }) => {
+        // Entered as the resort's local time (Oman, UTC+4).
+        const restorePoint = new Date(`${input.restorePoint}:00+04:00`);
+        if (Number.isNaN(restorePoint.getTime())) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose a valid date and time" });
+        if (restorePoint.getTime() > Date.now()) throw new TRPCError({ code: "BAD_REQUEST", message: "The restore point must be in the past" });
+        const request = await createRestoreRequest({ restorePoint, reason: input.reason, requestedBy: ctx.user.id });
+        await logActivity(ctx.user.id, "data_restore.request", "data_restore_request", request.id, `${input.restorePoint} (Oman time)`);
+        return request;
+      }),
+      cancel: superAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+        const request = await getRestoreRequest(input.id);
+        if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "Restore request was not found" });
+        if (request.status !== "pending") throw new TRPCError({ code: "BAD_REQUEST", message: "Only a request NewMux hasn't started yet can be cancelled" });
+        const updated = await updateRestoreRequest(input.id, { status: "cancelled" });
+        await logActivity(ctx.user.id, "data_restore.cancel", "data_restore_request", input.id);
+        return updated;
+      }),
+      updateStatus: protectedProcedure.input(z.object({
+        id: z.number().int().positive(), status: z.enum(["pending", "in_progress", "completed", "rejected"]), note: z.string().max(2000).optional(),
+      })).mutation(async ({ input, ctx }) => {
+        if (!isRestoreSupportUser(ctx.user)) throw new TRPCError({ code: "FORBIDDEN", message: "Only NewMux support can update a restore request" });
+        const request = await getRestoreRequest(input.id);
+        if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "Restore request was not found" });
+        if (request.status === "cancelled") throw new TRPCError({ code: "BAD_REQUEST", message: "This request was cancelled by the client" });
+        const updated = await updateRestoreRequest(input.id, { status: input.status, handledBy: ctx.user.id, handledNote: input.note?.trim() || request.handledNote || null });
+        await logActivity(ctx.user.id, "data_restore.status", "data_restore_request", input.id, input.status);
+        return updated;
+      }),
+    }),
     systemReset: router({
       get: superAdminProcedure.query(async () => {
         const settings = await getSystemSettings();
