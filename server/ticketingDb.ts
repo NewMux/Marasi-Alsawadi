@@ -2127,7 +2127,7 @@ const recordTableFor = (type: "expense" | "revenue" | "asset") => type === "expe
 // touched, so Financial Status (which counts Totals) doesn't move — and Cash
 // Flow counts this payment on its settlement date, so an earlier, closed
 // period's Cash Flow stays exactly as it was reported.
-export async function recordSettlement(type: "expense" | "revenue" | "asset", id: number, amount: string, createdBy: number) {
+export async function recordSettlement(type: "expense" | "revenue" | "asset", id: number, amount: string, createdBy: number, paymentAccount: "cash" | "bank" = "cash") {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   const table = recordTableFor(type);
   return db.transaction(async (tx) => {
@@ -2142,14 +2142,14 @@ export async function recordSettlement(type: "expense" | "revenue" | "asset", id
     const balanceAmount = minorToMoney(totalMinor - paidMinor - payMinor);
     const settlementDate = businessToday();
     await tx.update(table).set({ paidAmount, balanceAmount } as any).where(eq(table.id, id));
-    await tx.insert(financeSettlements).values({ recordType: type, recordId: id, amount: minorToMoney(payMinor), settlementDate: settlementDate as any, createdBy });
+    await tx.insert(financeSettlements).values({ recordType: type, recordId: id, amount: minorToMoney(payMinor), settlementDate: settlementDate as any, paymentAccount, createdBy });
     return { paidAmount, balanceAmount, settlementDate };
   });
 }
 
 export async function listSettlementsFor(type: "expense" | "revenue" | "asset", id: number) {
   const db = await getDb(); if (!db) return [];
-  return db.select({ id: financeSettlements.id, amount: financeSettlements.amount, settlementDate: sql<string>`DATE_FORMAT(${financeSettlements.settlementDate}, '%Y-%m-%d')`, createdBy: financeSettlements.createdBy, createdByName: users.name, createdAt: financeSettlements.createdAt })
+  return db.select({ id: financeSettlements.id, amount: financeSettlements.amount, paymentAccount: financeSettlements.paymentAccount, settlementDate: sql<string>`DATE_FORMAT(${financeSettlements.settlementDate}, '%Y-%m-%d')`, createdBy: financeSettlements.createdBy, createdByName: users.name, createdAt: financeSettlements.createdAt })
     .from(financeSettlements).leftJoin(users, eq(users.id, financeSettlements.createdBy))
     .where(and(eq(financeSettlements.recordType, type), eq(financeSettlements.recordId, id)))
     .orderBy(desc(financeSettlements.settlementDate), desc(financeSettlements.id));
@@ -2183,7 +2183,7 @@ export async function listCashFlowAdjustments() {
     .orderBy(desc(cashFlowAdjustments.businessDate), desc(cashFlowAdjustments.id));
 }
 
-export async function createCashFlowAdjustment(data: { businessDate: string; type: "opening" | "add" | "deduct"; amount: string; note?: string; createdBy: number }) {
+export async function createCashFlowAdjustment(data: { businessDate: string; type: "opening" | "add" | "deduct"; amount: string; note?: string; account?: "cash" | "bank"; createdBy: number }) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   await db.insert(cashFlowAdjustments).values({ ...data, businessDate: data.businessDate as any, note: data.note || null } as any);
   const rows = await db.select().from(cashFlowAdjustments).orderBy(desc(cashFlowAdjustments.id)).limit(1);
@@ -2195,7 +2195,22 @@ export async function deleteCashFlowAdjustment(id: number) {
   await db.delete(cashFlowAdjustments).where(eq(cashFlowAdjustments.id, id));
 }
 
-type CashMovement = { date: string; kind: "tickets" | "facilities" | "otherRevenue" | "expense" | "capex" | "adjustment"; description: string; inAmount: number; outAmount: number };
+// PRD Round 17, item 5.1: every movement also carries how much of it went
+// through the Bank Account (card counts as bank); the rest is Cash Account.
+type CashMovement = { date: string; kind: "tickets" | "facilities" | "otherRevenue" | "expense" | "capex" | "adjustment"; description: string; inAmount: number; outAmount: number; bankIn: number; bankOut: number };
+type PaymentSplitSource = { paymentMethod: string | null; totalAmount: unknown; cashAmount: unknown; cardAmount: unknown; bankAmount: unknown };
+
+// Fraction of a ticket purchase / facility booking paid through the bank:
+// card and bank transfer are Bank, cash is Cash, and a mixed payment uses
+// its recorded Cash/Card/Bank split.
+export function bankFractionOf(source: PaymentSplitSource | undefined) {
+  if (!source) return 0;
+  if (source.paymentMethod === "card" || source.paymentMethod === "bank") return 1;
+  if (source.paymentMethod !== "mixed") return 0;
+  const total = Number(source.totalAmount || 0);
+  if (!(total > 0)) return 0;
+  return Math.min(1, Math.max(0, (Number(source.cardAmount || 0) + Number(source.bankAmount || 0)) / total));
+}
 
 async function listCashMovements(range: { before?: string; from?: string; to?: string }): Promise<CashMovement[]> {
   const db = await getDb(); if (!db) return [];
@@ -2217,49 +2232,78 @@ async function listCashMovements(range: { before?: string; from?: string; to?: s
     sql<string>`(SELECT COALESCE(SUM(fs.amount), 0) FROM finance_settlements fs WHERE fs.recordType = ${type} AND fs.recordId = ${sql.raw(`\`${type}_records\`.\`id\``)})`;
   const settlementJoin = (type: "expense" | "revenue" | "asset") => and(eq(financeSettlements.recordType, type), within(financeSettlements.settlementDate));
   const [revenueRows, expenseRows, assetRows, adjustmentRows, revenueSettlements, expenseSettlements, assetSettlements] = await Promise.all([
-    db.select({ date: dateOf(financeEntries.date), description: financeEntries.description, referenceType: financeEntries.referenceType, amount: financeEntries.amount, linkedPaid: revenueRecords.paidAmount, linkedAmount: revenueRecords.amount, settled: settledFor("revenue") })
+    db.select({ date: dateOf(financeEntries.date), description: financeEntries.description, referenceType: financeEntries.referenceType, referenceId: financeEntries.referenceId, amount: financeEntries.amount, linkedPaid: revenueRecords.paidAmount, linkedAmount: revenueRecords.amount, linkedAccount: revenueRecords.paymentAccount, settled: settledFor("revenue") })
       .from(financeEntries).leftJoin(revenueRecords, eq(revenueRecords.financeEntryId, financeEntries.id))
       .where(and(eq(financeEntries.type, "revenue"), within(financeEntries.date), notOpening(financeEntries.description))),
-    db.select({ date: dateOf(financeEntries.date), description: financeEntries.description, amount: financeEntries.amount, linkedPaid: expenseRecords.paidAmount, linkedAmount: expenseRecords.amount, settled: settledFor("expense") })
+    db.select({ date: dateOf(financeEntries.date), description: financeEntries.description, amount: financeEntries.amount, linkedPaid: expenseRecords.paidAmount, linkedAmount: expenseRecords.amount, linkedAccount: expenseRecords.paymentAccount, settled: settledFor("expense") })
       .from(financeEntries).leftJoin(expenseRecords, eq(expenseRecords.financeEntryId, financeEntries.id))
       .where(and(eq(financeEntries.type, "expense"), within(financeEntries.date), notOpening(financeEntries.description))),
-    db.select({ date: dateOf(assetRecords.businessDate), description: assetRecords.description, amount: assetRecords.amount, paidAmount: assetRecords.paidAmount, settled: settledFor("asset") })
+    db.select({ date: dateOf(assetRecords.businessDate), description: assetRecords.description, amount: assetRecords.amount, paidAmount: assetRecords.paidAmount, paymentAccount: assetRecords.paymentAccount, settled: settledFor("asset") })
       .from(assetRecords).where(and(within(assetRecords.businessDate), notOpening(assetRecords.description))),
-    db.select({ date: dateOf(cashFlowAdjustments.businessDate), type: cashFlowAdjustments.type, amount: cashFlowAdjustments.amount, note: cashFlowAdjustments.note })
+    db.select({ date: dateOf(cashFlowAdjustments.businessDate), type: cashFlowAdjustments.type, amount: cashFlowAdjustments.amount, note: cashFlowAdjustments.note, account: cashFlowAdjustments.account })
       .from(cashFlowAdjustments).where(within(cashFlowAdjustments.businessDate)),
-    db.select({ date: dateOf(financeSettlements.settlementDate), amount: financeSettlements.amount, description: revenueRecords.description, referenceType: financeEntries.referenceType })
+    db.select({ date: dateOf(financeSettlements.settlementDate), amount: financeSettlements.amount, paymentAccount: financeSettlements.paymentAccount, description: revenueRecords.description, referenceType: financeEntries.referenceType })
       .from(financeSettlements).innerJoin(revenueRecords, eq(revenueRecords.id, financeSettlements.recordId))
       .leftJoin(financeEntries, eq(financeEntries.id, revenueRecords.financeEntryId))
       .where(and(settlementJoin("revenue"), notOpening(revenueRecords.description))),
-    db.select({ date: dateOf(financeSettlements.settlementDate), amount: financeSettlements.amount, description: expenseRecords.description })
+    db.select({ date: dateOf(financeSettlements.settlementDate), amount: financeSettlements.amount, paymentAccount: financeSettlements.paymentAccount, description: expenseRecords.description })
       .from(financeSettlements).innerJoin(expenseRecords, eq(expenseRecords.id, financeSettlements.recordId))
       .where(and(settlementJoin("expense"), notOpening(expenseRecords.description))),
-    db.select({ date: dateOf(financeSettlements.settlementDate), amount: financeSettlements.amount, description: assetRecords.description })
+    db.select({ date: dateOf(financeSettlements.settlementDate), amount: financeSettlements.amount, paymentAccount: financeSettlements.paymentAccount, description: assetRecords.description })
       .from(financeSettlements).innerJoin(assetRecords, eq(assetRecords.id, financeSettlements.recordId))
       .where(and(settlementJoin("asset"), notOpening(assetRecords.description))),
   ]);
   const paidOf = (linkedPaid: unknown, linkedAmount: unknown, entryAmount: unknown, settled: unknown = 0) =>
     Math.round((Number(linkedPaid ?? linkedAmount ?? entryAmount ?? 0) - Number(settled || 0)) * 1000) / 1000;
   const revenueKind = (referenceType: unknown): CashMovement["kind"] => referenceType === "prd_ticket_purchase" ? "tickets" : referenceType === "facility_booking" || referenceType === "facility_booking_addon" ? "facilities" : "otherRevenue";
+  // Ticket purchases and facility bookings carry their own payment method
+  // and mixed split; look those up for the revenue entries that point at them.
+  const purchaseIds = Array.from(new Set(revenueRows.filter((row) => row.referenceType === "prd_ticket_purchase" && row.referenceId).map((row) => row.referenceId!)));
+  const bookingIds = Array.from(new Set(revenueRows.filter((row) => (row.referenceType === "facility_booking" || row.referenceType === "facility_booking_addon") && row.referenceId).map((row) => row.referenceId!)));
+  const splitColumns = (table: typeof ticketPurchases | typeof facilityBookings) => ({ id: table.id, paymentMethod: table.paymentMethod, totalAmount: table.totalAmount, cashAmount: table.cashAmount, cardAmount: table.cardAmount, bankAmount: table.bankAmount });
+  const [purchaseSplits, bookingSplits] = await Promise.all([
+    purchaseIds.length ? db.select(splitColumns(ticketPurchases)).from(ticketPurchases).where(inArray(ticketPurchases.id, purchaseIds)) : Promise.resolve([]),
+    bookingIds.length ? db.select(splitColumns(facilityBookings)).from(facilityBookings).where(inArray(facilityBookings.id, bookingIds)) : Promise.resolve([]),
+  ]);
+  const purchaseSplitById = new Map(purchaseSplits.map((row) => [row.id, row]));
+  const bookingSplitById = new Map(bookingSplits.map((row) => [row.id, row]));
+  const round3 = (value: number) => Math.round(value * 1000) / 1000;
+  const bankShare = (amount: number, fraction: number) => round3(amount * fraction);
+  const accountFraction = (account: unknown) => account === "bank" ? 1 : 0;
+  const revenueBankFraction = (row: (typeof revenueRows)[number]) => {
+    if (row.referenceType === "prd_ticket_purchase") return bankFractionOf(purchaseSplitById.get(row.referenceId!));
+    if (row.referenceType === "facility_booking" || row.referenceType === "facility_booking_addon") return bankFractionOf(bookingSplitById.get(row.referenceId!));
+    return accountFraction(row.linkedAccount);
+  };
   const movements: CashMovement[] = [];
   for (const row of revenueRows) {
-    movements.push({ date: row.date, kind: revenueKind(row.referenceType), description: row.description || "", inAmount: paidOf(row.linkedPaid, row.linkedAmount, row.amount, row.settled), outAmount: 0 });
+    const inAmount = paidOf(row.linkedPaid, row.linkedAmount, row.amount, row.settled);
+    movements.push({ date: row.date, kind: revenueKind(row.referenceType), description: row.description || "", inAmount, outAmount: 0, bankIn: bankShare(inAmount, revenueBankFraction(row)), bankOut: 0 });
   }
-  for (const row of expenseRows) movements.push({ date: row.date, kind: "expense", description: row.description || "", inAmount: 0, outAmount: paidOf(row.linkedPaid, row.linkedAmount, row.amount, row.settled) });
-  for (const row of assetRows) movements.push({ date: row.date, kind: "capex", description: row.description || "", inAmount: 0, outAmount: paidOf(row.paidAmount, row.amount, 0, row.settled) });
-  for (const row of revenueSettlements) movements.push({ date: row.date, kind: revenueKind(row.referenceType), description: `${row.description || ""} — balance received`, inAmount: Number(row.amount || 0), outAmount: 0 });
-  for (const row of expenseSettlements) movements.push({ date: row.date, kind: "expense", description: `${row.description || ""} — balance paid`, inAmount: 0, outAmount: Number(row.amount || 0) });
-  for (const row of assetSettlements) movements.push({ date: row.date, kind: "capex", description: `${row.description || ""} — balance paid`, inAmount: 0, outAmount: Number(row.amount || 0) });
+  for (const row of expenseRows) {
+    const outAmount = paidOf(row.linkedPaid, row.linkedAmount, row.amount, row.settled);
+    movements.push({ date: row.date, kind: "expense", description: row.description || "", inAmount: 0, outAmount, bankIn: 0, bankOut: bankShare(outAmount, accountFraction(row.linkedAccount)) });
+  }
+  for (const row of assetRows) {
+    const outAmount = paidOf(row.paidAmount, row.amount, 0, row.settled);
+    movements.push({ date: row.date, kind: "capex", description: row.description || "", inAmount: 0, outAmount, bankIn: 0, bankOut: bankShare(outAmount, accountFraction(row.paymentAccount)) });
+  }
+  for (const row of revenueSettlements) { const amount = Number(row.amount || 0); movements.push({ date: row.date, kind: revenueKind(row.referenceType), description: `${row.description || ""} — balance received`, inAmount: amount, outAmount: 0, bankIn: bankShare(amount, accountFraction(row.paymentAccount)), bankOut: 0 }); }
+  for (const row of expenseSettlements) { const amount = Number(row.amount || 0); movements.push({ date: row.date, kind: "expense", description: `${row.description || ""} — balance paid`, inAmount: 0, outAmount: amount, bankIn: 0, bankOut: bankShare(amount, accountFraction(row.paymentAccount)) }); }
+  for (const row of assetSettlements) { const amount = Number(row.amount || 0); movements.push({ date: row.date, kind: "capex", description: `${row.description || ""} — balance paid`, inAmount: 0, outAmount: amount, bankIn: 0, bankOut: bankShare(amount, accountFraction(row.paymentAccount)) }); }
   for (const row of adjustmentRows) {
     const amount = Number(row.amount || 0);
     const label = row.type === "opening" ? "Opening balance" : row.type === "add" ? "Adjustment (added)" : "Adjustment (deducted)";
-    movements.push({ date: row.date, kind: "adjustment", description: row.note ? `${label} — ${row.note}` : label, inAmount: row.type === "deduct" ? 0 : amount, outAmount: row.type === "deduct" ? amount : 0 });
+    const accountLabel = row.account === "bank" ? "Bank Account" : "Cash Account";
+    const inAmount = row.type === "deduct" ? 0 : amount;
+    const outAmount = row.type === "deduct" ? amount : 0;
+    movements.push({ date: row.date, kind: "adjustment", description: `${label} (${accountLabel})${row.note ? ` — ${row.note}` : ""}`, inAmount, outAmount, bankIn: row.account === "bank" ? inAmount : 0, bankOut: row.account === "bank" ? outAmount : 0 });
   }
   return movements.sort((a, b) => a.date.localeCompare(b.date));
 }
 
 export async function getCashFlowStatus(from: string, to: string) {
-  const [before, period] = await Promise.all([listCashMovements({ before: from }), listCashMovements({ from, to })]);
+  const [before, period, receivablePayable] = await Promise.all([listCashMovements({ before: from }), listCashMovements({ from, to }), getReceivablePayableAsAt(to)]);
   const round = (value: number) => Math.round(value * 1000) / 1000;
   const sumOf = (rows: CashMovement[], pick: (row: CashMovement) => number) => round(rows.reduce((total, row) => total + pick(row), 0));
   const openingBalance = sumOf(before, (row) => row.inAmount - row.outAmount);
@@ -2270,7 +2314,57 @@ export async function getCashFlowStatus(from: string, to: string) {
   const totalIn = round(inflows.tickets + inflows.facilities + inflows.otherRevenue);
   const totalOut = round(outflows.expenses + outflows.capex);
   const closingBalance = round(openingBalance + totalIn - totalOut + adjustments.added - adjustments.deducted);
-  return { from, to, openingBalance, inflows: { ...inflows, total: totalIn }, outflows: { ...outflows, total: totalOut }, adjustments, closingBalance, movements: period };
+  // PRD Round 17, items 5.1/5.2: the same figures per ledger — the Bank
+  // Account (bank transfers and card) and the Cash Account (the rest). The
+  // two always add up to the combined figures above.
+  const accountSummary = (bank: boolean) => {
+    const inOf = (row: CashMovement) => bank ? row.bankIn : round(row.inAmount - row.bankIn);
+    const outOf = (row: CashMovement) => bank ? row.bankOut : round(row.outAmount - row.bankOut);
+    const nonAdjustment = period.filter((row) => row.kind !== "adjustment");
+    const adjustmentRows = period.filter((row) => row.kind === "adjustment");
+    const opening = sumOf(before, (row) => inOf(row) - outOf(row));
+    const moneyIn = sumOf(nonAdjustment, inOf);
+    const moneyOut = sumOf(nonAdjustment, outOf);
+    const added = sumOf(adjustmentRows, inOf);
+    const deducted = sumOf(adjustmentRows, outOf);
+    return { openingBalance: opening, moneyIn, moneyOut, added, deducted, closingBalance: round(opening + moneyIn - moneyOut + added - deducted) };
+  };
+  return {
+    from, to, openingBalance, inflows: { ...inflows, total: totalIn }, outflows: { ...outflows, total: totalOut }, adjustments, closingBalance,
+    accounts: { cash: accountSummary(false), bank: accountSummary(true) },
+    receivable: receivablePayable.receivable, payable: receivablePayable.payable,
+    movements: period,
+  };
+}
+
+// PRD Round 17, item 5.2: Account Receivable (revenue recorded but not yet
+// received) and Account Payable (expenses and capital expenditure recorded
+// but not yet paid), as they stood at the end of `asAt`. A record dated on or
+// before `asAt` is outstanding by its Total minus what was paid when it was
+// recorded minus every settlement made on or before `asAt` — so a balance
+// paid off after the period still shows as outstanding for that period.
+export async function getReceivablePayableAsAt(asAt: string) {
+  const db = await getDb();
+  const empty = { total: 0, count: 0, rows: [] as Array<{ type: "revenue" | "expense" | "asset"; id: number; businessDate: string; categoryName: string; description: string; amount: number; outstanding: number }> };
+  if (!db) return { receivable: empty, payable: empty };
+  const round = (value: number) => Math.round(value * 1000) / 1000;
+  const outstandingOf = async (type: "revenue" | "expense" | "asset") => {
+    const table = type === "revenue" ? revenueRecords : type === "expense" ? expenseRecords : assetRecords;
+    const recordId = sql.raw(`\`${type}_records\`.\`id\``);
+    const rows = await db.select({
+      id: table.id, businessDate: sql<string>`DATE_FORMAT(${table.businessDate}, '%Y-%m-%d')`, categoryName: table.categoryName, description: table.description,
+      amount: table.amount, paidAmount: table.paidAmount,
+      settledAll: sql<string>`(SELECT COALESCE(SUM(fs.amount), 0) FROM finance_settlements fs WHERE fs.recordType = ${type} AND fs.recordId = ${recordId})`,
+      settledToDate: sql<string>`(SELECT COALESCE(SUM(fs.amount), 0) FROM finance_settlements fs WHERE fs.recordType = ${type} AND fs.recordId = ${recordId} AND fs.settlementDate <= ${asAt})`,
+    }).from(table).where(sql`${table.businessDate} <= ${asAt}`);
+    return rows.map((row) => {
+      const initiallyPaid = Number(row.paidAmount ?? row.amount) - Number(row.settledAll || 0);
+      return { type, id: row.id, businessDate: row.businessDate, categoryName: row.categoryName, description: row.description || "", amount: Number(row.amount), outstanding: round(Number(row.amount) - initiallyPaid - Number(row.settledToDate || 0)) };
+    }).filter((row) => row.outstanding > 0.0005);
+  };
+  const [revenue, expense, asset] = await Promise.all([outstandingOf("revenue"), outstandingOf("expense"), outstandingOf("asset")]);
+  const summarise = (rows: typeof revenue) => ({ total: round(rows.reduce((sum, row) => sum + row.outstanding, 0)), count: rows.length, rows: rows.sort((a, b) => a.businessDate.localeCompare(b.businessDate)) });
+  return { receivable: summarise(revenue), payable: summarise([...expense, ...asset]) };
 }
 
 // ─── PRD Round 16, item 2: one-level category hierarchy ─────────────────────

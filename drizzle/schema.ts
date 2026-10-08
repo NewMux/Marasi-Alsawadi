@@ -1,5 +1,5 @@
 import {
-  int, mysqlEnum, mysqlTable, text, timestamp, varchar, decimal, boolean, date, unique
+  int, mysqlEnum, mysqlTable, text, timestamp, varchar, decimal, boolean, date, datetime, unique
 } from "drizzle-orm/mysql-core";
 
 // ─── Users & Auth ────────────────────────────────────────────────────────────
@@ -646,6 +646,8 @@ export const expenseRecords = mysqlTable("expense_records", {
   // treated as fully paid (= amount); balanceAmount = amount - paid.
   paidAmount: decimal("paidAmount", { precision: 12, scale: 3 }),
   balanceAmount: decimal("balanceAmount", { precision: 12, scale: 3 }).default("0").notNull(),
+  // PRD Round 17, item 5.1: which ledger the paid amount moved through.
+  paymentAccount: mysqlEnum("paymentAccount", ["cash", "bank"]).default("cash").notNull(),
   payee: varchar("payee", { length: 128 }),
   description: varchar("description", { length: 256 }).notNull(),
   receiptNumber: varchar("receiptNumber", { length: 64 }),
@@ -687,6 +689,8 @@ export const revenueRecords = mysqlTable("revenue_records", {
   // treated as fully paid (= amount); balanceAmount = amount - paid.
   paidAmount: decimal("paidAmount", { precision: 12, scale: 3 }),
   balanceAmount: decimal("balanceAmount", { precision: 12, scale: 3 }).default("0").notNull(),
+  // PRD Round 17, item 5.1: which ledger the paid amount moved through.
+  paymentAccount: mysqlEnum("paymentAccount", ["cash", "bank"]).default("cash").notNull(),
   source: varchar("source", { length: 128 }),
   description: varchar("description", { length: 256 }).notNull(),
   receiptNumber: varchar("receiptNumber", { length: 64 }),
@@ -711,6 +715,8 @@ export const facilityTypes = mysqlTable("facility_types", {
   pricingMethod: mysqlEnum("pricingMethod", ["hourly", "daily", "fixed"]).notNull(),
   rate: decimal("rate", { precision: 12, scale: 3 }).notNull(),
   revenueCategoryId: int("revenueCategoryId").notNull(),
+  // PRD Round 17, item 5.3: optional main/sub facility category.
+  facilityCategoryId: int("facilityCategoryId"),
   // PRD Round 10: same direct VAT field as ticket types — facility bookings
   // had no VAT concept at all before this round, so this is a genuinely new
   // charge, not a relocated one; defaulting on/5% matches what tickets
@@ -862,6 +868,8 @@ export const cashFlowAdjustments = mysqlTable("cash_flow_adjustments", {
   businessDate: date("businessDate").notNull(),
   type: mysqlEnum("type", ["opening", "add", "deduct"]).notNull(),
   amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
+  // PRD Round 17, item 5.1: which ledger this opening balance/adjustment is for.
+  account: mysqlEnum("account", ["cash", "bank"]).default("cash").notNull(),
   note: varchar("note", { length: 512 }),
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -877,6 +885,8 @@ export const financeSettlements = mysqlTable("finance_settlements", {
   recordId: int("recordId").notNull(),
   amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
   settlementDate: date("settlementDate").notNull(),
+  // PRD Round 17, item 5.1: which ledger the paid amount moved through.
+  paymentAccount: mysqlEnum("paymentAccount", ["cash", "bank"]).default("cash").notNull(),
   createdBy: int("createdBy").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
@@ -972,6 +982,8 @@ export const assetRecords = mysqlTable("asset_records", {
   // treated as fully paid (= amount); balanceAmount = amount - paid.
   paidAmount: decimal("paidAmount", { precision: 12, scale: 3 }),
   balanceAmount: decimal("balanceAmount", { precision: 12, scale: 3 }).default("0").notNull(),
+  // PRD Round 17, item 5.1: which ledger the paid amount moved through.
+  paymentAccount: mysqlEnum("paymentAccount", ["cash", "bank"]).default("cash").notNull(),
   vendor: varchar("vendor", { length: 128 }),
   description: varchar("description", { length: 256 }).notNull(),
   receiptNumber: varchar("receiptNumber", { length: 64 }),
@@ -1073,3 +1085,33 @@ export const workbookImports = mysqlTable("workbook_imports", {
   importedBy: int("importedBy"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
+
+// PRD Round 17, item 5.3: main/sub categories for Facility Types (one level
+// deep, like the Round 16 expense/revenue/CapEx categories).
+export const facilityCategories = mysqlTable("facility_categories", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 160 }).notNull().unique(),
+  code: varchar("code", { length: 32 }).notNull().unique(),
+  parentId: int("parentId"),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type FacilityCategory = typeof facilityCategories.$inferSelect;
+
+// PRD Round 17, item 5.4: client-submitted restore requests, reviewed and
+// performed by NewMux — never an automatic restore.
+export const dataRestoreRequests = mysqlTable("data_restore_requests", {
+  id: int("id").autoincrement().primaryKey(),
+  restorePoint: datetime("restorePoint").notNull(),
+  reason: text("reason").notNull(),
+  status: mysqlEnum("status", ["pending", "in_progress", "completed", "rejected", "cancelled"]).default("pending").notNull(),
+  requestedBy: int("requestedBy").notNull(),
+  handledBy: int("handledBy"),
+  handledNote: text("handledNote"),
+  handledAt: timestamp("handledAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type DataRestoreRequest = typeof dataRestoreRequests.$inferSelect;

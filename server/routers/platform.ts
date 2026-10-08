@@ -106,6 +106,11 @@ export function recordFromJoin<T>(entry: T | { r?: T; t?: T; s?: T }) {
   return joined.r ?? joined.t ?? joined.s ?? entry as T;
 }
 
+// PRD Round 17, item 5.1: Cash Account or Bank Account (card counts as
+// Bank). Optional on input so older clients keep working; omitted = cash,
+// the same default every pre-existing record was backfilled with.
+const paymentAccountInput = z.enum(["cash", "bank"]).default("cash");
+
 const prdLineInput = z.object({
   priceId: z.number().int().positive(),
 });
@@ -1352,9 +1357,11 @@ export const platformRouter = router({
     settlePayable: financeProcedure.input(z.object({
       type: z.enum(["expense", "revenue", "asset"]), id: z.number().int().positive(),
       amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
+      // PRD Round 17, item 5.1: the ledger this payment moved through.
+      paymentAccount: paymentAccountInput,
     })).mutation(async ({ input, ctx }) => {
       try {
-        const result = await recordSettlement(input.type, input.id, input.amount, ctx.user.id);
+        const result = await recordSettlement(input.type, input.id, input.amount, ctx.user.id, input.paymentAccount);
         await logActivity(ctx.user.id, `${input.type}.settle`, `${input.type}_record`, input.id, `paid ${input.amount} on ${result.settlementDate} / balance ${result.balanceAmount}`);
         return result;
       } catch (error) {
@@ -1372,6 +1379,7 @@ export const platformRouter = router({
       adjust: configAdminProcedure.input(z.object({
         businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), type: z.enum(["opening", "add", "deduct"]),
         amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"), note: z.string().max(512).optional(),
+        account: paymentAccountInput,
       })).mutation(async ({ input, ctx }) => {
         const adjustment = await createCashFlowAdjustment({ ...input, note: input.note?.trim(), createdBy: ctx.user.id });
         await logActivity(ctx.user.id, "cash_flow.adjust", "cash_flow_adjustment", adjustment.id, `${input.type}:${input.amount}`);
@@ -1443,6 +1451,7 @@ export const platformRouter = router({
         payee: z.string().optional(), description: z.string().min(1),
         receiptNumber: z.string().max(64).optional(),
         paidAmount: nonNegativeMoney.optional(),
+        paymentAccount: paymentAccountInput,
         attachments: z.array(attachmentInputSchema).max(10).optional(),
         department: z.enum(["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]).default("general"),
       })).mutation(async ({ input, ctx }) => {
@@ -1467,6 +1476,7 @@ export const platformRouter = router({
         id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals").optional(),
         payee: z.string().optional(), description: z.string().min(1).optional(), receiptNumber: z.string().max(64).optional(),
         paidAmount: nonNegativeMoney.optional(),
+        paymentAccount: z.enum(["cash", "bank"]).optional(),
         department: z.enum(["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]).optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
@@ -1531,6 +1541,7 @@ export const platformRouter = router({
         source: z.string().max(128).optional(), description: z.string().min(1),
         receiptNumber: z.string().max(64).optional(),
         paidAmount: nonNegativeMoney.optional(),
+        paymentAccount: paymentAccountInput,
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
         const paidBalance = resolvePaidBalance(input.amount, input.paidAmount);
@@ -1553,6 +1564,7 @@ export const platformRouter = router({
         id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals").optional(),
         source: z.string().max(128).optional(), description: z.string().min(1).optional(), receiptNumber: z.string().max(64).optional(),
         paidAmount: nonNegativeMoney.optional(),
+        paymentAccount: z.enum(["cash", "bank"]).optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
         const { id, categoryId, attachments: attachmentFiles, paidAmount, ...data } = input;
@@ -1617,6 +1629,7 @@ export const platformRouter = router({
         status: z.enum(["active", "under_maintenance", "disposed"]).default("active"),
         usefulLifeYears: z.number().int().min(1).max(100).optional(),
         paidAmount: nonNegativeMoney.optional(),
+        paymentAccount: paymentAccountInput,
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
         const paidBalance = resolvePaidBalance(input.amount, input.paidAmount);
@@ -1637,6 +1650,7 @@ export const platformRouter = router({
         status: z.enum(["active", "under_maintenance", "disposed"]).optional(),
         usefulLifeYears: z.number().int().min(1).max(100).nullable().optional(),
         paidAmount: nonNegativeMoney.optional(),
+        paymentAccount: z.enum(["cash", "bank"]).optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
         const { id, categoryId, attachments: attachmentFiles, paidAmount, ...data } = input;
