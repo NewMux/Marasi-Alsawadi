@@ -28,7 +28,7 @@ import {
   listTicketTypes, getTicketType, getTicketTypeByCode, createTicketType, updateTicketType, deleteTicketType, listVisitorCategories, createVisitorCategory, updateVisitorCategory, listTicketPrices, upsertTicketPrice,
   summariseTicketRevenueByType, summariseFacilityRevenueByType, listRevenueCategoryOptionsForRecording, describeSettingDependents,
   getSystemSettings, setResetAllDataToolEnabled, resetAllOperationalData,
-  listPayables, recordSettlement, listSettlementsFor, getSettledTotal, listCashFlowAdjustments, createCashFlowAdjustment, deleteCashFlowAdjustment, getCashFlowStatus, assertValidCategoryParent, getCategoryReport,
+  listPayables, recordSettlement, listSettlementsFor, getSettledTotal, listCashFlowAdjustments, createCashFlowAdjustment, deleteCashFlowAdjustment, getCashFlowStatus, assertValidCategoryParent, listFacilityCategories, createFacilityCategory, updateFacilityCategory, deleteFacilityCategory, getFacilityCategoryReport, getCategoryReport,
   listPartnerEntities, getPartnerEntity, createPartnerEntity, updatePartnerEntity, deletePartnerEntity,
   listPartnerDiscountRules, createPartnerDiscountRule, updatePartnerDiscountRule, deletePartnerDiscountRule, resolveActivePartnerDiscountRule,
   listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
@@ -559,6 +559,36 @@ export const platformRouter = router({
     }),
   }),
 
+  // PRD Round 17, item 5.3: main/sub categories grouping Facility Types.
+  facilityCategories: router({
+    list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listFacilityCategories(Boolean(input?.includeInactive && isConfigAdmin(ctx.user.role)))),
+    create: configAdminProcedure.input(z.object({ name: z.string().trim().min(1).max(160), code: z.string().min(2).max(32), parentId: z.number().int().positive().nullable().optional() }))
+      .mutation(async ({ input, ctx }) => {
+        await assertValidCategoryParent("facility", undefined, input.parentId).catch((error: Error) => { throw new TRPCError({ code: "BAD_REQUEST", message: error.message }); });
+        const category = await createFacilityCategory({ name: input.name, code: normalizeRateCode(input.code), parentId: input.parentId ?? null, createdBy: ctx.user.id })
+          .catch((error: any) => { throw new TRPCError({ code: "CONFLICT", message: String(error?.message || error).includes("Duplicate") ? "A facility category with this name or code already exists" : "Facility category could not be saved" }); });
+        await logActivity(ctx.user.id, "facility_category.create", "facility_category", category.id, input.code);
+        return category;
+      }),
+    update: configAdminProcedure.input(z.object({
+      id: z.number().int().positive(), name: z.string().trim().min(1).max(160).optional(), code: z.string().min(2).max(32).optional(), isActive: z.boolean().optional(),
+      parentId: z.number().int().positive().nullable().optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const { id, code, ...data } = input;
+      await assertValidCategoryParent("facility", id, data.parentId).catch((error: Error) => { throw new TRPCError({ code: "BAD_REQUEST", message: error.message }); });
+      const category = await updateFacilityCategory(id, { ...data, ...(code ? { code: normalizeRateCode(code) } : {}) })
+        .catch((error: any) => { throw new TRPCError({ code: "CONFLICT", message: String(error?.message || error).includes("Duplicate") ? "A facility category with this name or code already exists" : "Facility category could not be saved" }); });
+      await logActivity(ctx.user.id, "facility_category.update", "facility_category", id, JSON.stringify(input));
+      return category;
+    }),
+    delete: configAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+      const result = await deleteFacilityCategory(input.id);
+      await logActivity(ctx.user.id, "facility_category.delete", "facility_category", input.id, result.deactivated ? "retired" : "deleted");
+      return result;
+    }),
+    report: managerProcedure.input(z.object({ from: z.string(), to: z.string(), facilityCategoryId: z.number().int().positive().optional() }))
+      .query(({ input }) => getFacilityCategoryReport(input.from, input.to, input.facilityCategoryId)),
+  }),
   facilityTypes: router({
     list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listFacilityTypes(Boolean(input?.includeInactive && isConfigAdmin(ctx.user.role)))),
     // PRD Round 10, Section 1: same direct VAT field as ticket types —
@@ -570,10 +600,12 @@ export const platformRouter = router({
       // PRD Round 15, Section 6: per-facility auto-cancellation window,
       // replacing the old single global setting.
       autoCancelEnabled: z.boolean().default(false), autoCancelHours: z.number().int().positive().default(24),
+      // PRD Round 17, item 5.3: optional main/sub facility category.
+      facilityCategoryId: z.number().int().positive().nullable().optional(),
     })).mutation(async ({ input, ctx }) => {
       if (Number(input.vatPercent) > 100) throw new TRPCError({ code: "BAD_REQUEST", message: "VAT rate cannot exceed 100" });
       const category = await findOrCreateRevenueCategoryForFacility(input.name, normalizeRateCode(input.code), ctx.user.id);
-      const facility = await createFacilityType({ name: input.name, code: normalizeRateCode(input.code), pricingMethod: input.pricingMethod, rate: input.rate, applyVat: input.applyVat, vatPercent: input.vatPercent, autoCancelEnabled: input.autoCancelEnabled, autoCancelHours: input.autoCancelHours, revenueCategoryId: category.id, createdBy: ctx.user.id } as any);
+      const facility = await createFacilityType({ name: input.name, code: normalizeRateCode(input.code), pricingMethod: input.pricingMethod, rate: input.rate, applyVat: input.applyVat, vatPercent: input.vatPercent, autoCancelEnabled: input.autoCancelEnabled, autoCancelHours: input.autoCancelHours, facilityCategoryId: input.facilityCategoryId ?? null, revenueCategoryId: category.id, createdBy: ctx.user.id } as any);
       await logActivity(ctx.user.id, "facility_type.create", "facility_type", facility.id, JSON.stringify(input));
       return facility;
     }),
@@ -582,6 +614,7 @@ export const platformRouter = router({
       pricingMethod: z.enum(["hourly", "daily", "fixed"]).optional(), rate: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals").optional(), isActive: z.boolean().optional(),
       applyVat: z.boolean().optional(), vatPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
       autoCancelEnabled: z.boolean().optional(), autoCancelHours: z.number().int().positive().optional(),
+      facilityCategoryId: z.number().int().positive().nullable().optional(),
     })).mutation(async ({ input, ctx }) => {
       if (input.vatPercent !== undefined && Number(input.vatPercent) > 100) throw new TRPCError({ code: "BAD_REQUEST", message: "VAT rate cannot exceed 100" });
       const { id, code, ...rest } = input;

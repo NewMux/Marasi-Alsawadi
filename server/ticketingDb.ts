@@ -4,7 +4,7 @@ import { alias } from "drizzle-orm/mysql-core";
 import {
   addonServices, assetAdjustments, assetCategories, assetRecords, attachments, expenseAdjustments, expenseCategories, expenseRecords, facilityBookingAddons, facilityBookings, facilityTypes, guests, partnerEntities, partnerDiscountRules, pettyCashAllocations, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
   serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers, ticketTypes, visitorCategories, ticketPrices,
-  ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries, users, systemSettings, cashFlowAdjustments, financeSettlements,
+  ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries, users, systemSettings, cashFlowAdjustments, financeSettlements, facilityCategories,
 } from "../drizzle/schema";
 import { getDb } from "./db";
 import { calculateOperationalNet, calculatePrdPurchasePricing, decideGateEntry, formatPrdTicketNumber, formatTicketNumber, minorToMoney, moneyToMinor, validateMixedPaymentBreakdown, type PrdDiscountTierInput, type PrdTicketLineInput } from "./ticketingRules";
@@ -2368,9 +2368,9 @@ export async function getReceivablePayableAsAt(asAt: string) {
 }
 
 // ─── PRD Round 16, item 2: one-level category hierarchy ─────────────────────
-export async function assertValidCategoryParent(kind: "expense" | "revenue" | "asset", categoryId: number | undefined, parentId: number | null | undefined) {
+export async function assertValidCategoryParent(kind: "expense" | "revenue" | "asset" | "facility", categoryId: number | undefined, parentId: number | null | undefined) {
   if (parentId === undefined || parentId === null) return;
-  const table = kind === "expense" ? expenseCategories : kind === "revenue" ? revenueCategories : assetCategories;
+  const table = kind === "expense" ? expenseCategories : kind === "revenue" ? revenueCategories : kind === "facility" ? facilityCategories : assetCategories;
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   if (categoryId !== undefined && parentId === categoryId) throw new Error("A category cannot be its own parent");
   const parentRows = await db.select().from(table).where(eq(table.id, parentId)).limit(1);
@@ -2428,4 +2428,76 @@ export async function getCategoryReport(kind: "expense" | "revenue" | "asset", c
     rows.sort((a, b) => b.date.localeCompare(a.date));
   }
   return { categoryIds, rows };
+}
+
+// ─── PRD Round 17, item 5.3: Facility categories ────────────────────────────
+// Main/sub categories grouping Facility Types (one level deep, like the
+// Round 16 finance categories). Pricing, VAT and auto-cancel stay on each
+// Facility Type; a category is only a grouping used for filtering/reports.
+export async function listFacilityCategories(includeInactive = false) {
+  const db = await getDb(); if (!db) return [];
+  const base = db.select().from(facilityCategories).orderBy(facilityCategories.name);
+  return includeInactive ? base : base.where(eq(facilityCategories.isActive, true));
+}
+
+export async function createFacilityCategory(data: { name: string; code: string; parentId: number | null; createdBy: number }) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.insert(facilityCategories).values(data as any);
+  const rows = await db.select().from(facilityCategories).orderBy(desc(facilityCategories.id)).limit(1);
+  return rows[0]!;
+}
+
+export async function updateFacilityCategory(id: number, data: Partial<{ name: string; code: string; parentId: number | null; isActive: boolean }>) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.update(facilityCategories).set(data as any).where(eq(facilityCategories.id, id));
+  const rows = await db.select().from(facilityCategories).where(eq(facilityCategories.id, id)).limit(1);
+  return rows[0];
+}
+
+// Still in use (by a Facility Type or a sub-category) = retired instead of
+// deleted, so nothing that points at it is left dangling.
+export async function deleteFacilityCategory(id: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const linkedTypes = await db.select({ id: facilityTypes.id }).from(facilityTypes).where(eq(facilityTypes.facilityCategoryId, id)).limit(1);
+  const children = await db.select({ id: facilityCategories.id }).from(facilityCategories).where(eq(facilityCategories.parentId, id)).limit(1);
+  if (linkedTypes.length || children.length) {
+    await db.update(facilityCategories).set({ isActive: false }).where(eq(facilityCategories.id, id));
+    return { deactivated: true };
+  }
+  await db.delete(facilityCategories).where(eq(facilityCategories.id, id));
+  return { deactivated: false };
+}
+
+// Facility bookings in a period grouped by facility category: a main
+// category covers itself and its sub-categories. Counts paid ("confirmed")
+// bookings by their booking date; unpaid and cancelled ones are listed
+// separately so the totals match what was actually collected.
+export async function getFacilityCategoryReport(from: string, to: string, facilityCategoryId?: number) {
+  const db = await getDb(); if (!db) return { rows: [], totals: { bookings: 0, paidBookings: 0, paidAmount: 0, unpaidAmount: 0 } };
+  const categories = await db.select().from(facilityCategories);
+  const categoryById = new Map(categories.map((category) => [category.id, category]));
+  const types = await db.select({ id: facilityTypes.id, name: facilityTypes.name, facilityCategoryId: facilityTypes.facilityCategoryId }).from(facilityTypes);
+  const bookings = await db.select({ facilityTypeId: facilityBookings.facilityTypeId, status: facilityBookings.status, totalAmount: facilityBookings.totalAmount })
+    .from(facilityBookings).where(and(sql`${facilityBookings.bookingDate} >= ${from}`, sql`${facilityBookings.bookingDate} <= ${to}`));
+  const inScope = (categoryId: number | null) => {
+    if (!facilityCategoryId) return true;
+    if (!categoryId) return false;
+    return categoryId === facilityCategoryId || categoryById.get(categoryId)?.parentId === facilityCategoryId;
+  };
+  const round = (value: number) => Math.round(value * 1000) / 1000;
+  const rows = types.filter((type) => inScope(type.facilityCategoryId ?? null)).map((type) => {
+    const category = type.facilityCategoryId ? categoryById.get(type.facilityCategoryId) : undefined;
+    const main = category?.parentId ? categoryById.get(category.parentId) : category;
+    const own = bookings.filter((booking) => booking.facilityTypeId === type.id && booking.status !== "cancelled");
+    const paid = own.filter((booking) => booking.status === "confirmed");
+    return {
+      facilityTypeId: type.id, facilityTypeName: type.name,
+      mainCategoryName: main?.name ?? null, subCategoryName: category?.parentId ? category.name : null,
+      bookings: own.length, paidBookings: paid.length,
+      paidAmount: round(paid.reduce((sum, booking) => sum + Number(booking.totalAmount || 0), 0)),
+      unpaidAmount: round(own.filter((booking) => booking.status === "booking").reduce((sum, booking) => sum + Number(booking.totalAmount || 0), 0)),
+    };
+  }).sort((a, b) => Number(!a.mainCategoryName) - Number(!b.mainCategoryName) || (a.mainCategoryName ?? "").localeCompare(b.mainCategoryName ?? "") || (a.subCategoryName ?? "").localeCompare(b.subCategoryName ?? "") || a.facilityTypeName.localeCompare(b.facilityTypeName));
+  const totals = rows.reduce((sum, row) => ({ bookings: sum.bookings + row.bookings, paidBookings: sum.paidBookings + row.paidBookings, paidAmount: round(sum.paidAmount + row.paidAmount), unpaidAmount: round(sum.unpaidAmount + row.unpaidAmount) }), { bookings: 0, paidBookings: 0, paidAmount: 0, unpaidAmount: 0 });
+  return { rows, totals };
 }

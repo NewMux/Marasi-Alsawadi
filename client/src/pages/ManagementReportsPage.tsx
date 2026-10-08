@@ -21,7 +21,7 @@ const exportCsv = exportSpreadsheet;
 const amountCell = (value: unknown) => Number(value ?? 0).toFixed(3);
 // PRD Round 16, item 8: which report the printable document (the PDF, via
 // the browser's Save as PDF) currently holds.
-type PrintMode = "summary" | "revenue" | "expense" | "cashflow" | "assets" | "category";
+type PrintMode = "summary" | "revenue" | "expense" | "cashflow" | "assets" | "category" | "facilities";
 const CASH_KIND_KEYS: Record<string, TranslationKey> = { tickets: "reports.cashInTickets", facilities: "reports.cashInFacilities", otherRevenue: "reports.cashInOther", expense: "reports.cashOutExpenses", capex: "reports.cashOutCapex", adjustment: "reports.cashAdjustment" };
 function Stream({ title, description, tone, revenueLabel, expenseLabel, children }: { title: string; description: string; tone: "success" | "warning"; revenueLabel: string; expenseLabel: string; children: ReactNode }) { return <Surface><div className="flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{title}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{description}</p></div><StatusPill tone={tone}>{tone === "success" ? revenueLabel : expenseLabel}</StatusPill></div><div className="mt-5 divide-y divide-divider">{children}</div></Surface>; }
 
@@ -70,6 +70,12 @@ export default function ManagementReportsPage() {
   const { data: assetCategories = [] } = trpc.platform.finance.assetCategories.list.useQuery({ includeInactive: false });
   // PRD Round 16, item 6: Cash Flow Status for the same selected period.
   const { data: cashFlow, isLoading: cashFlowLoading } = trpc.platform.finance.cashFlow.status.useQuery(input);
+  // PRD Round 17, item 5.3: facility bookings filterable by facility
+  // category (a main category includes its sub-categories).
+  const [facilityCategoryFilter, setFacilityCategoryFilter] = useState("");
+  const { data: facilityCategoryOptions = [] } = trpc.platform.facilityCategories.list.useQuery();
+  const { data: facilityReport } = trpc.platform.facilityCategories.report.useQuery({ ...input, facilityCategoryId: facilityCategoryFilter ? Number(facilityCategoryFilter) : undefined });
+  const facilityFilterName = (facilityCategoryOptions as any[]).find((entry: any) => String(entry.id) === facilityCategoryFilter)?.name;
   const [showCashMovements, setShowCashMovements] = useState(false);
   // PRD Round 16, item 8: every report section prints (Save as PDF) on its
   // own. The document is re-rendered for the chosen report first, then
@@ -181,6 +187,13 @@ export default function ManagementReportsPage() {
       </Surface>
       <Surface className="mt-6">
         <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+          <div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("reports.facilitiesByCategory")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("reports.facilitiesByCategoryHint")}</p></div>
+          <div className="flex flex-wrap items-center gap-2"><SelectField value={facilityCategoryFilter} onChange={(event) => setFacilityCategoryFilter(event.target.value)} className="w-56"><option value="">{t("reports.allFacilityCategories")}</option>{orderCategoriesAsTree(facilityCategoryOptions as any[]).map((entry: any) => <option key={entry.id} value={entry.id}>{categoryOptionLabel(entry)}</option>)}</SelectField><SecondaryButton onClick={() => printAs("facilities")}><FileText size={14} className="mr-2"/>PDF</SecondaryButton></div>
+        </div>
+        {facilityReport && (facilityReport.rows.length ? <TableFrame className="mt-4"><TableHeader><div className="grid grid-cols-[1fr_1fr_1.2fr_.5fr_.7fr_.7fr] gap-3"><span>{t("reports.mainCategoryCol")}</span><span>{t("reports.subCategoryCol")}</span><span>{t("reports.facilityCol")}</span><span className="text-right">{t("reports.bookingsCol")}</span><span className="text-right">{t("reports.paidCol")}</span><span className="text-right">{t("reports.unpaidCol")}</span></div></TableHeader>{facilityReport.rows.map((row: any) => <TableRow key={row.facilityTypeId} className="grid-cols-[1fr_1fr_1.2fr_.5fr_.7fr_.7fr]"><span className="truncate text-xs">{row.mainCategoryName || t("reports.uncategorised")}</span><span className="truncate text-xs text-muted">{row.subCategoryName || "—"}</span><b className="truncate text-sm font-medium">{row.facilityTypeName}</b><span className="text-right text-xs">{row.bookings}</span><span className="text-right text-xs text-success">{money(row.paidAmount)}</span><span className="text-right text-xs text-warning">{money(row.unpaidAmount)}</span></TableRow>)}<TableRow className="grid-cols-[1fr_1fr_1.2fr_.5fr_.7fr_.7fr]"><b className="text-xs">{t("reports.totalRow")}</b><span/><span/><b className="text-right text-xs">{facilityReport.totals.bookings}</b><b className="text-right text-xs text-success">{money(facilityReport.totals.paidAmount)}</b><b className="text-right text-xs text-warning">{money(facilityReport.totals.unpaidAmount)}</b></TableRow></TableFrame> : <p className="mt-4 text-xs text-muted">{t("reports.noFacilitiesInFilter")}</p>)}
+      </Surface>
+      <Surface className="mt-6">
+        <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
           <div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("reports.ticketRevenueByType")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("reports.ticketRevenueByTypeHint")}</p></div>
           <div className="flex items-center gap-3"><b className="text-lg">{money(ticketRevenueTotal)}</b><SecondaryButton onClick={() => setShowTicketBreakdown((current) => !current)}>{showTicketBreakdown ? t("reports.hideBreakdown") : t("reports.showBreakdown")}</SecondaryButton></div>
         </div>
@@ -233,7 +246,7 @@ export default function ManagementReportsPage() {
       </Surface>
     </>}
 
-    <ReportDocument title={printMode === "revenue" ? t("reports.fullRevenueReport") : printMode === "expense" ? t("reports.fullExpenseReport") : printMode === "cashflow" ? t("reports.cashFlowTitle") : printMode === "assets" ? t("finance.fixedAssetsReport") : printMode === "category" ? (categoryReport?.title || t("finance.singleCategoryReport")) : t("reports.reportDocTitle")} generatedLabel={t("cc.reportGenerated")} generatedByLabel={t("cc.reportGeneratedBy")} generatedBy={user?.name || "—"}>
+    <ReportDocument title={printMode === "revenue" ? t("reports.fullRevenueReport") : printMode === "expense" ? t("reports.fullExpenseReport") : printMode === "cashflow" ? t("reports.cashFlowTitle") : printMode === "assets" ? t("finance.fixedAssetsReport") : printMode === "category" ? (categoryReport?.title || t("finance.singleCategoryReport")) : printMode === "facilities" ? t("reports.facilitiesByCategory") : t("reports.reportDocTitle")} generatedLabel={t("cc.reportGenerated")} generatedByLabel={t("cc.reportGeneratedBy")} generatedBy={user?.name || "—"}>
       {printMode === "summary" && <>
       <p className="report-sub">{t("reports.reportPeriodLabel")}: {from} — {to}</p>
       <ReportSection title={t("finance.revenueVsExpenses")}>
@@ -279,6 +292,10 @@ export default function ManagementReportsPage() {
         {cashFlow && cashFlow.movements.length > 0 && <ReportSection title={t("reports.cashMovements")}><ReportTable headers={[{ label: t("common.date") }, { label: t("reports.typeCol") }, { label: t("common.description") }, { label: t("reports.accountCol") }, { label: t("reports.inCol"), num: true }, { label: t("reports.outCol"), num: true }]} rows={cashFlow.movements.map((row: any) => [dateLabel(row.date), t(CASH_KIND_KEYS[row.kind]), row.description || "—", movementAccount(row), row.inAmount ? money(row.inAmount) : "", row.outAmount ? money(row.outAmount) : ""])}/></ReportSection>}
         {cashFlow && <ReportSection title={`${t("reports.accountReceivable")} — ${t("reports.positionAt", { date: dateLabel(to) })}`}>{cashFlow.receivable.rows.length ? <ReportTable headers={[{ label: t("common.date") }, { label: t("common.category") }, { label: t("common.description") }, { label: t("finance.totalAmount"), num: true }, { label: t("reports.outstandingCol"), num: true }]} rows={cashFlow.receivable.rows.map((row: any) => [dateLabel(row.businessDate), row.categoryName, row.description, money(row.amount), money(row.outstanding)])}/> : <p className="report-sub">{t("reports.nothingOutstanding")}</p>}</ReportSection>}
         {cashFlow && <ReportSection title={`${t("reports.accountPayable")} — ${t("reports.positionAt", { date: dateLabel(to) })}`}>{cashFlow.payable.rows.length ? <ReportTable headers={[{ label: t("common.date") }, { label: t("common.category") }, { label: t("common.description") }, { label: t("finance.totalAmount"), num: true }, { label: t("reports.outstandingCol"), num: true }]} rows={cashFlow.payable.rows.map((row: any) => [dateLabel(row.businessDate), row.categoryName, row.description, money(row.amount), money(row.outstanding)])}/> : <p className="report-sub">{t("reports.nothingOutstanding")}</p>}</ReportSection>}
+      </>}
+      {printMode === "facilities" && facilityReport && <>
+        <p className="report-sub">{t("reports.reportPeriodLabel")}: {from} — {to} · {facilityFilterName || t("reports.allFacilityCategories")}</p>
+        <ReportSection title={t("reports.facilitiesByCategory")}>{facilityReport.rows.length ? <ReportTable headers={[{ label: t("reports.mainCategoryCol") }, { label: t("reports.subCategoryCol") }, { label: t("reports.facilityCol") }, { label: t("reports.bookingsCol"), num: true }, { label: t("reports.paidCol"), num: true }, { label: t("reports.unpaidCol"), num: true }]} rows={[...facilityReport.rows.map((row: any) => [row.mainCategoryName || t("reports.uncategorised"), row.subCategoryName || "—", row.facilityTypeName, String(row.bookings), money(row.paidAmount), money(row.unpaidAmount)]), [t("reports.totalRow"), "", "", String(facilityReport.totals.bookings), money(facilityReport.totals.paidAmount), money(facilityReport.totals.unpaidAmount)]]}/> : <p className="report-sub">{t("reports.noFacilitiesInFilter")}</p>}</ReportSection>
       </>}
       {printMode === "category" && categoryReport && <>
         <p className="report-sub">{t("reports.reportPeriodLabel")}: {categoryFrom} — {categoryTo}{categoryReport.includesSubs ? ` · ${t("reports.includesSubCategories")}` : ""}</p>
