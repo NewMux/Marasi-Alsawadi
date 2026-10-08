@@ -250,14 +250,14 @@ function ManagerView() {
       <div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("pettyCash.custodiansList")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("pettyCash.custodiansListHint")}</p></div><StatusPill>{funds.length}</StatusPill></div>
       {isLoading ? <LoadingState/> : funds.length ? <div className="divide-y divide-divider">{(funds as any[]).map((row) => { const expanded = expandedFundId === row.fund.id; return <div key={row.fund.id} className="py-4">
         <div className="grid grid-cols-[1.1fr_.7fr_.7fr_.7fr_auto] items-center gap-3">
-          <div><b className="block text-sm">{row.custodian?.name || row.custodian?.username || "—"}</b><span className="mt-0.5 block font-mono text-[10px] text-accent">{row.custodian?.username}</span></div>
+          <div><b className="block text-sm">{row.custodianName || row.custodian?.name || row.custodian?.username || "—"}</b>{row.accountMissing ? <span className="mt-0.5 block text-[10px] text-danger">{t("pettyCash.accountMissing")}</span> : <span className="mt-0.5 block font-mono text-[10px] text-accent">{row.custodian?.username}</span>}</div>
           <span className="text-xs">{money(row.fund.fixedAmount)}</span>
           <span className="text-xs text-danger">−{money(row.totalSpent)}</span>
           <b className={row.balance >= 0 ? "text-sm text-ink" : "text-sm text-danger"}>{money(row.balance)}</b>
           <div className="flex justify-end gap-1">
             {isSuperAdmin && <button aria-label="Send top-up" onClick={() => openAllocate(row.fund)} className="rounded-full p-2 text-muted hover:bg-fill hover:text-ink"><Send size={14}/></button>}
             {isSuperAdmin && <button aria-label="Adjust balance" title={t("pettyCash.adjustBalance")} onClick={() => openAdjust(row)} className="rounded-full p-2 text-muted hover:bg-fill hover:text-ink"><Scale size={14}/></button>}
-            {isSuperAdmin && <button aria-label="Edit custodian" onClick={() => openEditCustodian(row)} className="rounded-full p-2 text-muted hover:bg-fill hover:text-ink"><Edit3 size={14}/></button>}
+            {isSuperAdmin && row.custodian && <button aria-label="Edit custodian" onClick={() => openEditCustodian(row)} className="rounded-full p-2 text-muted hover:bg-fill hover:text-ink"><Edit3 size={14}/></button>}
             <button aria-label="Toggle spending" onClick={() => setExpandedFundId(expanded ? null : row.fund.id)} className="rounded-full p-2 text-muted hover:bg-fill hover:text-ink">{expanded ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}</button>
           </div>
         </div>
@@ -275,7 +275,7 @@ function ManagerView() {
     </Surface>
     <Dialog open={Boolean(allocatingFund)} onOpenChange={(open) => { if (!open) setAllocatingFund(null); }}>
       <DialogContent>
-        <DialogHeader><DialogTitle>{t("pettyCash.sendTopUpTo")} {allocatingFund && ((funds as any[]).find((row) => row.fund.id === allocatingFund.id)?.custodian?.name || "")}</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>{t("pettyCash.sendTopUpTo")} {allocatingFund && ((funds as any[]).find((row) => row.fund.id === allocatingFund.id)?.custodianName || "")}</DialogTitle></DialogHeader>
         <div className="grid gap-4">
           <Field label={t("pettyCash.spendAmount")}><TextField inputMode="decimal" value={allocationForm.amount} onChange={(event) => setAllocationForm({ ...allocationForm, amount: event.target.value })} placeholder="0.00"/></Field>
           <Field label={t("pettyCash.allocationNote")}><TextField value={allocationForm.note} onChange={(event) => setAllocationForm({ ...allocationForm, note: event.target.value })} placeholder={t("common.optional")}/></Field>

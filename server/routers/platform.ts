@@ -43,7 +43,7 @@ import {
   listAssetCategories, createAssetCategory, updateAssetCategory, deleteAssetCategory, getAssetCategory,
   listAssetRecords, createAssetRecord, getAssetRecord, updateAssetRecord, deleteAssetRecord,
   listAssetAdjustments, createAssetAdjustment, createAssetTransfer, getAssetCategoryBalances,
-  getExpenseCategoryByCode, createPettyCashFund, getPettyCashFund, getPettyCashFundByCustodian, updatePettyCashFundAmount,
+  getExpenseCategoryByCode, createPettyCashFund, ensurePettyCashFundForCustodian, getPettyCashFund, getPettyCashFundByCustodian, updatePettyCashFundAmount,
   listPettyCashFundsWithBalances, listPettyCashSpends, createPettyCashSpendWithExpense, getPettyCashSpend, deletePettyCashSpendWithExpense, getPettyCashFundBalance,
   updatePettyCashSpendWithExpense, adjustPettyCashFundBalance, setPettyCashFundActive,
   createPettyCashAllocation, listPettyCashAllocations,
@@ -330,7 +330,7 @@ export const platformRouter = router({
   customers: router({
     search: protectedProcedure.input(z.object({ query: z.string().optional(), country: z.string().optional() }).optional())
       .query(({ input }) => searchCustomers(input?.query, input?.country)),
-    findByPhone: protectedProcedure.input(z.object({ phone: z.string() })).query(({ input }) => getCustomerByPhone(input.phone)),
+    findByPhone: protectedProcedure.input(z.object({ phone: z.string() })).query(async ({ input }) => (await getCustomerByPhone(input.phone)) ?? null),
     create: protectedProcedure.input(z.object({
       fullName: z.string().min(1), phone: z.string().min(3), email: z.string().email().optional().or(z.literal("")),
       nationality: z.string().optional(), notes: z.string().optional(),
@@ -1937,6 +1937,7 @@ export const platformRouter = router({
       const user = await createLocalUser({ username, name: input.name, email: input.email, role: input.role, passwordHash: await hashPassword(input.temporaryPassword), mustChangePassword: true });
       await logActivity(ctx.user.id, "admin.user.create", "user", user?.id, `${username}:${input.role}`);
       if (!user) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Account could not be created" });
+      if (user.role === "petty_cash") await ensurePettyCashFundForCustodian(user.id, ctx.user.id);
       const { passwordHash: _passwordHash, ...safeUser } = user;
       return safeUser;
     }),
@@ -1952,6 +1953,7 @@ export const platformRouter = router({
       const user = await updateLocalUser(id, data);
       if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "User account was not found" });
       if (data.isActive === false) await revokeAllUserSessions(id);
+      if (user.role === "petty_cash") await ensurePettyCashFundForCustodian(user.id, ctx.user.id);
       await logActivity(ctx.user.id, "admin.user.update", "user", id, JSON.stringify(data));
       const { passwordHash: _passwordHash, ...safeUser } = user;
       return safeUser;
@@ -1970,6 +1972,7 @@ export const platformRouter = router({
       if (input.id === ctx.user.id && input.role !== ctx.user.role) throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot change the role of your own account" });
       assertCanManageAccount(ctx.user, await getUserById(input.id), input.role);
       await updateUserRole(input.id, input.role);
+      if (input.role === "petty_cash") await ensurePettyCashFundForCustodian(input.id, ctx.user.id);
       await logActivity(ctx.user.id, "admin.role.update", "user", input.id, input.role);
     }),
     // PRD Round 16, item 13: users could only be disabled; now they can be

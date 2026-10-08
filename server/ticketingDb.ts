@@ -771,7 +771,25 @@ export async function getRevenueCategoryByName(name: string) {
 export async function findOrCreateRevenueCategoryForFacility(name: string, code: string, createdBy: number) {
   const existing = await getRevenueCategoryByName(name);
   if (existing) return existing;
-  return createRevenueCategory({ name, code, createdBy } as any);
+  return createRevenueCategory({ name, code: await uniqueRevenueCategoryCode(code), createdBy } as any);
+}
+
+// PRD Round 17, item 3.2: revenue_categories.code is UNIQUE, so a Ticket or
+// Facility Type whose code an unrelated, differently-named revenue category
+// already uses (e.g. one the Admin created by hand) made the auto-link
+// insert fail outright — and with it the whole Finance Control revenue
+// category list. Reuse the code when free, otherwise suffix it (_2, _3, ...)
+// within the column's 32-character limit.
+async function uniqueRevenueCategoryCode(code: string) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  const base = (code || "REVENUE").slice(0, 32);
+  const taken = async (candidate: string) => (await db.select({ id: revenueCategories.id }).from(revenueCategories).where(eq(revenueCategories.code, candidate)).limit(1)).length > 0;
+  if (!(await taken(base))) return base;
+  for (let suffix = 2; suffix < 1000; suffix += 1) {
+    const candidate = `${base.slice(0, 32 - String(suffix).length - 1)}_${suffix}`;
+    if (!(await taken(candidate))) return candidate;
+  }
+  throw new Error(`Could not find a free revenue category code for ${base}`);
 }
 
 export async function listFacilityTypes(includeInactive = false) {
@@ -1742,16 +1760,49 @@ export async function getPettyCashFundBalance(fundId: number) {
 // backs the manager's oversight table.
 export async function listPettyCashFundsWithBalances() {
   const db = await getDb(); if (!db) return [];
-  const rows = await db.select({ fund: pettyCashFunds, custodian: users }).from(pettyCashFunds)
+  // PRD Round 17, item 3.3: only the account fields the screen needs — the
+  // whole users row (password hash included) used to be sent to the browser.
+  const rows = await db.select({
+    fund: pettyCashFunds,
+    custodian: { id: users.id, name: users.name, username: users.username, role: users.role, isActive: users.isActive },
+  }).from(pettyCashFunds)
     .leftJoin(users, eq(pettyCashFunds.custodianUserId, users.id))
     .orderBy(desc(pettyCashFunds.createdAt));
   const spendTotals = await db.select({ fundId: pettyCashSpends.fundId, total: sql<number>`COALESCE(SUM(${pettyCashSpends.amount}),0)` })
     .from(pettyCashSpends).groupBy(pettyCashSpends.fundId);
   const totalsByFund = new Map(spendTotals.map((row) => [row.fundId, Number(row.total)]));
+  // PRD Round 17, item 3.3: a fund whose account no longer resolves (deleted,
+  // or created before the fund/account link existed) showed only "—". Every
+  // spend posts an expense record whose payee is the custodian's name at the
+  // time, so that history names the custodian even when the account is gone.
+  const orphanFundIds = rows.filter((row) => !row.custodian?.name && !row.custodian?.username).map((row) => row.fund.id);
+  const payeeByFund = new Map<number, string>();
+  if (orphanFundIds.length) {
+    const payees = await db.select({ fundId: pettyCashSpends.fundId, payee: expenseRecords.payee }).from(pettyCashSpends)
+      .innerJoin(expenseRecords, eq(pettyCashSpends.expenseRecordId, expenseRecords.id))
+      .where(inArray(pettyCashSpends.fundId, orphanFundIds))
+      .orderBy(desc(pettyCashSpends.id));
+    for (const row of payees) if (row.payee && !payeeByFund.has(row.fundId)) payeeByFund.set(row.fundId, row.payee);
+  }
   return rows.map((row) => {
     const totalSpent = totalsByFund.get(row.fund.id) ?? 0;
-    return { ...row, totalSpent, balance: Number(row.fund.fixedAmount) - totalSpent };
+    const custodianName = row.custodian?.name || row.custodian?.username || payeeByFund.get(row.fund.id) || null;
+    return { ...row, custodianName, accountMissing: !row.custodian, totalSpent, balance: Number(row.fund.fixedAmount) - totalSpent };
   });
+}
+
+// PRD Round 17, item 3.3: a Petty Cash Custodian can also be set up from
+// Users & Roles (create, or change an existing user's role), which never
+// created the fund the Petty Cash screen lists — so that custodian had no
+// row, no balance and could not log spending. Idempotent: an existing fund
+// is reactivated rather than duplicated (custodianUserId is unique).
+export async function ensurePettyCashFundForCustodian(custodianUserId: number, createdBy: number) {
+  const existing = await getPettyCashFundByCustodian(custodianUserId);
+  if (existing) {
+    if (!existing.isActive) await setPettyCashFundActive(existing.id, true);
+    return existing;
+  }
+  return createPettyCashFund({ custodianUserId, fixedAmount: "0.000", createdBy });
 }
 
 // Logs a petty cash spend AND its backing expense record AND finance entry
@@ -1898,16 +1949,40 @@ export async function listRevenueCategoryOptionsForRecording() {
   const activeTicketTypes = await db.select().from(ticketTypes).where(eq(ticketTypes.isActive, true));
   const activeFacilityTypes = await db.select().from(facilityTypes).where(eq(facilityTypes.isActive, true));
   const options: { categoryId: number; name: string }[] = [];
+  // PRD Round 17, item 3.2: a link to a revenue category that no longer
+  // exists (e.g. removed by the Round 15 data reset) is treated like no link
+  // at all, and one type that can't be linked is skipped (and logged) instead
+  // of failing the whole list — that failure left the Finance Control
+  // revenue Category dropdown with nothing to select.
+  const existingCategoryIds = new Set((await db.select({ id: revenueCategories.id }).from(revenueCategories)).map((row) => row.id));
   for (const type of activeTicketTypes) {
-    let categoryId = type.revenueCategoryId;
+    let categoryId = type.revenueCategoryId && existingCategoryIds.has(type.revenueCategoryId) ? type.revenueCategoryId : null;
     if (!categoryId) {
-      const category = await findOrCreateRevenueCategoryForFacility(type.name, type.code, type.createdBy);
-      await db.update(ticketTypes).set({ revenueCategoryId: category.id }).where(eq(ticketTypes.id, type.id));
-      categoryId = category.id;
+      try {
+        const category = await findOrCreateRevenueCategoryForFacility(type.name, type.code, type.createdBy);
+        await db.update(ticketTypes).set({ revenueCategoryId: category.id }).where(eq(ticketTypes.id, type.id));
+        categoryId = category.id;
+      } catch (error) {
+        console.error(`Could not link ticket type ${type.id} (${type.name}) to a revenue category:`, error);
+        continue;
+      }
     }
     options.push({ categoryId, name: type.name });
   }
-  for (const facility of activeFacilityTypes) options.push({ categoryId: facility.revenueCategoryId, name: facility.name });
+  for (const facility of activeFacilityTypes) {
+    let categoryId = existingCategoryIds.has(facility.revenueCategoryId) ? facility.revenueCategoryId : null;
+    if (!categoryId) {
+      try {
+        const category = await findOrCreateRevenueCategoryForFacility(facility.name, facility.code, facility.createdBy);
+        await db.update(facilityTypes).set({ revenueCategoryId: category.id }).where(eq(facilityTypes.id, facility.id));
+        categoryId = category.id;
+      } catch (error) {
+        console.error(`Could not link facility type ${facility.id} (${facility.name}) to a revenue category:`, error);
+        continue;
+      }
+    }
+    options.push({ categoryId, name: facility.name });
+  }
   // PRD Round 16, item 2: any active sub-category the Admin has placed under
   // one of these Ticket/Facility Type categories is offered right beneath it.
   const subCategories = (await listRevenueCategories(false)).filter((category) => category.parentId);
