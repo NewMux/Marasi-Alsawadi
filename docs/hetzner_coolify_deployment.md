@@ -127,3 +127,10 @@ Before a production migration or release, back up the new Marasi database and re
 [1]: https://coolify.io/docs/applications "Coolify Applications"
 
 [2]: https://coolify.io/docs/knowledge-base/environment-variables "Coolify Environment Variables"
+
+## Backup & restore (Round 17, item 5.4)
+
+- **Client backups:** a Super Admin can download a full JSON export of the data at any time from Commercial Settings > Backup & restore (`GET /api/backup`). It leaves out password hashes and login sessions. Uploaded receipt files under `./uploads` are not inside it.
+- **Restore requests:** the same tab has "Request Data Restore". It only records the requested restore point and reason in `data_restore_requests`. The app never restores anything itself. NewMux reviews each request and restores the database server-side from its own backups. Set `NEWMUX_SUPPORT_USERNAMES` to the NewMux account usernames that may update a request's status and leave a note for the client.
+- **Server-side backups are still required.** The client download does not replace them. Enable scheduled MySQL backups for the Marasi database in Coolify, plus a backup of the `./uploads` persistent volume, and confirm that a restore from them has been tested. The checklist item "Create dedicated Marasi database and backups" above must be verified by the deployment operator; it cannot be confirmed from this repository.
+

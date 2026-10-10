@@ -1,17 +1,19 @@
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { DateField, Field as UiField, formatDateDmy, PageHeader, PrimaryButton, SelectField, Surface, TextField, toIsoDateString, cx as join } from "@/components/MarasiUI";
-import { AlertTriangle, Building2, Landmark, ListChecks, Package, ReceiptText, ShieldCheck, Ticket, TrendingUp, Users, X } from "lucide-react";
+import { AlertTriangle, Building2, DatabaseBackup, Download, Landmark, ListChecks, Package, Printer, ReceiptText, ShieldCheck, Ticket, TrendingUp, Users, X } from "lucide-react";
+import { printReport, ReportDocument, ReportSection, ReportTable } from "@/components/PrintableReport";
+import { exportSpreadsheet } from "@/lib/spreadsheetExport";
 import { useState } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { orderCategoriesAsTree } from "@/lib/categoryTree";
+import { categoryOptionLabel, orderCategoriesAsTree } from "@/lib/categoryTree";
 import { toast } from "sonner";
 import { useT, type TranslationKey } from "@/lib/i18n";
 
 const money = (value: unknown) => `OMR ${Number(value || 0).toFixed(3)}`;
 const today = new Date().toISOString().slice(0, 10);
 const OPENING_BALANCE_MARKER = "Opening balance";
-type Tab = "pricing" | "categoryPricing" | "fees" | "discounts" | "partnerEntities" | "facilityTypes" | "addonServices" | "categories" | "revenueCategories" | "assetCategories" | "opening" | "users" | "audit" | "dangerZone";
+type Tab = "pricing" | "categoryPricing" | "fees" | "discounts" | "partnerEntities" | "facilityTypes" | "facilityCategories" | "addonServices" | "categories" | "revenueCategories" | "assetCategories" | "opening" | "users" | "audit" | "dangerZone" | "backup";
 type Role = "staff" | "manager" | "admin" | "guard" | "super_admin" | "petty_cash" | "cashier";
 const STREAM_KEYS: Record<string, TranslationKey> = { rooms: "reports.streamRooms", aqua_park: "reports.streamAquaPark", fnb: "reports.streamFnb", extras: "reports.streamExtras" };
 
@@ -20,6 +22,18 @@ const Field = UiField;
 const Input = TextField;
 const Select = SelectField;
 const Save = PrimaryButton;
+
+// PRD Round 17, item 4.1: "YYYY-MM-DD" plus one calendar year; 29 Feb rolls
+// back to 28 Feb in a non-leap year rather than spilling into March.
+const toDateOnly = (value: unknown) => value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
+
+function addOneYear(isoDate: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate);
+  if (!match) return "";
+  const year = Number(match[1]) + 1, month = Number(match[2]), day = Number(match[3]);
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return `${year}-${match[2]}-${String(Math.min(day, lastDay)).padStart(2, "0")}`;
+}
 
 export default function SuperAdminSettingsPage() {
   const t = useT();
@@ -41,21 +55,22 @@ export default function SuperAdminSettingsPage() {
   const [discountTicketTypeId, setDiscountTicketTypeId] = useState("");
   const [partnerEntityForm, setPartnerEntityForm] = useState({ id: "", name: "" });
   const [expandedEntityId, setExpandedEntityId] = useState<number | null>(null);
-  const blankRuleForm = { appliesTo: "ticket_type" as "ticket_type" | "facility", ticketTypeId: "", facilityTypeId: "", discountPercentage: "", validFrom: today, validUntil: "" };
+  const blankRuleForm = { appliesTo: "ticket_type" as "ticket_type" | "facility", ticketTypeId: "", facilityTypeId: "", discountPercentage: "", validFrom: today, validUntil: addOneYear(today) };
   const [ruleForm, setRuleForm] = useState(blankRuleForm);
-  const [facilityTypeForm, setFacilityTypeForm] = useState({ id: "", name: "", code: "", pricingMethod: "hourly" as "hourly" | "daily" | "fixed", rate: "", applyVat: true, vatPercent: "5.00", autoCancelEnabled: false, autoCancelHours: "24" });
+  const [facilityTypeForm, setFacilityTypeForm] = useState({ id: "", name: "", code: "", pricingMethod: "hourly" as "hourly" | "daily" | "fixed", rate: "", applyVat: true, vatPercent: "5.00", autoCancelEnabled: false, autoCancelHours: "24", facilityCategoryId: "" });
+  const [facilityCategoryForm, setFacilityCategoryForm] = useState({ id: "", name: "", code: "", parentId: "" });
   const [addonServiceForm, setAddonServiceForm] = useState({ id: "", name: "", code: "", pricingMethod: "fixed" as "per_person" | "fixed" | "hourly", rate: "", applyVat: true, vatPercent: "5.00" });
   const [feeForm, setFeeForm] = useState({ id: "", name: "", code: "", calculationType: "fixed" as "fixed" | "percentage", value: "", applicationBasis: "per_transaction" as "per_ticket" | "per_transaction", appliesGlobally: false, displayOrder: "0", ticketTypeIds: [] as number[], facilityTypeIds: [] as number[] });
   const [categoryForm, setCategoryForm] = useState({ id: "", name: "", code: "", parentId: "" });
   const [revenueCategoryForm, setRevenueCategoryForm] = useState({ id: "", name: "", code: "", parentId: "" });
   const [assetCategoryForm, setAssetCategoryForm] = useState({ id: "", name: "", code: "", parentId: "" });
   const [userForm, setUserForm] = useState({ username: "", name: "", email: "", role: "staff" as Role, temporaryPassword: "" });
-  const [revenueOpeningForm, setRevenueOpeningForm] = useState({ date: today, stream: "", amount: "", note: "" });
+  const [revenueOpeningForm, setRevenueOpeningForm] = useState({ date: today, categoryId: "", amount: "", note: "" });
   const [expenseOpeningForm, setExpenseOpeningForm] = useState({ date: today, categoryId: "", amount: "", note: "" });
   // PRD Round 16, item 10: Capital Expenditure and Cash Flow opening balances;
   // item 7: Cash Flow adjustments (add / deduct) with a note.
   const [capexOpeningForm, setCapexOpeningForm] = useState({ date: today, categoryId: "", amount: "", note: "" });
-  const [cashFlowForm, setCashFlowForm] = useState({ date: today, type: "opening" as "opening" | "add" | "deduct", amount: "", note: "" });
+  const [cashFlowForm, setCashFlowForm] = useState({ date: today, type: "opening" as "opening" | "add" | "deduct", account: "cash" as "cash" | "bank", amount: "", note: "" });
   // PRD Round 15 ("Reset All Data" feature): a typed confirmation phrase,
   // required to exactly match "RESET" before the destructive action can
   // even be attempted.
@@ -70,6 +85,7 @@ export default function SuperAdminSettingsPage() {
   const { data: partnerEntities = [] } = trpc.platform.tickets.partnerEntities.list.useQuery({ includeInactive: true });
   const { data: facilityTypes = [] } = trpc.platform.facilityTypes.list.useQuery({ includeInactive: true });
   const { data: addonServices = [] } = trpc.platform.addonServices.list.useQuery({ includeInactive: true });
+  const { data: facilityCategories = [] } = trpc.platform.facilityCategories.list.useQuery({ includeInactive: true });
   const { data: categories = [], error: categoriesError } = trpc.platform.finance.expenseCategories.list.useQuery({ includeInactive: true });
   const { data: revenueCategories = [], error: revenueCategoriesError } = trpc.platform.finance.revenueCategories.list.useQuery({ includeInactive: true });
   const { data: assetCategories = [], error: assetCategoriesError } = trpc.platform.finance.assetCategories.list.useQuery({ includeInactive: true });
@@ -77,12 +93,37 @@ export default function SuperAdminSettingsPage() {
   const { data: activity = [] } = trpc.platform.admin.activityLog.useQuery({ limit: 50 }, { enabled: isSuperAdmin });
   const { data: financeEntries = [] } = trpc.platform.finance.list.useQuery({ descriptionPrefix: OPENING_BALANCE_MARKER });
   const { data: expenseRecords = [] } = trpc.platform.finance.expenses.list.useQuery({ descriptionPrefix: OPENING_BALANCE_MARKER });
-  const revenueOpeningBalances = (financeEntries as any[]).filter((entry) => entry.type === "revenue").sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  // PRD Round 17, item 3.5: revenue opening balances are now revenue records
+  // against the Admin's own revenue categories (like expense and CapEx
+  // opening balances), not the legacy fixed "revenue streams" (Rooms /
+  // Waterpark / Food & Beverages / Summary) hard-coded on finance entries.
+  // Entries already recorded the old way are kept untouched and listed as
+  // "legacy" so nothing previously entered disappears.
+  const { data: allRevenueRecords = [] } = trpc.platform.finance.revenues.list.useQuery(undefined, { enabled: tab === "opening" });
+  const { data: revenueCategoryOptions = [] } = trpc.platform.finance.revenueCategoryOptionsForRecording.useQuery(undefined, { enabled: tab === "opening" });
+  const revenueOpeningBalances = [
+    ...(allRevenueRecords as any[]).filter((entry) => String(entry.description || "").startsWith(OPENING_BALANCE_MARKER)).map((entry) => ({ kind: "record" as const, id: entry.id, date: entry.businessDate, amount: entry.amount, label: entry.categoryName, description: entry.description })),
+    ...(financeEntries as any[]).filter((entry) => entry.type === "revenue" && entry.referenceType !== "revenue_record").map((entry) => ({ kind: "legacy" as const, id: entry.id, date: entry.date, amount: entry.amount, label: STREAM_KEYS[entry.stream] ? t(STREAM_KEYS[entry.stream]) : entry.stream, description: entry.description })),
+  ].sort((a, b) => String(b.date).localeCompare(String(a.date)));
   const { data: allAssetRecords = [] } = trpc.platform.finance.assets.list.useQuery(undefined, { enabled: tab === "opening" });
   const capexOpeningBalances = (allAssetRecords as any[]).filter((entry) => String(entry.description || "").startsWith(OPENING_BALANCE_MARKER)).sort((a, b) => String(b.businessDate).localeCompare(String(a.businessDate)));
-  const { data: cashFlowAdjustments = [] } = trpc.platform.finance.cashFlow.adjustments.useQuery(undefined, { enabled: tab === "opening" });
+  const { data: cashFlowAdjustmentRows = [] } = trpc.platform.finance.cashFlow.adjustments.useQuery(undefined, { enabled: tab === "opening" });
+  // The API returns { adjustment, createdByName } rows; this list (and its
+  // Remove button) needs the adjustment's own fields — reading them off the
+  // wrapper showed every entry as 0.000 and sent no id to remove.
+  const cashFlowAdjustments = (cashFlowAdjustmentRows as any[]).map((row: any) => ({ ...(row.adjustment ?? row), createdByName: row.createdByName ?? null }));
   const expenseOpeningBalances = [...(expenseRecords as any[])].sort((a, b) => String(b.businessDate).localeCompare(String(a.businessDate)));
   const { data: systemResetSettings } = trpc.platform.settings.systemReset.get.useQuery(undefined, { enabled: isSuperAdmin });
+  // PRD Round 17, item 5.4: Backup & Restore.
+  const { data: restoreData } = trpc.platform.settings.dataRestore.list.useQuery(undefined, { enabled: isSuperAdmin && tab === "backup" });
+  const [restoreForm, setRestoreForm] = useState({ restorePoint: "", reason: "" });
+  const [restoreNotes, setRestoreNotes] = useState<Record<number, string>>({});
+  const refreshRestore = () => utils.platform.settings.dataRestore.list.invalidate();
+  const restoreCreate = trpc.platform.settings.dataRestore.create.useMutation({ onSuccess: () => { refreshRestore(); setRestoreForm({ restorePoint: "", reason: "" }); toast.success(t("backup.requestSent")); }, onError: (error) => toast.error(error.message) });
+  const restoreCancel = trpc.platform.settings.dataRestore.cancel.useMutation({ onSuccess: () => { refreshRestore(); toast.success(t("backup.requestCancelled")); }, onError: (error) => toast.error(error.message) });
+  const restoreUpdate = trpc.platform.settings.dataRestore.updateStatus.useMutation({ onSuccess: () => { refreshRestore(); toast.success(t("backup.statusSaved")); }, onError: (error) => toast.error(error.message) });
+  const restoreStatusLabel = (status: string) => ({ pending: t("backup.statusPending"), in_progress: t("backup.statusInProgress"), completed: t("backup.statusCompleted"), rejected: t("backup.statusRejected"), cancelled: t("backup.statusCancelled") } as Record<string, string>)[status] ?? status;
+  const omanDateTime = (value: unknown) => { const date = new Date(value as string); return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("en-GB", { timeZone: "Asia/Muscat", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); };
   const resetToolEnabled = systemResetSettings?.resetAllDataToolEnabled ?? true;
   const setResetToolEnabled = trpc.platform.settings.systemReset.setToolEnabled.useMutation({
     onSuccess: () => { utils.platform.settings.systemReset.get.invalidate(); toast.success(t("settings.resetToolStateSaved")); },
@@ -105,7 +146,7 @@ export default function SuperAdminSettingsPage() {
   const roleLabel = (role: string): string => ({ cashier: t("settings.roleCashierOnly"), staff: t("settings.roleCashier"), manager: t("settings.roleManager"), admin: t("settings.roleAdmin"), guard: t("settings.roleGuard"), super_admin: t("settings.roleSuperAdmin"), petty_cash: t("settings.rolePettyCash") })[role] ?? role;
 
   const refreshSettings = () => { utils.platform.ticketTypes.list.invalidate(); utils.platform.visitorCategories.list.invalidate(); utils.platform.ticketPrices.list.invalidate(); utils.platform.fees.invalidate(); utils.platform.finance.expenseCategories.invalidate(); utils.platform.finance.revenueCategories.invalidate(); utils.platform.finance.assetCategories.invalidate(); utils.platform.admin.invalidate(); };
-  const refreshOpeningBalances = () => { utils.platform.finance.list.invalidate(); utils.platform.finance.expenses.list.invalidate(); };
+  const refreshOpeningBalances = () => { utils.platform.finance.list.invalidate(); utils.platform.finance.expenses.list.invalidate(); utils.platform.finance.revenues.list.invalidate(); };
 
   // PRD Round 9, Section 10: retiring or removing a library entry other
   // parts of the system are built on now names exactly what it affects
@@ -119,13 +160,14 @@ export default function SuperAdminSettingsPage() {
     return window.confirm(`${t("settings.dependencyWarningTitle")}\n\n${t("settings.dependencyWarningBody", { name, items: affects.map((entry) => `• ${entry}`).join("\n") })}`);
   };
   const guarded = (entity: DependentEntity, id: number, name: string, question: string, run: () => void) => { void confirmChange(entity, id, name, question).then((ok) => { if (ok) run(); }); };
-  const revenueOpeningCreate = trpc.platform.finance.create.useMutation({ onSuccess: () => { refreshOpeningBalances(); setRevenueOpeningForm({ date: today, stream: "", amount: "", note: "" }); toast.success(t("settings.openingBalanceAdded")); }, onError: (error) => toast.error(error.message) });
+  const revenueOpeningCreate = trpc.platform.finance.revenues.create.useMutation({ onSuccess: () => { refreshOpeningBalances(); setRevenueOpeningForm({ date: today, categoryId: "", amount: "", note: "" }); toast.success(t("settings.openingBalanceAdded")); }, onError: (error) => toast.error(error.message) });
+  const revenueOpeningRecordDelete = trpc.platform.finance.revenues.delete.useMutation({ onSuccess: () => { refreshOpeningBalances(); toast.success(t("settings.openingBalanceRemoved")); }, onError: (error) => toast.error(error.message) });
   const revenueOpeningDelete = trpc.platform.finance.delete.useMutation({ onSuccess: () => { refreshOpeningBalances(); toast.success(t("settings.openingBalanceRemoved")); }, onError: (error) => toast.error(error.message) });
   const expenseOpeningCreate = trpc.platform.finance.expenses.create.useMutation({ onSuccess: () => { refreshOpeningBalances(); setExpenseOpeningForm({ date: today, categoryId: "", amount: "", note: "" }); toast.success(t("settings.openingBalanceAdded")); }, onError: (error) => toast.error(error.message) });
   const expenseOpeningDelete = trpc.platform.finance.expenses.delete.useMutation({ onSuccess: () => { refreshOpeningBalances(); toast.success(t("settings.openingBalanceRemoved")); }, onError: (error) => toast.error(error.message) });
   const capexOpeningCreate = trpc.platform.finance.assets.create.useMutation({ onSuccess: () => { utils.platform.finance.assets.invalidate(); setCapexOpeningForm({ date: today, categoryId: "", amount: "", note: "" }); toast.success(t("settings.openingBalanceAdded")); }, onError: (error) => toast.error(error.message) });
   const capexOpeningDelete = trpc.platform.finance.assets.delete.useMutation({ onSuccess: () => { utils.platform.finance.assets.invalidate(); toast.success(t("settings.openingBalanceRemoved")); }, onError: (error) => toast.error(error.message) });
-  const cashFlowAdjust = trpc.platform.finance.cashFlow.adjust.useMutation({ onSuccess: () => { utils.platform.finance.cashFlow.invalidate(); setCashFlowForm({ date: today, type: "add", amount: "", note: "" }); toast.success(t("settings.cashFlowEntrySaved")); }, onError: (error) => toast.error(error.message) });
+  const cashFlowAdjust = trpc.platform.finance.cashFlow.adjust.useMutation({ onSuccess: () => { utils.platform.finance.cashFlow.invalidate(); setCashFlowForm({ date: today, type: "add", account: "cash", amount: "", note: "" }); toast.success(t("settings.cashFlowEntrySaved")); }, onError: (error) => toast.error(error.message) });
   const cashFlowRemove = trpc.platform.finance.cashFlow.removeAdjustment.useMutation({ onSuccess: () => { utils.platform.finance.cashFlow.invalidate(); toast.success(t("settings.openingBalanceRemoved")); }, onError: (error) => toast.error(error.message) });
   const cashFlowTypeLabel = (type: string) => type === "opening" ? t("settings.cashFlowTypeOpening") : type === "add" ? t("settings.cashFlowTypeAdd") : t("settings.cashFlowTypeDeduct");
   const resetTicketTypeForm = () => { setTicketTypeForm({ id: "", name: "", code: "", ticketGroup: "water_park", applyVat: true, vatPercent: "5.00" }); setNewTicketTypePrices({}); };
@@ -165,9 +207,19 @@ export default function SuperAdminSettingsPage() {
   const ruleCreate = trpc.platform.tickets.partnerEntities.discountRules.create.useMutation({ onSuccess: () => { utils.platform.tickets.partnerEntities.discountRules.list.invalidate(); resetRuleForm(); toast.success(t("settings.discountRuleAdded")); }, onError: (error) => toast.error(error.message) });
   const ruleUpdate = trpc.platform.tickets.partnerEntities.discountRules.update.useMutation({ onSuccess: () => { utils.platform.tickets.partnerEntities.discountRules.list.invalidate(); toast.success(t("settings.discountRuleUpdated")); }, onError: (error) => toast.error(error.message) });
   const ruleDelete = trpc.platform.tickets.partnerEntities.discountRules.delete.useMutation({ onSuccess: () => { utils.platform.tickets.partnerEntities.discountRules.list.invalidate(); toast.success(t("settings.discountRuleRemoved")); }, onError: (error) => toast.error(error.message) });
-  const resetFacilityTypeForm = () => setFacilityTypeForm({ id: "", name: "", code: "", pricingMethod: "hourly", rate: "", applyVat: true, vatPercent: "5.00", autoCancelEnabled: false, autoCancelHours: "24" });
+  const resetFacilityTypeForm = () => setFacilityTypeForm({ id: "", name: "", code: "", pricingMethod: "hourly", rate: "", applyVat: true, vatPercent: "5.00", autoCancelEnabled: false, autoCancelHours: "24", facilityCategoryId: "" });
   const facilityTypeCreate = trpc.platform.facilityTypes.create.useMutation({ onSuccess: () => { utils.platform.facilityTypes.list.invalidate(); resetFacilityTypeForm(); toast.success(t("settings.facilityTypeAdded")); }, onError: (error) => toast.error(error.message) });
   const facilityTypeUpdate = trpc.platform.facilityTypes.update.useMutation({ onSuccess: () => { utils.platform.facilityTypes.list.invalidate(); resetFacilityTypeForm(); toast.success(t("settings.facilityTypeUpdated")); }, onError: (error) => toast.error(error.message) });
+  const resetFacilityCategoryForm = () => setFacilityCategoryForm({ id: "", name: "", code: "", parentId: "" });
+  const facilityCategoryCreate = trpc.platform.facilityCategories.create.useMutation({ onSuccess: () => { utils.platform.facilityCategories.list.invalidate(); resetFacilityCategoryForm(); toast.success(t("settings.facilityCategoryAdded")); }, onError: (error) => toast.error(error.message) });
+  const facilityCategoryUpdate = trpc.platform.facilityCategories.update.useMutation({ onSuccess: () => { utils.platform.facilityCategories.list.invalidate(); utils.platform.facilityTypes.list.invalidate(); resetFacilityCategoryForm(); toast.success(t("settings.facilityCategoryUpdated")); }, onError: (error) => toast.error(error.message) });
+  const facilityCategoryDelete = trpc.platform.facilityCategories.delete.useMutation({ onSuccess: (result) => { utils.platform.facilityCategories.list.invalidate(); toast.success(result.deactivated ? t("settings.facilityCategoryRetired") : t("settings.facilityCategoryRemoved")); }, onError: (error) => toast.error(error.message) });
+  const facilityCategoryLabel = (id: unknown) => {
+    const category = (facilityCategories as any[]).find((entry: any) => entry.id === id);
+    if (!category) return "";
+    const parent = category.parentId ? (facilityCategories as any[]).find((entry: any) => entry.id === category.parentId) : null;
+    return parent ? `${parent.name} › ${category.name}` : category.name;
+  };
   const facilityTypeDelete = trpc.platform.facilityTypes.delete.useMutation({ onSuccess: () => { utils.platform.facilityTypes.list.invalidate(); toast.success(t("settings.facilityTypeRemoved")); }, onError: (error) => toast.error(error.message) });
   const resetAddonServiceForm = () => setAddonServiceForm({ id: "", name: "", code: "", pricingMethod: "fixed", rate: "", applyVat: true, vatPercent: "5.00" });
   const addonServiceCreate = trpc.platform.addonServices.create.useMutation({ onSuccess: () => { utils.platform.addonServices.list.invalidate(); resetAddonServiceForm(); toast.success(t("settings.addonServiceAdded")); }, onError: (error) => toast.error(error.message) });
@@ -182,7 +234,7 @@ export default function SuperAdminSettingsPage() {
       { id: "pricing", label: t("settings.tabBasePrices") }, { id: "categoryPricing", label: t("settings.tabCategoryPricing") }, { id: "discounts", label: t("finance.tabDiscounts") },
     ] },
     { id: "facilities", label: t("settings.tabGroupFacilities"), icon: Landmark, children: [
-      { id: "facilityTypes", label: t("settings.tabFacilityTypes") }, { id: "addonServices", label: t("settings.tabAddonServices") },
+      { id: "facilityTypes", label: t("settings.tabFacilityTypes") }, { id: "facilityCategories", label: t("settings.tabFacilityCategories") }, { id: "addonServices", label: t("settings.tabAddonServices") },
     ] },
     { id: "fees", label: t("finance.tabFees"), icon: ReceiptText },
     { id: "partnerEntities", label: t("settings.tabPartnerEntities"), icon: Building2 },
@@ -192,16 +244,88 @@ export default function SuperAdminSettingsPage() {
     { id: "users", label: t("settings.tabUsers"), icon: Users },
     ...(isSuperAdmin ? [
       { id: "audit" as Tab, label: t("settings.tabAudit"), icon: ShieldCheck },
+      { id: "backup" as Tab, label: t("backup.tab"), icon: DatabaseBackup },
       { id: "dangerZone" as Tab, label: t("settings.tabDangerZone"), icon: AlertTriangle },
     ] : []),
   ];
   const activeParent = tabs.find((entry) => entry.id === tab || entry.children?.some((child) => child.id === tab));
+
+  // PRD Round 17, item 4.2: every Commercial Settings page can be printed /
+  // saved as PDF (the same A4 ReportDocument the Finance Reports use) or
+  // exported to Excel. Each tab's report lists exactly what that tab manages.
+  const yesNo = (value: unknown) => value ? t("settingsReport.yes") : t("settingsReport.no");
+  const activeWord = (value: unknown) => value ? t("settingsReport.active") : t("settingsReport.retired");
+  const pct = (value: unknown) => `${Number(value || 0).toFixed(2)}%`;
+  const typeName = (id: unknown) => (ticketTypes as any[]).find((type: any) => type.id === id)?.name || "—";
+  const facilityName = (id: unknown) => (facilityTypes as any[]).find((facility: any) => facility.id === id)?.name || "—";
+  const categoryRows = (list: any[]) => orderCategoriesAsTree(list as any[]).map((category: any) => [categoryOptionLabel(category), category.code, category.parentId ? (list.find((parent: any) => parent.id === category.parentId)?.name || "—") : t("settingsReport.mainCategory"), activeWord(category.isActive)]);
+  const categoryHeaders = [t("settingsReport.name"), t("settingsReport.code"), t("settingsReport.parent"), t("settingsReport.status")];
+  type TabReport = { title: string; sections: Array<{ title: string; headers: string[]; numeric?: number[]; rows: string[][] }> };
+  const tabReport = (): TabReport | null => {
+    switch (tab) {
+      case "pricing": return { title: t("settings.tabBasePrices"), sections: [
+        { title: t("settingsReport.ticketTypes"), headers: [t("settingsReport.name"), t("settingsReport.code"), t("settingsReport.group"), t("settingsReport.vat"), t("settingsReport.status")], rows: (ticketTypes as any[]).map((type: any) => [type.name, type.code, type.ticketGroup === "other_tickets" ? t("tickets.otherTickets") : t("tickets.waterparkTab"), type.applyVat ? pct(type.vatPercent) : t("settingsReport.no"), activeWord(type.isActive)]) },
+        { title: t("settingsReport.visitorCategories"), headers: [t("settingsReport.name"), t("settingsReport.code"), t("settingsReport.maxPerBooking"), t("settingsReport.countsTowardGroup"), t("settingsReport.status")], rows: (visitorCategories as any[]).map((category: any) => [category.name, category.code, category.maxPerBooking ? String(category.maxPerBooking) : "—", yesNo(category.countsTowardGroupDiscount), activeWord(category.isActive)]) },
+      ] };
+      case "categoryPricing": return { title: t("settings.tabCategoryPricing"), sections: [
+        { title: t("settings.tabCategoryPricing"), headers: [t("settingsReport.ticketType"), t("settingsReport.visitorCategory"), t("settingsReport.unitPrice"), t("settingsReport.linked")], numeric: [2], rows: (ticketPrices as any[]).map((price: any) => [price.ticketTypeName, price.categoryName, money(price.unitPrice), yesNo(price.isActive)]) },
+      ] };
+      case "discounts": return { title: t("finance.tabDiscounts"), sections: [
+        { title: t("finance.tabDiscounts"), headers: [t("settingsReport.ticketType"), t("settingsReport.minTickets"), t("settingsReport.maxTickets"), t("settingsReport.discount"), t("settingsReport.status")], numeric: [1, 2, 3], rows: (discountTiers as any[]).map((tier: any) => [typeName(tier.ticketTypeId), String(tier.minTickets), tier.maxTickets === null || tier.maxTickets === undefined ? "—" : String(tier.maxTickets), pct(tier.percentage), activeWord(tier.isActive)]) },
+      ] };
+      case "fees": return { title: t("finance.tabFees"), sections: [
+        { title: t("finance.tabFees"), headers: [t("settingsReport.name"), t("settingsReport.code"), t("settingsReport.calculation"), t("settingsReport.value"), t("settingsReport.basis"), t("settingsReport.appliesGlobally"), t("settingsReport.status")], rows: (fees as any[]).map((fee: any) => [fee.name, fee.code, fee.calculationType === "percentage" ? t("settingsReport.percentage") : t("settingsReport.fixed"), fee.calculationType === "percentage" ? pct(fee.value) : money(fee.value), fee.applicationBasis === "per_ticket" ? t("settingsReport.perTicket") : t("settingsReport.perTransaction"), yesNo(fee.appliesGlobally), activeWord(fee.isActive)]) },
+      ] };
+      case "partnerEntities": return { title: t("settings.tabPartnerEntities"), sections: [
+        { title: t("settings.tabPartnerEntities"), headers: [t("settingsReport.name"), t("settingsReport.discountRules"), t("settingsReport.status")], rows: (partnerEntities as any[]).map((entity: any) => [entity.name, String((discountRules as any[]).filter((rule: any) => rule.partnerEntityId === entity.id).length), activeWord(entity.isActive)]) },
+        { title: t("settingsReport.discountRules"), headers: [t("settingsReport.entity"), t("settings.appliesTo"), t("settings.specificItem"), t("settingsReport.discount"), t("settings.validFrom"), t("settings.validUntil")], rows: (discountRules as any[]).map((rule: any) => [(partnerEntities as any[]).find((entity: any) => entity.id === rule.partnerEntityId)?.name || "—", rule.appliesTo === "facility" ? t("settings.appliesToFacility") : t("settings.appliesToTicketType"), rule.appliesTo === "facility" ? (rule.facilityTypeName || facilityName(rule.facilityTypeId)) : typeName(rule.ticketTypeId), pct(rule.discountPercentage), formatDateDmy(rule.validFrom), formatDateDmy(rule.validUntil)]) },
+      ] };
+      case "facilityTypes": return { title: t("settings.tabFacilityTypes"), sections: [
+        { title: t("settings.tabFacilityTypes"), headers: [t("settingsReport.name"), t("settingsReport.code"), t("settings.facilityCategory"), t("settingsReport.pricingMethod"), t("settingsReport.rate"), t("settingsReport.vat"), t("settingsReport.autoCancel"), t("settingsReport.status")], rows: (facilityTypes as any[]).map((facility: any) => [facility.name, facility.code, facilityCategoryLabel(facility.facilityCategoryId) || t("settings.uncategorised"), String(facility.pricingMethod), money(facility.rate), facility.applyVat ? pct(facility.vatPercent) : t("settingsReport.no"), facility.autoCancelEnabled ? t("settingsReport.afterHours", { hours: facility.autoCancelHours }) : t("settingsReport.no"), activeWord(facility.isActive)]) },
+      ] };
+      case "facilityCategories": return { title: t("settings.tabFacilityCategories"), sections: [{ title: t("settings.tabFacilityCategories"), headers: [...categoryHeaders, t("settings.tabFacilityTypes")], rows: orderCategoriesAsTree(facilityCategories as any[]).map((category: any) => [categoryOptionLabel(category), category.code, category.parentId ? ((facilityCategories as any[]).find((parent: any) => parent.id === category.parentId)?.name || "—") : t("settingsReport.mainCategory"), activeWord(category.isActive), (facilityTypes as any[]).filter((facility: any) => facility.facilityCategoryId === category.id).map((facility: any) => facility.name).join(", ") || "—"]) }] };
+      case "addonServices": return { title: t("settings.tabAddonServices"), sections: [
+        { title: t("settings.tabAddonServices"), headers: [t("settingsReport.name"), t("settingsReport.code"), t("settingsReport.pricingMethod"), t("settingsReport.rate"), t("settingsReport.vat"), t("settingsReport.status")], rows: (addonServices as any[]).map((addon: any) => [addon.name, addon.code, String(addon.pricingMethod), money(addon.rate), addon.applyVat ? pct(addon.vatPercent) : t("settingsReport.no"), activeWord(addon.isActive)]) },
+      ] };
+      case "categories": return { title: t("finance.tabCategories"), sections: [{ title: t("finance.tabCategories"), headers: categoryHeaders, rows: categoryRows(categories as any[]) }] };
+      case "revenueCategories": return { title: t("settings.tabRevenueCategories"), sections: [{ title: t("settings.tabRevenueCategories"), headers: categoryHeaders, rows: categoryRows(revenueCategories as any[]) }] };
+      case "assetCategories": return { title: t("settings.tabAssetCategories"), sections: [{ title: t("settings.tabAssetCategories"), headers: categoryHeaders, rows: categoryRows(assetCategories as any[]) }] };
+      case "opening": return { title: t("settings.tabOpeningBalances"), sections: [
+        { title: t("settings.revenueOpeningBalance"), headers: [t("common.date"), t("common.category"), t("common.description"), t("common.amount")], numeric: [3], rows: revenueOpeningBalances.map((entry) => [formatDateDmy(toDateOnly(entry.date)), entry.label + (entry.kind === "legacy" ? ` (${t("settings.legacyStream")})` : ""), entry.description || "", money(entry.amount)]) },
+        { title: t("settings.expenseOpeningBalance"), headers: [t("common.date"), t("common.category"), t("common.description"), t("common.amount")], numeric: [3], rows: expenseOpeningBalances.map((entry: any) => [formatDateDmy(toDateOnly(entry.businessDate)), entry.categoryName || "—", entry.description || "", money(entry.amount)]) },
+        { title: t("settingsReport.capexOpening"), headers: [t("common.date"), t("common.category"), t("common.description"), t("common.amount")], numeric: [3], rows: capexOpeningBalances.map((entry: any) => [formatDateDmy(toDateOnly(entry.businessDate)), entry.categoryName || "—", entry.description || "", money(entry.amount)]) },
+        { title: t("settingsReport.cashFlowEntries"), headers: [t("common.date"), t("settingsReport.type"), t("settingsReport.note"), t("common.amount")], numeric: [3], rows: (cashFlowAdjustments as any[]).map((entry: any) => [formatDateDmy(toDateOnly(entry.businessDate)), `${cashFlowTypeLabel(entry.type)} · ${entry.account === "bank" ? t("finance.bankAccount") : t("finance.cashAccount")}`, entry.note || "", `${entry.type === "deduct" ? "−" : ""}${money(entry.amount)}`]) },
+      ] };
+      case "users": return { title: t("settings.tabUsers"), sections: [
+        { title: t("settings.tabUsers"), headers: [t("settingsReport.name"), t("settingsReport.username"), t("settingsReport.role"), t("settingsReport.lastSignedIn"), t("settingsReport.status")], rows: (users as any[]).map((account: any) => [account.name || "—", account.username || "—", roleLabel(account.role), account.lastSignedIn ? new Date(account.lastSignedIn).toLocaleString("en-GB") : "—", account.isActive ? t("settingsReport.active") : t("settingsReport.disabled")]) },
+      ] };
+      case "audit": return { title: t("settings.tabAudit"), sections: [
+        { title: t("settings.configAuditTrail"), headers: [t("settings.actionCol"), t("settingsReport.details"), t("settings.userCol"), t("settings.whenCol")], rows: (activity as any[]).map((entry: any) => [entry.l.action, entry.l.details || entry.l.entityType || "—", entry.u?.name || t("settings.systemFallback"), new Date(entry.l.createdAt).toLocaleString("en-GB")]) },
+      ] };
+      default: return null;
+    }
+  };
+  const currentReport = tabReport();
+  const exportCurrentReport = () => {
+    if (!currentReport) return;
+    const rows: string[][] = [["Marasi Alsawadi Resort & Water Park"], [`${t("settings.title")} — ${currentReport.title}`], [`${t("cc.reportGeneratedBy")} ${currentUser?.name || "—"}`], []];
+    for (const section of currentReport.sections) rows.push([section.title], section.headers, ...section.rows, []);
+    exportSpreadsheet(`marasi-settings-${tab}-${today}.xlsx`, rows);
+  };
 
   return <><PageHeader eyebrow={t("settings.eyebrow")} title={t("settings.title")} description={t("settings.description")}/>
     <div className="mb-6 rounded-2xl border border-white bg-white/75 p-2 shadow-sm">
       <div className="flex gap-2 overflow-x-auto">{tabs.map((entry) => { const Icon = entry.icon; const active = activeParent?.id === entry.id; return <button key={entry.id} onClick={() => setTab(entry.children ? entry.children[0].id : entry.id as Tab)} className={join("flex min-w-fit items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-semibold transition", active ? "bg-accent text-white shadow-sm" : "text-muted hover:bg-fill hover:text-ink")}><Icon size={15}/>{entry.label}</button>; })}</div>
       {activeParent?.children && <div className="mt-2 flex gap-1.5 overflow-x-auto border-t border-divider pt-2">{activeParent.children.map((child) => <button key={child.id} onClick={() => setTab(child.id)} className={join("min-w-fit rounded-lg px-3 py-1.5 text-[11px] font-semibold transition", tab === child.id ? "bg-fill text-ink" : "text-muted hover:bg-fill hover:text-ink")}>{child.label}</button>)}</div>}
     </div>
+    {currentReport && <div className="-mt-3 mb-5 flex flex-wrap justify-end gap-2">
+      <Button size="sm" variant="outline" className="rounded-full" onClick={exportCurrentReport}><Download size={14} className="mr-1.5"/>{t("settingsReport.exportExcel")}</Button>
+      <Button size="sm" variant="outline" className="rounded-full" onClick={() => requestAnimationFrame(printReport)}><Printer size={14} className="mr-1.5"/>{t("settingsReport.printPdf")}</Button>
+    </div>}
+    {currentReport && <ReportDocument title={`${t("settings.title")} — ${currentReport.title}`} generatedLabel={t("cc.reportGenerated")} generatedByLabel={t("cc.reportGeneratedBy")} generatedBy={currentUser?.name || "—"}>
+      {currentReport.sections.map((section) => <ReportSection key={section.title} title={section.title}>{section.rows.length ? <ReportTable headers={section.headers.map((label, index) => ({ label, num: section.numeric?.includes(index) }))} rows={section.rows}/> : <p className="report-sub">{t("settingsReport.empty")}</p>}</ReportSection>)}
+      <div className="report-footer">{t("cc.reportFooter")}</div>
+    </ReportDocument>}
 
     {tab === "pricing" && <div className="grid gap-6 xl:grid-cols-[.9fr_1.1fr]">
       <div className="space-y-6">
@@ -312,8 +436,15 @@ export default function SuperAdminSettingsPage() {
                   {ruleForm.appliesTo === "ticket_type"
                     ? <Field label={t("settings.specificItem")}><Select value={ruleForm.ticketTypeId} onChange={(e) => setRuleForm({ ...ruleForm, ticketTypeId: e.target.value })}><option value="">{t("tickets.chooseTicketType")}</option>{(ticketTypes as any[]).filter((type: any) => type.isActive).map((type: any) => <option key={type.id} value={type.id}>{type.name}</option>)}</Select></Field>
                     : <Field label={t("settings.specificItem")}><Select value={ruleForm.facilityTypeId} onChange={(e) => setRuleForm({ ...ruleForm, facilityTypeId: e.target.value })}><option value="">{t("facility.chooseFacility")}</option>{(facilityTypes as any[]).filter((f: any) => f.isActive).map((f: any) => <option key={f.id} value={f.id}>{f.name}</option>)}</Select></Field>}
-                  <Field label={t("settings.entityDiscountPercent")}><Input inputMode="decimal" value={ruleForm.discountPercentage} onChange={(e) => setRuleForm({ ...ruleForm, discountPercentage: e.target.value })}/></Field>
-                  <Field label={t("settings.validFrom")}><DateField value={ruleForm.validFrom} onChange={(value) => setRuleForm({ ...ruleForm, validFrom: value })}/></Field>
+                  {/* PRD Round 17, item 3.4: the discount % sat between "Specific
+                      item" and the dates in this two-column grid, pushing From
+                      Date into the right-hand column and To Date onto the next
+                      row's left — reversed. It now spans its own row so From
+                      and To share one row, From on the left. */}
+                  <div className="sm:col-span-2"><Field label={t("settings.entityDiscountPercent")}><Input inputMode="decimal" value={ruleForm.discountPercentage} onChange={(e) => setRuleForm({ ...ruleForm, discountPercentage: e.target.value })}/></Field></div>
+                  {/* PRD Round 17, item 4.1: picking a From Date fills To Date
+                      with the same date one year later (still editable). */}
+                  <Field label={t("settings.validFrom")}><DateField value={ruleForm.validFrom} onChange={(value) => setRuleForm({ ...ruleForm, validFrom: value, validUntil: value ? addOneYear(value) : ruleForm.validUntil })}/></Field>
                   <Field label={t("settings.validUntil")}><DateField value={ruleForm.validUntil} min={ruleForm.validFrom} onChange={(value) => setRuleForm({ ...ruleForm, validUntil: value })}/></Field>
                 </div>
                 <div className="mt-4"><Button className="rounded-full bg-accent text-white" onClick={() => {
@@ -335,12 +466,14 @@ export default function SuperAdminSettingsPage() {
       </Card>
     </div>}
 
-    {tab === "facilityTypes" && <div className="grid gap-6 xl:grid-cols-[.9fr_1.1fr]"><Card><h2 className="font-serif text-2xl tracking-[-.035em]">{facilityTypeForm.id ? t("settings.editFacilityType") : t("settings.addFacilityType")}</h2><p className="mt-2 text-xs leading-5 text-muted">{t("settings.facilityTypeHint")}</p><div className="mt-5 grid gap-4 sm:grid-cols-2"><Field label={t("common.name")}><Input value={facilityTypeForm.name} onChange={(e) => setFacilityTypeForm({ ...facilityTypeForm, name: e.target.value })}/></Field><Field label={t("common.code")}><Input value={facilityTypeForm.code} onChange={(e) => setFacilityTypeForm({ ...facilityTypeForm, code: e.target.value.toUpperCase() })}/></Field><Field label={t("settings.pricingMethod")}><Select value={facilityTypeForm.pricingMethod} onChange={(e) => setFacilityTypeForm({ ...facilityTypeForm, pricingMethod: e.target.value as any })}><option value="hourly">{t("settings.pricingHourly")}</option><option value="daily">{t("settings.pricingDaily")}</option><option value="fixed">{t("settings.pricingFixed")}</option></Select></Field><Field label={t("settings.basePriceOmr")}><Input inputMode="decimal" value={facilityTypeForm.rate} onChange={(e) => setFacilityTypeForm({ ...facilityTypeForm, rate: e.target.value })}/></Field><Field label={t("settings.vatRatePercent")}><Input inputMode="decimal" disabled={!facilityTypeForm.applyVat} value={facilityTypeForm.vatPercent} onChange={(e) => setFacilityTypeForm({ ...facilityTypeForm, vatPercent: e.target.value })}/></Field></div>
+    {tab === "facilityTypes" && <div className="grid gap-6 xl:grid-cols-[.9fr_1.1fr]"><Card><h2 className="font-serif text-2xl tracking-[-.035em]">{facilityTypeForm.id ? t("settings.editFacilityType") : t("settings.addFacilityType")}</h2><p className="mt-2 text-xs leading-5 text-muted">{t("settings.facilityTypeHint")}</p><div className="mt-5 grid gap-4 sm:grid-cols-2"><Field label={t("common.name")}><Input value={facilityTypeForm.name} onChange={(e) => setFacilityTypeForm({ ...facilityTypeForm, name: e.target.value })}/></Field><Field label={t("common.code")}><Input value={facilityTypeForm.code} onChange={(e) => setFacilityTypeForm({ ...facilityTypeForm, code: e.target.value.toUpperCase() })}/></Field><Field label={t("settings.pricingMethod")}><Select value={facilityTypeForm.pricingMethod} onChange={(e) => setFacilityTypeForm({ ...facilityTypeForm, pricingMethod: e.target.value as any })}><option value="hourly">{t("settings.pricingHourly")}</option><option value="daily">{t("settings.pricingDaily")}</option><option value="fixed">{t("settings.pricingFixed")}</option></Select></Field><Field label={t("settings.basePriceOmr")}><Input inputMode="decimal" value={facilityTypeForm.rate} onChange={(e) => setFacilityTypeForm({ ...facilityTypeForm, rate: e.target.value })}/></Field><Field label={t("settings.facilityCategory")} hint={t("settings.facilityCategoryHint")}><Select value={facilityTypeForm.facilityCategoryId} onChange={(e) => setFacilityTypeForm({ ...facilityTypeForm, facilityCategoryId: e.target.value })}><option value="">{t("settings.uncategorised")}</option>{orderCategoriesAsTree((facilityCategories as any[]).filter((entry: any) => entry.isActive || String(entry.id) === facilityTypeForm.facilityCategoryId)).map((entry: any) => <option key={entry.id} value={entry.id}>{categoryOptionLabel(entry)}</option>)}</Select></Field><Field label={t("settings.vatRatePercent")}><Input inputMode="decimal" disabled={!facilityTypeForm.applyVat} value={facilityTypeForm.vatPercent} onChange={(e) => setFacilityTypeForm({ ...facilityTypeForm, vatPercent: e.target.value })}/></Field></div>
       <label className="mt-4 flex items-center gap-3 rounded-xl bg-well p-3 text-xs font-medium"><input type="checkbox" checked={facilityTypeForm.applyVat} onChange={(e) => setFacilityTypeForm({ ...facilityTypeForm, applyVat: e.target.checked })}/>{t("settings.applyVatToPrice")}</label>
       <label className="mt-3 flex items-center gap-3 rounded-xl bg-well p-3 text-xs font-medium"><input type="checkbox" checked={facilityTypeForm.autoCancelEnabled} onChange={(e) => setFacilityTypeForm({ ...facilityTypeForm, autoCancelEnabled: e.target.checked })}/>{t("settings.autoCancelEnabled")}</label>
       {facilityTypeForm.autoCancelEnabled && <div className="mt-3"><Field label={t("settings.autoCancelWindow")} hint={t("settings.autoCancelHint")}><Input type="number" min={1} value={facilityTypeForm.autoCancelHours} onChange={(e) => setFacilityTypeForm({ ...facilityTypeForm, autoCancelHours: e.target.value })}/></Field></div>}
-      <div className="mt-5 flex gap-2"><Button className="rounded-full bg-accent text-white" onClick={() => { if (!facilityTypeForm.name.trim() || !facilityTypeForm.code.trim() || !(Number(facilityTypeForm.rate) > 0)) return toast.error(t("settings.completeNameCodeAmount")); const vatPercent = facilityTypeForm.vatPercent.trim() || "0"; if (facilityTypeForm.applyVat && (!/^\d+(\.\d{1,2})?$/.test(vatPercent) || Number(vatPercent) > 100)) return toast.error(t("settings.vatRateInvalid")); if (facilityTypeForm.autoCancelEnabled && !(Number(facilityTypeForm.autoCancelHours) > 0)) return toast.error(t("settings.autoCancelHoursInvalid")); const payload = { name: facilityTypeForm.name.trim(), code: facilityTypeForm.code.trim(), pricingMethod: facilityTypeForm.pricingMethod, rate: facilityTypeForm.rate, applyVat: facilityTypeForm.applyVat, vatPercent: facilityTypeForm.applyVat ? vatPercent : "0.00", autoCancelEnabled: facilityTypeForm.autoCancelEnabled, autoCancelHours: Number(facilityTypeForm.autoCancelHours) || 24 }; facilityTypeForm.id ? facilityTypeUpdate.mutate({ id: Number(facilityTypeForm.id), ...payload }) : facilityTypeCreate.mutate(payload); }}>{facilityTypeForm.id ? t("finance.saveChanges") : t("settings.addFacilityType")}</Button>{facilityTypeForm.id && <Button variant="outline" onClick={resetFacilityTypeForm}>{t("finance.cancel")}</Button>}</div></Card><Card><h2 className="font-serif text-2xl tracking-[-.035em]">{t("settings.facilityTypeLibrary")}</h2><div className="mt-4 divide-y divide-divider">{facilityTypes.length ? (facilityTypes as any[]).map((facility: any) => <div key={facility.id} className="flex flex-wrap items-center justify-between gap-3 py-4"><div><div className="flex items-center gap-2"><b>{facility.name}</b><span className="font-mono text-[10px] text-accent">{facility.code}</span>{!facility.isActive && <span className="rounded-full bg-danger-bg px-2 py-1 text-[10px] text-danger">{t("settings.retiredBadge")}</span>}</div><div className="mt-1 text-xs text-muted">{money(facility.rate)} · {facility.pricingMethod === "hourly" ? t("settings.pricingHourly") : facility.pricingMethod === "daily" ? t("settings.pricingDaily") : t("settings.pricingFixed")} · {facility.applyVat ? `${t("settings.vatWord")} ${Number(facility.vatPercent).toFixed(2)}%` : t("settings.vatOff")} · {facility.autoCancelEnabled ? `${t("settings.autoCancelWindow")}: ${facility.autoCancelHours}${t("facility.hoursWord")}` : t("settings.autoCancelOff")}</div></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => setFacilityTypeForm({ id: String(facility.id), name: facility.name, code: facility.code, pricingMethod: facility.pricingMethod, rate: String(facility.rate), applyVat: Boolean(facility.applyVat), vatPercent: String(facility.vatPercent), autoCancelEnabled: Boolean(facility.autoCancelEnabled), autoCancelHours: String(facility.autoCancelHours ?? 24) })}>{t("common.edit")}</Button><Button size="sm" variant="outline" onClick={() => facility.isActive ? guarded("facility_type", facility.id, facility.name, t("settings.confirmRemove", { name: facility.name }), () => facilityTypeUpdate.mutate({ id: facility.id, isActive: false })) : facilityTypeUpdate.mutate({ id: facility.id, isActive: true })}>{facility.isActive ? t("common.retire") : t("common.activate")}</Button><Button size="sm" variant="outline" onClick={() => guarded("facility_type", facility.id, facility.name, t("settings.confirmRemove", { name: facility.name }), () => facilityTypeDelete.mutate({ id: facility.id }))}>{t("common.remove")}</Button></div></div>) : <p className="py-8 text-center text-sm text-muted">{t("settings.noFacilityTypesYet")}</p>}</div></Card></div>}
+      <div className="mt-5 flex gap-2"><Button className="rounded-full bg-accent text-white" onClick={() => { if (!facilityTypeForm.name.trim() || !facilityTypeForm.code.trim() || !(Number(facilityTypeForm.rate) > 0)) return toast.error(t("settings.completeNameCodeAmount")); const vatPercent = facilityTypeForm.vatPercent.trim() || "0"; if (facilityTypeForm.applyVat && (!/^\d+(\.\d{1,2})?$/.test(vatPercent) || Number(vatPercent) > 100)) return toast.error(t("settings.vatRateInvalid")); if (facilityTypeForm.autoCancelEnabled && !(Number(facilityTypeForm.autoCancelHours) > 0)) return toast.error(t("settings.autoCancelHoursInvalid")); const payload = { name: facilityTypeForm.name.trim(), code: facilityTypeForm.code.trim(), pricingMethod: facilityTypeForm.pricingMethod, rate: facilityTypeForm.rate, applyVat: facilityTypeForm.applyVat, vatPercent: facilityTypeForm.applyVat ? vatPercent : "0.00", autoCancelEnabled: facilityTypeForm.autoCancelEnabled, autoCancelHours: Number(facilityTypeForm.autoCancelHours) || 24, facilityCategoryId: facilityTypeForm.facilityCategoryId ? Number(facilityTypeForm.facilityCategoryId) : null }; facilityTypeForm.id ? facilityTypeUpdate.mutate({ id: Number(facilityTypeForm.id), ...payload }) : facilityTypeCreate.mutate(payload); }}>{facilityTypeForm.id ? t("finance.saveChanges") : t("settings.addFacilityType")}</Button>{facilityTypeForm.id && <Button variant="outline" onClick={resetFacilityTypeForm}>{t("finance.cancel")}</Button>}</div></Card><Card><h2 className="font-serif text-2xl tracking-[-.035em]">{t("settings.facilityTypeLibrary")}</h2><div className="mt-4 divide-y divide-divider">{facilityTypes.length ? (facilityTypes as any[]).map((facility: any) => <div key={facility.id} className="flex flex-wrap items-center justify-between gap-3 py-4"><div><div className="flex items-center gap-2"><b>{facility.name}</b><span className="font-mono text-[10px] text-accent">{facility.code}</span>{facility.facilityCategoryId && <span className="rounded-full bg-fill px-2 py-0.5 text-[10px] text-muted">{facilityCategoryLabel(facility.facilityCategoryId)}</span>}{!facility.isActive && <span className="rounded-full bg-danger-bg px-2 py-1 text-[10px] text-danger">{t("settings.retiredBadge")}</span>}</div><div className="mt-1 text-xs text-muted">{money(facility.rate)} · {facility.pricingMethod === "hourly" ? t("settings.pricingHourly") : facility.pricingMethod === "daily" ? t("settings.pricingDaily") : t("settings.pricingFixed")} · {facility.applyVat ? `${t("settings.vatWord")} ${Number(facility.vatPercent).toFixed(2)}%` : t("settings.vatOff")} · {facility.autoCancelEnabled ? `${t("settings.autoCancelWindow")}: ${facility.autoCancelHours}${t("facility.hoursWord")}` : t("settings.autoCancelOff")}</div></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => setFacilityTypeForm({ id: String(facility.id), name: facility.name, code: facility.code, pricingMethod: facility.pricingMethod, rate: String(facility.rate), applyVat: Boolean(facility.applyVat), vatPercent: String(facility.vatPercent), autoCancelEnabled: Boolean(facility.autoCancelEnabled), autoCancelHours: String(facility.autoCancelHours ?? 24), facilityCategoryId: facility.facilityCategoryId ? String(facility.facilityCategoryId) : "" })}>{t("common.edit")}</Button><Button size="sm" variant="outline" onClick={() => facility.isActive ? guarded("facility_type", facility.id, facility.name, t("settings.confirmRemove", { name: facility.name }), () => facilityTypeUpdate.mutate({ id: facility.id, isActive: false })) : facilityTypeUpdate.mutate({ id: facility.id, isActive: true })}>{facility.isActive ? t("common.retire") : t("common.activate")}</Button><Button size="sm" variant="outline" onClick={() => guarded("facility_type", facility.id, facility.name, t("settings.confirmRemove", { name: facility.name }), () => facilityTypeDelete.mutate({ id: facility.id }))}>{t("common.remove")}</Button></div></div>) : <p className="py-8 text-center text-sm text-muted">{t("settings.noFacilityTypesYet")}</p>}</div></Card></div>}
 
+    {/* PRD Round 17, item 5.3: main/sub categories for Facility Types. */}
+    {tab === "facilityCategories" && <div className="grid gap-6 xl:grid-cols-[.8fr_1.2fr]"><Card><h2 className="font-serif text-2xl tracking-[-.035em]">{facilityCategoryForm.id ? t("settings.editFacilityCategory") : t("settings.addFacilityCategory")}</h2><p className="mt-2 text-xs leading-5 text-muted">{t("settings.facilityCategoriesHint")}</p><div className="mt-5 grid gap-4"><Field label={t("finance.categoryName")}><Input value={facilityCategoryForm.name} onChange={(e) => setFacilityCategoryForm({ ...facilityCategoryForm, name: e.target.value })}/></Field><Field label={t("common.code")}><Input value={facilityCategoryForm.code} onChange={(e) => setFacilityCategoryForm({ ...facilityCategoryForm, code: e.target.value.toUpperCase() })}/></Field><Field label={t("settings.parentCategory")} hint={t("settings.parentCategoryHint")}><Select value={facilityCategoryForm.parentId} onChange={(e) => setFacilityCategoryForm({ ...facilityCategoryForm, parentId: e.target.value })}><option value="">{t("settings.noParentMain")}</option>{(facilityCategories as any[]).filter((entry: any) => !entry.parentId && entry.isActive && String(entry.id) !== facilityCategoryForm.id).map((entry: any) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</Select></Field></div><div className="mt-5 flex gap-2"><Button className="rounded-full bg-accent text-white" onClick={() => { if (!facilityCategoryForm.name.trim() || !facilityCategoryForm.code.trim()) return toast.error(t("settings.addNameAndCode")); const payload = { name: facilityCategoryForm.name.trim(), code: facilityCategoryForm.code.trim(), parentId: facilityCategoryForm.parentId ? Number(facilityCategoryForm.parentId) : null }; facilityCategoryForm.id ? facilityCategoryUpdate.mutate({ id: Number(facilityCategoryForm.id), ...payload }) : facilityCategoryCreate.mutate(payload); }}>{facilityCategoryForm.id ? t("settings.saveCategory") : t("finance.addCategory")}</Button>{facilityCategoryForm.id && <Button variant="outline" onClick={resetFacilityCategoryForm}>{t("finance.cancel")}</Button>}</div></Card><Card><h2 className="font-serif text-2xl tracking-[-.035em]">{t("settings.facilityCategoryLibrary")}</h2><div className="mt-4 divide-y divide-divider">{(facilityCategories as any[]).length ? orderCategoriesAsTree(facilityCategories as any[]).map((category: any) => { const facilitiesIn = (facilityTypes as any[]).filter((facility: any) => facility.facilityCategoryId === category.id); return <div key={category.id} className={join("flex flex-wrap items-center justify-between gap-3 py-4", category.depth ? "pl-6" : "")}><div>{category.depth ? <span className="mr-1.5 text-subtle">↳</span> : null}<b className={category.depth ? "font-medium" : ""}>{category.name}</b>{category.depth ? <span className="ml-2 rounded-full bg-fill px-2 py-0.5 text-[10px] text-muted">{t("settings.subCategoryBadge")}</span> : null}<span className="ml-2 font-mono text-[10px] text-accent">{category.code}</span>{!category.isActive && <span className="ml-2 text-[10px] text-danger">{t("finance.inactive")}</span>}<div className="mt-1 text-xs text-muted">{facilitiesIn.length ? facilitiesIn.map((facility: any) => facility.name).join(", ") : t("settings.noFacilitiesInCategory")}</div></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => setFacilityCategoryForm({ id: String(category.id), name: category.name, code: category.code, parentId: category.parentId ? String(category.parentId) : "" })}>{t("common.edit")}</Button><Button size="sm" variant="outline" onClick={() => facilityCategoryUpdate.mutate({ id: category.id, isActive: !category.isActive })}>{category.isActive ? t("settings.deactivate") : t("common.activate")}</Button><Button size="sm" variant="outline" onClick={() => window.confirm(t("settings.confirmRemove", { name: category.name })) && facilityCategoryDelete.mutate({ id: category.id })}>{t("common.remove")}</Button></div></div>; }) : <p className="py-8 text-center text-sm text-muted">{t("settings.noFacilityCategoriesYet")}</p>}</div></Card></div>}
     {tab === "addonServices" && <div className="grid gap-6 xl:grid-cols-[.9fr_1.1fr]"><Card><h2 className="font-serif text-2xl tracking-[-.035em]">{addonServiceForm.id ? t("settings.editAddonService") : t("settings.addAddonService")}</h2><p className="mt-2 text-xs leading-5 text-muted">{t("settings.addonServiceHint")}</p><div className="mt-5 grid gap-4 sm:grid-cols-2"><Field label={t("common.name")}><Input value={addonServiceForm.name} onChange={(e) => setAddonServiceForm({ ...addonServiceForm, name: e.target.value })}/></Field><Field label={t("common.code")}><Input value={addonServiceForm.code} onChange={(e) => setAddonServiceForm({ ...addonServiceForm, code: e.target.value.toUpperCase() })}/></Field><Field label={t("settings.pricingMethod")}><Select value={addonServiceForm.pricingMethod} onChange={(e) => setAddonServiceForm({ ...addonServiceForm, pricingMethod: e.target.value as any })}><option value="per_person">{t("settings.pricingPerPerson")}</option><option value="fixed">{t("settings.pricingFixed")}</option><option value="hourly">{t("settings.pricingHourly")}</option></Select></Field><Field label={t("settings.basePriceOmr")}><Input inputMode="decimal" value={addonServiceForm.rate} onChange={(e) => setAddonServiceForm({ ...addonServiceForm, rate: e.target.value })}/></Field><Field label={t("settings.vatRatePercent")}><Input inputMode="decimal" disabled={!addonServiceForm.applyVat} value={addonServiceForm.vatPercent} onChange={(e) => setAddonServiceForm({ ...addonServiceForm, vatPercent: e.target.value })}/></Field></div>
       <label className="mt-4 flex items-center gap-3 rounded-xl bg-well p-3 text-xs font-medium"><input type="checkbox" checked={addonServiceForm.applyVat} onChange={(e) => setAddonServiceForm({ ...addonServiceForm, applyVat: e.target.checked })}/>{t("settings.applyVatToPrice")}</label>
       <div className="mt-5 flex gap-2"><Button className="rounded-full bg-accent text-white" onClick={() => { if (!addonServiceForm.name.trim() || !addonServiceForm.code.trim() || !(Number(addonServiceForm.rate) > 0)) return toast.error(t("settings.completeNameCodeAmount")); const vatPercent = addonServiceForm.vatPercent.trim() || "0"; if (addonServiceForm.applyVat && (!/^\d+(\.\d{1,2})?$/.test(vatPercent) || Number(vatPercent) > 100)) return toast.error(t("settings.vatRateInvalid")); const payload = { name: addonServiceForm.name.trim(), code: addonServiceForm.code.trim(), pricingMethod: addonServiceForm.pricingMethod, rate: addonServiceForm.rate, applyVat: addonServiceForm.applyVat, vatPercent: addonServiceForm.applyVat ? vatPercent : "0.00" }; addonServiceForm.id ? addonServiceUpdate.mutate({ id: Number(addonServiceForm.id), ...payload }) : addonServiceCreate.mutate(payload); }}>{addonServiceForm.id ? t("finance.saveChanges") : t("settings.addAddonService")}</Button>{addonServiceForm.id && <Button variant="outline" onClick={resetAddonServiceForm}>{t("finance.cancel")}</Button>}</div></Card><Card><h2 className="font-serif text-2xl tracking-[-.035em]">{t("settings.addonServiceLibrary")}</h2><div className="mt-4 divide-y divide-divider">{addonServices.length ? (addonServices as any[]).map((addon: any) => <div key={addon.id} className="flex flex-wrap items-center justify-between gap-3 py-4"><div><div className="flex items-center gap-2"><b>{addon.name}</b><span className="font-mono text-[10px] text-accent">{addon.code}</span>{!addon.isActive && <span className="rounded-full bg-danger-bg px-2 py-1 text-[10px] text-danger">{t("settings.retiredBadge")}</span>}</div><div className="mt-1 text-xs text-muted">{money(addon.rate)} · {addon.pricingMethod === "per_person" ? t("settings.pricingPerPerson") : addon.pricingMethod === "hourly" ? t("settings.pricingHourly") : t("settings.pricingFixed")} · {addon.applyVat ? `${t("settings.vatWord")} ${Number(addon.vatPercent).toFixed(2)}%` : t("settings.vatOff")}</div></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => setAddonServiceForm({ id: String(addon.id), name: addon.name, code: addon.code, pricingMethod: addon.pricingMethod, rate: String(addon.rate), applyVat: Boolean(addon.applyVat), vatPercent: String(addon.vatPercent) })}>{t("common.edit")}</Button><Button size="sm" variant="outline" onClick={() => addon.isActive ? guarded("addon_service", addon.id, addon.name, t("settings.confirmRemove", { name: addon.name }), () => addonServiceUpdate.mutate({ id: addon.id, isActive: false })) : addonServiceUpdate.mutate({ id: addon.id, isActive: true })}>{addon.isActive ? t("common.retire") : t("common.activate")}</Button><Button size="sm" variant="outline" onClick={() => guarded("addon_service", addon.id, addon.name, t("settings.confirmRemove", { name: addon.name }), () => addonServiceDelete.mutate({ id: addon.id }))}>{t("common.remove")}</Button></div></div>) : <p className="py-8 text-center text-sm text-muted">{t("settings.noAddonServicesYet")}</p>}</div></Card></div>}
@@ -359,18 +492,18 @@ export default function SuperAdminSettingsPage() {
           <p className="mt-2 text-xs leading-5 text-muted">{t("settings.revenueOpeningBalanceHint")}</p>
           <div className="mt-5 grid gap-4 sm:grid-cols-2">
             <Field label={t("common.date")}><DateField value={revenueOpeningForm.date} onChange={(value) => setRevenueOpeningForm({ ...revenueOpeningForm, date: value })}/></Field>
-            <Field label={t("settings.streamField")}><Select value={revenueOpeningForm.stream} onChange={(e) => setRevenueOpeningForm({ ...revenueOpeningForm, stream: e.target.value })}><option value="">{t("settings.chooseStream")}</option>{Object.entries(STREAM_KEYS).map(([key, labelKey]) => <option key={key} value={key}>{t(labelKey)}</option>)}</Select></Field>
+            <Field label={t("common.category")}><Select value={revenueOpeningForm.categoryId} onChange={(e) => setRevenueOpeningForm({ ...revenueOpeningForm, categoryId: e.target.value })}><option value="">{t("finance.chooseCategory")}</option>{(revenueCategoryOptions as any[]).map((option: any) => <option key={`${option.parentCategoryId ?? "main"}-${option.categoryId}`} value={option.categoryId}>{categoryOptionLabel({ name: option.name, depth: option.parentCategoryId ? 1 : 0 })}</option>)}</Select></Field>
             <Field label={t("common.amount")}><Input inputMode="decimal" value={revenueOpeningForm.amount} onChange={(e) => setRevenueOpeningForm({ ...revenueOpeningForm, amount: e.target.value })}/></Field>
             <Field label={t("finance.adjustmentNote")}><Input value={revenueOpeningForm.note} onChange={(e) => setRevenueOpeningForm({ ...revenueOpeningForm, note: e.target.value })}/></Field>
           </div>
           <Button className="mt-5 rounded-full bg-accent text-white" onClick={() => {
-            if (!revenueOpeningForm.stream || !(Number(revenueOpeningForm.amount) > 0)) return toast.error(t("settings.completeStreamAndAmount"));
+            if (!revenueOpeningForm.categoryId || !(Number(revenueOpeningForm.amount) > 0)) return toast.error(t("settings.completeCategoryAndAmount"));
             const description = revenueOpeningForm.note.trim() ? `${OPENING_BALANCE_MARKER} — ${revenueOpeningForm.note.trim()}` : OPENING_BALANCE_MARKER;
-            revenueOpeningCreate.mutate({ date: revenueOpeningForm.date, stream: revenueOpeningForm.stream as any, type: "revenue", amount: revenueOpeningForm.amount, description });
+            revenueOpeningCreate.mutate({ businessDate: revenueOpeningForm.date, categoryId: Number(revenueOpeningForm.categoryId), amount: revenueOpeningForm.amount, description });
           }}>{t("settings.addOpeningBalance")}</Button>
           <div className="mt-6 border-t border-divider pt-4">
             <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-subtle">{t("settings.recentOpeningBalances")}</div>
-            {revenueOpeningBalances.length ? <div className="divide-y divide-divider">{revenueOpeningBalances.map((entry: any) => <div key={entry.id} className="flex items-center justify-between gap-3 py-3 text-xs"><div><b>{money(entry.amount)}</b><span className="ml-2 text-muted">{STREAM_KEYS[entry.stream] ? t(STREAM_KEYS[entry.stream]) : entry.stream}</span><div className="mt-1 text-subtle">{String(entry.date).slice(0, 10)} · {entry.description}</div></div><Button size="sm" variant="outline" onClick={() => window.confirm(t("settings.confirmRemoveOpeningBalance")) && revenueOpeningDelete.mutate({ id: entry.id })}>{t("common.remove")}</Button></div>)}</div> : <p className="py-4 text-center text-xs text-muted">{t("settings.noOpeningBalancesYet")}</p>}
+            {revenueOpeningBalances.length ? <div className="divide-y divide-divider">{revenueOpeningBalances.map((entry) => <div key={`${entry.kind}-${entry.id}`} className="flex items-center justify-between gap-3 py-3 text-xs"><div><b>{money(entry.amount)}</b><span className="ml-2 text-muted">{entry.label}</span>{entry.kind === "legacy" && <span className="ml-2 rounded-full bg-warning-bg px-2 py-0.5 text-[10px] text-warning" title={t("settings.legacyStreamHint")}>{t("settings.legacyStream")}</span>}<div className="mt-1 text-subtle">{toDateOnly(entry.date)} · {entry.description}</div></div><Button size="sm" variant="outline" onClick={() => window.confirm(t("settings.confirmRemoveOpeningBalance")) && (entry.kind === "record" ? revenueOpeningRecordDelete.mutate({ id: entry.id }) : revenueOpeningDelete.mutate({ id: entry.id }))}>{t("common.remove")}</Button></div>)}</div> : <p className="py-4 text-center text-xs text-muted">{t("settings.noOpeningBalancesYet")}</p>}
           </div>
         </Card>
         <Card>
@@ -417,17 +550,19 @@ export default function SuperAdminSettingsPage() {
           <div className="mt-5 grid gap-4 sm:grid-cols-2">
             <Field label={t("common.date")}><DateField value={cashFlowForm.date} onChange={(value) => setCashFlowForm({ ...cashFlowForm, date: value })}/></Field>
             <Field label={t("finance.adjustmentType")}><Select value={cashFlowForm.type} onChange={(e) => setCashFlowForm({ ...cashFlowForm, type: e.target.value as any })}><option value="opening">{t("settings.cashFlowTypeOpening")}</option><option value="add">{t("settings.cashFlowTypeAdd")}</option><option value="deduct">{t("settings.cashFlowTypeDeduct")}</option></Select></Field>
+            {/* PRD Round 17, item 5.1: each ledger has its own opening balance and adjustments. */}
+            <Field label={t("settings.cashFlowAccount")}><Select value={cashFlowForm.account} onChange={(e) => setCashFlowForm({ ...cashFlowForm, account: e.target.value as "cash" | "bank" })}><option value="cash">{t("finance.cashAccount")}</option><option value="bank">{t("finance.bankAccount")}</option></Select></Field>
             <Field label={t("common.amount")}><Input inputMode="decimal" value={cashFlowForm.amount} onChange={(e) => setCashFlowForm({ ...cashFlowForm, amount: e.target.value })}/></Field>
             <Field label={t("pettyCash.allocationNote")} hint={cashFlowForm.type === "opening" ? t("common.optional") : t("settings.cashFlowNoteRequired")}><Input value={cashFlowForm.note} onChange={(e) => setCashFlowForm({ ...cashFlowForm, note: e.target.value })}/></Field>
           </div>
           <Button className="mt-5 rounded-full bg-accent text-white" onClick={() => {
             if (!(Number(cashFlowForm.amount) > 0)) return toast.error(t("finance.enterValidAmount"));
             if (cashFlowForm.type !== "opening" && !cashFlowForm.note.trim()) return toast.error(t("settings.cashFlowNoteRequired"));
-            cashFlowAdjust.mutate({ businessDate: cashFlowForm.date, type: cashFlowForm.type, amount: cashFlowForm.amount, note: cashFlowForm.note.trim() || undefined });
+            cashFlowAdjust.mutate({ businessDate: cashFlowForm.date, type: cashFlowForm.type, account: cashFlowForm.account, amount: cashFlowForm.amount, note: cashFlowForm.note.trim() || undefined });
           }}>{t("settings.saveCashFlowEntry")}</Button>
           <div className="mt-6 border-t border-divider pt-4">
             <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-subtle">{t("settings.cashFlowEntries")}</div>
-            {(cashFlowAdjustments as any[]).length ? <div className="divide-y divide-divider">{(cashFlowAdjustments as any[]).map((entry: any) => <div key={entry.id} className="flex items-center justify-between gap-3 py-3 text-xs"><div><b className={entry.type === "deduct" ? "text-danger" : "text-success"}>{entry.type === "deduct" ? "−" : "+"}{money(entry.amount)}</b><span className="ml-2 text-muted">{cashFlowTypeLabel(entry.type)}</span><div className="mt-1 text-subtle">{String(entry.businessDate).slice(0, 10)}{entry.note ? ` · ${entry.note}` : ""}</div></div><Button size="sm" variant="outline" onClick={() => window.confirm(t("settings.confirmRemoveOpeningBalance")) && cashFlowRemove.mutate({ id: entry.id })}>{t("common.remove")}</Button></div>)}</div> : <p className="py-4 text-center text-xs text-muted">{t("settings.noOpeningBalancesYet")}</p>}
+            {(cashFlowAdjustments as any[]).length ? <div className="divide-y divide-divider">{(cashFlowAdjustments as any[]).map((entry: any) => <div key={entry.id} className="flex items-center justify-between gap-3 py-3 text-xs"><div><b className={entry.type === "deduct" ? "text-danger" : "text-success"}>{entry.type === "deduct" ? "−" : "+"}{money(entry.amount)}</b><span className="ml-2 text-muted">{cashFlowTypeLabel(entry.type)} · {entry.account === "bank" ? t("finance.bankAccount") : t("finance.cashAccount")}</span><div className="mt-1 text-subtle">{String(entry.businessDate).slice(0, 10)}{entry.note ? ` · ${entry.note}` : ""}</div></div><Button size="sm" variant="outline" onClick={() => window.confirm(t("settings.confirmRemoveOpeningBalance")) && cashFlowRemove.mutate({ id: entry.id })}>{t("common.remove")}</Button></div>)}</div> : <p className="py-4 text-center text-xs text-muted">{t("settings.noOpeningBalancesYet")}</p>}
           </div>
         </Card>
       </div>
@@ -437,6 +572,47 @@ export default function SuperAdminSettingsPage() {
 
     {tab === "audit" && <Card><h2 className="font-serif text-2xl tracking-[-.035em]">{t("settings.configAuditTrail")}</h2><p className="mt-2 text-xs leading-5 text-muted">{t("settings.recentChangesHint")}</p><div className="mt-5 overflow-hidden rounded-2xl border border-divider"><div className="grid grid-cols-[1fr_.8fr_.7fr] gap-3 bg-well px-4 py-2 text-[10px] font-semibold uppercase tracking-wide text-subtle"><span>{t("settings.actionCol")}</span><span>{t("settings.userCol")}</span><span>{t("settings.whenCol")}</span></div>{activity.map((entry: any) => <div key={entry.l.id} className="grid grid-cols-[1fr_.8fr_.7fr] gap-3 border-t border-divider px-4 py-3 text-xs"><div><b className="font-medium text-ink">{entry.l.action}</b><div className="mt-1 truncate text-subtle">{entry.l.details || entry.l.entityType || "—"}</div></div><span className="text-muted">{entry.u?.name || t("settings.systemFallback")}</span><span className="text-muted">{new Date(entry.l.createdAt).toLocaleString()}</span></div>)}</div></Card>}
 
+    {tab === "backup" && <div className="grid gap-6 xl:grid-cols-2">
+      <Card>
+        <h2 className="font-serif text-2xl tracking-[-.035em]">{t("backup.downloadTitle")}</h2>
+        <p className="mt-2 text-xs leading-5 text-muted">{t("backup.downloadHint")}</p>
+        <a href="/api/backup" className="mt-5 inline-flex items-center rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white hover:opacity-90"><Download size={15} className="mr-2"/>{t("backup.downloadButton")}</a>
+        <p className="mt-3 text-[11px] leading-4 text-subtle">{t("backup.downloadNote")}</p>
+      </Card>
+      <Card>
+        <h2 className="font-serif text-2xl tracking-[-.035em]">{t("backup.requestTitle")}</h2>
+        <p className="mt-2 text-xs leading-5 text-muted">{t("backup.requestHint")}</p>
+        <div className="mt-5 grid gap-4">
+          <Field label={t("backup.restorePoint")} hint={t("backup.restorePointHint")}><Input type="datetime-local" max={new Date(Date.now() + 4 * 3600 * 1000).toISOString().slice(0, 16)} value={restoreForm.restorePoint} onChange={(e) => setRestoreForm({ ...restoreForm, restorePoint: e.target.value })}/></Field>
+          <Field label={t("backup.reason")}><textarea value={restoreForm.reason} onChange={(e) => setRestoreForm({ ...restoreForm, reason: e.target.value })} rows={3} className="w-full rounded-xl border border-line bg-white px-3.5 py-2.5 text-sm outline-none focus:border-accent"/></Field>
+        </div>
+        <Button className="mt-5 rounded-full bg-accent text-white" disabled={restoreCreate.isPending} onClick={() => {
+          if (!restoreForm.restorePoint) return toast.error(t("backup.chooseRestorePoint"));
+          if (restoreForm.reason.trim().length < 5) return toast.error(t("backup.addReason"));
+          if (!window.confirm(t("backup.confirmRequest"))) return;
+          restoreCreate.mutate({ restorePoint: restoreForm.restorePoint, reason: restoreForm.reason.trim() });
+        }}>{t("backup.requestButton")}</Button>
+      </Card>
+      <Card className="xl:col-span-2">
+        <h2 className="font-serif text-2xl tracking-[-.035em]">{t("backup.requestsTitle")}</h2>
+        <p className="mt-2 text-xs leading-5 text-muted">{restoreData?.canManage ? t("backup.requestsHintSupport") : t("backup.requestsHint")}</p>
+        <div className="mt-4 divide-y divide-divider">{restoreData?.requests.length ? restoreData.requests.map((request: any) => <div key={request.id} className="grid gap-3 py-4 md:grid-cols-[1fr_auto] md:items-start">
+          <div className="min-w-0 text-xs">
+            <div className="flex flex-wrap items-center gap-2"><b className="text-sm">{t("backup.restoreTo", { date: omanDateTime(request.restorePoint) })}</b><span className={join("rounded-full px-2 py-0.5 text-[10px] font-semibold", request.status === "completed" ? "bg-success-bg text-success" : request.status === "rejected" || request.status === "cancelled" ? "bg-danger-bg text-danger" : "bg-warning-bg text-warning")}>{restoreStatusLabel(request.status)}</span></div>
+            <div className="mt-1 text-muted">{t("backup.requestedBy", { name: request.requestedByName || "—", date: omanDateTime(request.createdAt) })}</div>
+            <div className="mt-1.5 whitespace-pre-wrap text-body">{request.reason}</div>
+            {request.handledNote && <div className="mt-1.5 rounded-lg bg-well px-2.5 py-1.5 text-muted"><b>{t("backup.newmuxNote")}</b> {request.handledNote}{request.handledByName ? ` — ${request.handledByName}` : ""}</div>}
+          </div>
+          <div className="flex flex-wrap items-center gap-2 md:justify-end">
+            {request.status === "pending" && <Button size="sm" variant="outline" onClick={() => window.confirm(t("backup.confirmCancel")) && restoreCancel.mutate({ id: request.id })}>{t("backup.cancelRequest")}</Button>}
+            {restoreData.canManage && request.status !== "cancelled" && <>
+              <Input placeholder={t("backup.notePlaceholder")} value={restoreNotes[request.id] ?? ""} onChange={(e) => setRestoreNotes({ ...restoreNotes, [request.id]: e.target.value })} className="w-48"/>
+              <Select value={request.status} onChange={(e) => restoreUpdate.mutate({ id: request.id, status: e.target.value as any, note: restoreNotes[request.id] || undefined })} className="w-40"><option value="pending">{t("backup.statusPending")}</option><option value="in_progress">{t("backup.statusInProgress")}</option><option value="completed">{t("backup.statusCompleted")}</option><option value="rejected">{t("backup.statusRejected")}</option></Select>
+            </>}
+          </div>
+        </div>) : <p className="py-6 text-center text-sm text-muted">{t("backup.noRequests")}</p>}</div>
+      </Card>
+    </div>}
     {tab === "dangerZone" && <div className="grid gap-6 xl:grid-cols-[.9fr_1.1fr]">
       <Card className="border-2 border-danger/30">
         <div className="flex items-start gap-3"><AlertTriangle size={22} className="mt-0.5 shrink-0 text-danger"/><div><h2 className="font-serif text-2xl tracking-[-.035em] text-danger">{t("settings.resetAllDataTitle")}</h2><p className="mt-2 text-xs leading-5 text-muted">{t("settings.resetAllDataHint")}</p></div></div>

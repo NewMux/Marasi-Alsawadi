@@ -28,7 +28,7 @@ import {
   listTicketTypes, getTicketType, getTicketTypeByCode, createTicketType, updateTicketType, deleteTicketType, listVisitorCategories, createVisitorCategory, updateVisitorCategory, listTicketPrices, upsertTicketPrice,
   summariseTicketRevenueByType, summariseFacilityRevenueByType, listRevenueCategoryOptionsForRecording, describeSettingDependents,
   getSystemSettings, setResetAllDataToolEnabled, resetAllOperationalData,
-  listPayables, recordSettlement, listSettlementsFor, getSettledTotal, listCashFlowAdjustments, createCashFlowAdjustment, deleteCashFlowAdjustment, getCashFlowStatus, assertValidCategoryParent, getCategoryReport,
+  listPayables, recordSettlement, listSettlementsFor, getSettledTotal, listCashFlowAdjustments, createCashFlowAdjustment, deleteCashFlowAdjustment, getCashFlowStatus, assertValidCategoryParent, listFacilityCategories, createFacilityCategory, updateFacilityCategory, deleteFacilityCategory, getFacilityCategoryReport, getCategoryReport,
   listPartnerEntities, getPartnerEntity, createPartnerEntity, updatePartnerEntity, deletePartnerEntity,
   listPartnerDiscountRules, createPartnerDiscountRule, updatePartnerDiscountRule, deletePartnerDiscountRule, resolveActivePartnerDiscountRule,
   listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
@@ -43,7 +43,7 @@ import {
   listAssetCategories, createAssetCategory, updateAssetCategory, deleteAssetCategory, getAssetCategory,
   listAssetRecords, createAssetRecord, getAssetRecord, updateAssetRecord, deleteAssetRecord,
   listAssetAdjustments, createAssetAdjustment, createAssetTransfer, getAssetCategoryBalances,
-  getExpenseCategoryByCode, createPettyCashFund, getPettyCashFund, getPettyCashFundByCustodian, updatePettyCashFundAmount,
+  getExpenseCategoryByCode, createPettyCashFund, ensurePettyCashFundForCustodian, getPettyCashFund, getPettyCashFundByCustodian, updatePettyCashFundAmount,
   listPettyCashFundsWithBalances, listPettyCashSpends, createPettyCashSpendWithExpense, getPettyCashSpend, deletePettyCashSpendWithExpense, getPettyCashFundBalance,
   updatePettyCashSpendWithExpense, adjustPettyCashFundBalance, setPettyCashFundActive,
   createPettyCashAllocation, listPettyCashAllocations,
@@ -51,6 +51,7 @@ import {
 } from "../ticketingDb";
 import { applyFacilityDiscount, calculateFacilityFees, calculateFacilityLineAmount, calculateFacilityVat, calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE, minorToMoney, moneyToMinor, percentageToBasisPoints } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
+import { createRestoreRequest, getRestoreRequest, isRestoreSupportUser, listRestoreRequests, updateRestoreRequest } from "../backup";
 import { publicTicketUrl, requestOrigin } from "../ticketUrl";
 import { deleteAttachmentFile, isAllowedAttachmentMimeType, saveExpenseAttachment } from "../attachments";
 
@@ -105,6 +106,11 @@ export function recordFromJoin<T>(entry: T | { r?: T; t?: T; s?: T }) {
   const joined = entry as { r?: T; t?: T; s?: T };
   return joined.r ?? joined.t ?? joined.s ?? entry as T;
 }
+
+// PRD Round 17, item 5.1: Cash Account or Bank Account (card counts as
+// Bank). Optional on input so older clients keep working; omitted = cash,
+// the same default every pre-existing record was backfilled with.
+const paymentAccountInput = z.enum(["cash", "bank"]).default("cash");
 
 const prdLineInput = z.object({
   priceId: z.number().int().positive(),
@@ -330,7 +336,7 @@ export const platformRouter = router({
   customers: router({
     search: protectedProcedure.input(z.object({ query: z.string().optional(), country: z.string().optional() }).optional())
       .query(({ input }) => searchCustomers(input?.query, input?.country)),
-    findByPhone: protectedProcedure.input(z.object({ phone: z.string() })).query(({ input }) => getCustomerByPhone(input.phone)),
+    findByPhone: protectedProcedure.input(z.object({ phone: z.string() })).query(async ({ input }) => (await getCustomerByPhone(input.phone)) ?? null),
     create: protectedProcedure.input(z.object({
       fullName: z.string().min(1), phone: z.string().min(3), email: z.string().email().optional().or(z.literal("")),
       nationality: z.string().optional(), notes: z.string().optional(),
@@ -431,6 +437,48 @@ export const platformRouter = router({
     // a persisted enabled flag (disabled automatically after use, per the
     // client's explicit request to keep the tool intact for a future
     // season) and a typed "RESET" confirmation phrase.
+    // PRD Round 17, item 5.4: "Request Data Restore". The client's Super
+    // Admin files a request for a point in time; it is never executed by the
+    // app. NewMux (accounts listed in NEWMUX_SUPPORT_USERNAMES on the server)
+    // works the queue in-app and performs the actual restore server-side.
+    dataRestore: router({
+      list: protectedProcedure.query(async ({ ctx }) => {
+        const support = isRestoreSupportUser(ctx.user);
+        if (ctx.user.role !== "super_admin" && !support) throw new TRPCError({ code: "FORBIDDEN", message: "Super Admin required" });
+        return { requests: await listRestoreRequests(), canManage: support };
+      }),
+      create: superAdminProcedure.input(z.object({
+        restorePoint: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, "Choose the date and time to restore to"),
+        reason: z.string().trim().min(5, "Say briefly why the restore is needed").max(2000),
+      })).mutation(async ({ input, ctx }) => {
+        // Entered as the resort's local time (Oman, UTC+4).
+        const restorePoint = new Date(`${input.restorePoint}:00+04:00`);
+        if (Number.isNaN(restorePoint.getTime())) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose a valid date and time" });
+        if (restorePoint.getTime() > Date.now()) throw new TRPCError({ code: "BAD_REQUEST", message: "The restore point must be in the past" });
+        const request = await createRestoreRequest({ restorePoint, reason: input.reason, requestedBy: ctx.user.id });
+        await logActivity(ctx.user.id, "data_restore.request", "data_restore_request", request.id, `${input.restorePoint} (Oman time)`);
+        return request;
+      }),
+      cancel: superAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+        const request = await getRestoreRequest(input.id);
+        if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "Restore request was not found" });
+        if (request.status !== "pending") throw new TRPCError({ code: "BAD_REQUEST", message: "Only a request NewMux hasn't started yet can be cancelled" });
+        const updated = await updateRestoreRequest(input.id, { status: "cancelled" });
+        await logActivity(ctx.user.id, "data_restore.cancel", "data_restore_request", input.id);
+        return updated;
+      }),
+      updateStatus: protectedProcedure.input(z.object({
+        id: z.number().int().positive(), status: z.enum(["pending", "in_progress", "completed", "rejected"]), note: z.string().max(2000).optional(),
+      })).mutation(async ({ input, ctx }) => {
+        if (!isRestoreSupportUser(ctx.user)) throw new TRPCError({ code: "FORBIDDEN", message: "Only NewMux support can update a restore request" });
+        const request = await getRestoreRequest(input.id);
+        if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "Restore request was not found" });
+        if (request.status === "cancelled") throw new TRPCError({ code: "BAD_REQUEST", message: "This request was cancelled by the client" });
+        const updated = await updateRestoreRequest(input.id, { status: input.status, handledBy: ctx.user.id, handledNote: input.note?.trim() || request.handledNote || null });
+        await logActivity(ctx.user.id, "data_restore.status", "data_restore_request", input.id, input.status);
+        return updated;
+      }),
+    }),
     systemReset: router({
       get: superAdminProcedure.query(async () => {
         const settings = await getSystemSettings();
@@ -554,6 +602,36 @@ export const platformRouter = router({
     }),
   }),
 
+  // PRD Round 17, item 5.3: main/sub categories grouping Facility Types.
+  facilityCategories: router({
+    list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listFacilityCategories(Boolean(input?.includeInactive && isConfigAdmin(ctx.user.role)))),
+    create: configAdminProcedure.input(z.object({ name: z.string().trim().min(1).max(160), code: z.string().min(2).max(32), parentId: z.number().int().positive().nullable().optional() }))
+      .mutation(async ({ input, ctx }) => {
+        await assertValidCategoryParent("facility", undefined, input.parentId).catch((error: Error) => { throw new TRPCError({ code: "BAD_REQUEST", message: error.message }); });
+        const category = await createFacilityCategory({ name: input.name, code: normalizeRateCode(input.code), parentId: input.parentId ?? null, createdBy: ctx.user.id })
+          .catch((error: any) => { throw new TRPCError({ code: "CONFLICT", message: String(error?.message || error).includes("Duplicate") ? "A facility category with this name or code already exists" : "Facility category could not be saved" }); });
+        await logActivity(ctx.user.id, "facility_category.create", "facility_category", category.id, input.code);
+        return category;
+      }),
+    update: configAdminProcedure.input(z.object({
+      id: z.number().int().positive(), name: z.string().trim().min(1).max(160).optional(), code: z.string().min(2).max(32).optional(), isActive: z.boolean().optional(),
+      parentId: z.number().int().positive().nullable().optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const { id, code, ...data } = input;
+      await assertValidCategoryParent("facility", id, data.parentId).catch((error: Error) => { throw new TRPCError({ code: "BAD_REQUEST", message: error.message }); });
+      const category = await updateFacilityCategory(id, { ...data, ...(code ? { code: normalizeRateCode(code) } : {}) })
+        .catch((error: any) => { throw new TRPCError({ code: "CONFLICT", message: String(error?.message || error).includes("Duplicate") ? "A facility category with this name or code already exists" : "Facility category could not be saved" }); });
+      await logActivity(ctx.user.id, "facility_category.update", "facility_category", id, JSON.stringify(input));
+      return category;
+    }),
+    delete: configAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+      const result = await deleteFacilityCategory(input.id);
+      await logActivity(ctx.user.id, "facility_category.delete", "facility_category", input.id, result.deactivated ? "retired" : "deleted");
+      return result;
+    }),
+    report: managerProcedure.input(z.object({ from: z.string(), to: z.string(), facilityCategoryId: z.number().int().positive().optional() }))
+      .query(({ input }) => getFacilityCategoryReport(input.from, input.to, input.facilityCategoryId)),
+  }),
   facilityTypes: router({
     list: protectedProcedure.input(z.object({ includeInactive: z.boolean().optional() }).optional()).query(({ input, ctx }) => listFacilityTypes(Boolean(input?.includeInactive && isConfigAdmin(ctx.user.role)))),
     // PRD Round 10, Section 1: same direct VAT field as ticket types —
@@ -565,10 +643,12 @@ export const platformRouter = router({
       // PRD Round 15, Section 6: per-facility auto-cancellation window,
       // replacing the old single global setting.
       autoCancelEnabled: z.boolean().default(false), autoCancelHours: z.number().int().positive().default(24),
+      // PRD Round 17, item 5.3: optional main/sub facility category.
+      facilityCategoryId: z.number().int().positive().nullable().optional(),
     })).mutation(async ({ input, ctx }) => {
       if (Number(input.vatPercent) > 100) throw new TRPCError({ code: "BAD_REQUEST", message: "VAT rate cannot exceed 100" });
       const category = await findOrCreateRevenueCategoryForFacility(input.name, normalizeRateCode(input.code), ctx.user.id);
-      const facility = await createFacilityType({ name: input.name, code: normalizeRateCode(input.code), pricingMethod: input.pricingMethod, rate: input.rate, applyVat: input.applyVat, vatPercent: input.vatPercent, autoCancelEnabled: input.autoCancelEnabled, autoCancelHours: input.autoCancelHours, revenueCategoryId: category.id, createdBy: ctx.user.id } as any);
+      const facility = await createFacilityType({ name: input.name, code: normalizeRateCode(input.code), pricingMethod: input.pricingMethod, rate: input.rate, applyVat: input.applyVat, vatPercent: input.vatPercent, autoCancelEnabled: input.autoCancelEnabled, autoCancelHours: input.autoCancelHours, facilityCategoryId: input.facilityCategoryId ?? null, revenueCategoryId: category.id, createdBy: ctx.user.id } as any);
       await logActivity(ctx.user.id, "facility_type.create", "facility_type", facility.id, JSON.stringify(input));
       return facility;
     }),
@@ -577,6 +657,7 @@ export const platformRouter = router({
       pricingMethod: z.enum(["hourly", "daily", "fixed"]).optional(), rate: z.string().refine(isPositiveMoney, "Enter a positive OMR rate with up to three decimals").optional(), isActive: z.boolean().optional(),
       applyVat: z.boolean().optional(), vatPercent: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
       autoCancelEnabled: z.boolean().optional(), autoCancelHours: z.number().int().positive().optional(),
+      facilityCategoryId: z.number().int().positive().nullable().optional(),
     })).mutation(async ({ input, ctx }) => {
       if (input.vatPercent !== undefined && Number(input.vatPercent) > 100) throw new TRPCError({ code: "BAD_REQUEST", message: "VAT rate cannot exceed 100" });
       const { id, code, ...rest } = input;
@@ -1352,9 +1433,11 @@ export const platformRouter = router({
     settlePayable: financeProcedure.input(z.object({
       type: z.enum(["expense", "revenue", "asset"]), id: z.number().int().positive(),
       amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
+      // PRD Round 17, item 5.1: the ledger this payment moved through.
+      paymentAccount: paymentAccountInput,
     })).mutation(async ({ input, ctx }) => {
       try {
-        const result = await recordSettlement(input.type, input.id, input.amount, ctx.user.id);
+        const result = await recordSettlement(input.type, input.id, input.amount, ctx.user.id, input.paymentAccount);
         await logActivity(ctx.user.id, `${input.type}.settle`, `${input.type}_record`, input.id, `paid ${input.amount} on ${result.settlementDate} / balance ${result.balanceAmount}`);
         return result;
       } catch (error) {
@@ -1372,6 +1455,7 @@ export const platformRouter = router({
       adjust: configAdminProcedure.input(z.object({
         businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), type: z.enum(["opening", "add", "deduct"]),
         amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"), note: z.string().max(512).optional(),
+        account: paymentAccountInput,
       })).mutation(async ({ input, ctx }) => {
         const adjustment = await createCashFlowAdjustment({ ...input, note: input.note?.trim(), createdBy: ctx.user.id });
         await logActivity(ctx.user.id, "cash_flow.adjust", "cash_flow_adjustment", adjustment.id, `${input.type}:${input.amount}`);
@@ -1443,6 +1527,7 @@ export const platformRouter = router({
         payee: z.string().optional(), description: z.string().min(1),
         receiptNumber: z.string().max(64).optional(),
         paidAmount: nonNegativeMoney.optional(),
+        paymentAccount: paymentAccountInput,
         attachments: z.array(attachmentInputSchema).max(10).optional(),
         department: z.enum(["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]).default("general"),
       })).mutation(async ({ input, ctx }) => {
@@ -1467,6 +1552,7 @@ export const platformRouter = router({
         id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals").optional(),
         payee: z.string().optional(), description: z.string().min(1).optional(), receiptNumber: z.string().max(64).optional(),
         paidAmount: nonNegativeMoney.optional(),
+        paymentAccount: z.enum(["cash", "bank"]).optional(),
         department: z.enum(["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]).optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
@@ -1531,6 +1617,7 @@ export const platformRouter = router({
         source: z.string().max(128).optional(), description: z.string().min(1),
         receiptNumber: z.string().max(64).optional(),
         paidAmount: nonNegativeMoney.optional(),
+        paymentAccount: paymentAccountInput,
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
         const paidBalance = resolvePaidBalance(input.amount, input.paidAmount);
@@ -1553,6 +1640,7 @@ export const platformRouter = router({
         id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals").optional(),
         source: z.string().max(128).optional(), description: z.string().min(1).optional(), receiptNumber: z.string().max(64).optional(),
         paidAmount: nonNegativeMoney.optional(),
+        paymentAccount: z.enum(["cash", "bank"]).optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
         const { id, categoryId, attachments: attachmentFiles, paidAmount, ...data } = input;
@@ -1617,6 +1705,7 @@ export const platformRouter = router({
         status: z.enum(["active", "under_maintenance", "disposed"]).default("active"),
         usefulLifeYears: z.number().int().min(1).max(100).optional(),
         paidAmount: nonNegativeMoney.optional(),
+        paymentAccount: paymentAccountInput,
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
         const paidBalance = resolvePaidBalance(input.amount, input.paidAmount);
@@ -1637,6 +1726,7 @@ export const platformRouter = router({
         status: z.enum(["active", "under_maintenance", "disposed"]).optional(),
         usefulLifeYears: z.number().int().min(1).max(100).nullable().optional(),
         paidAmount: nonNegativeMoney.optional(),
+        paymentAccount: z.enum(["cash", "bank"]).optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
         const { id, categoryId, attachments: attachmentFiles, paidAmount, ...data } = input;
@@ -1937,6 +2027,7 @@ export const platformRouter = router({
       const user = await createLocalUser({ username, name: input.name, email: input.email, role: input.role, passwordHash: await hashPassword(input.temporaryPassword), mustChangePassword: true });
       await logActivity(ctx.user.id, "admin.user.create", "user", user?.id, `${username}:${input.role}`);
       if (!user) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Account could not be created" });
+      if (user.role === "petty_cash") await ensurePettyCashFundForCustodian(user.id, ctx.user.id);
       const { passwordHash: _passwordHash, ...safeUser } = user;
       return safeUser;
     }),
@@ -1952,6 +2043,7 @@ export const platformRouter = router({
       const user = await updateLocalUser(id, data);
       if (!user) throw new TRPCError({ code: "NOT_FOUND", message: "User account was not found" });
       if (data.isActive === false) await revokeAllUserSessions(id);
+      if (user.role === "petty_cash") await ensurePettyCashFundForCustodian(user.id, ctx.user.id);
       await logActivity(ctx.user.id, "admin.user.update", "user", id, JSON.stringify(data));
       const { passwordHash: _passwordHash, ...safeUser } = user;
       return safeUser;
@@ -1970,6 +2062,7 @@ export const platformRouter = router({
       if (input.id === ctx.user.id && input.role !== ctx.user.role) throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot change the role of your own account" });
       assertCanManageAccount(ctx.user, await getUserById(input.id), input.role);
       await updateUserRole(input.id, input.role);
+      if (input.role === "petty_cash") await ensurePettyCashFundForCustodian(input.id, ctx.user.id);
       await logActivity(ctx.user.id, "admin.role.update", "user", input.id, input.role);
     }),
     // PRD Round 16, item 13: users could only be disabled; now they can be

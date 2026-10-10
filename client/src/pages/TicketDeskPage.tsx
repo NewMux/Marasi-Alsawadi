@@ -427,10 +427,16 @@ export default function TicketDeskPage() {
           return <div key={line.id} className={cx("rounded-2xl border bg-well p-4", lineInvalid ? "border-danger" : "border-divider")}>
             <div className="mb-3 flex items-center justify-between"><b className="text-sm">{t("tickets.groupLine")} {index + 1}</b><button onClick={() => removeGroupLine(line.id)} aria-label={`Remove group line ${index + 1}`} className="rounded-full p-2 text-muted hover:bg-danger-bg hover:text-danger"><Trash2 size={14}/></button></div>
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field label={t("tickets.freeEntry")}><SelectField value={line.categoryId} onChange={(event) => updateGroupLine(line.id, { categoryId: event.target.value })}><option value="">{t("tickets.chooseCategory")}</option>{visibleVisitorCategories.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</SelectField></Field>
+              <Field label={t("tickets.visitorCategory")}><SelectField value={line.categoryId} onChange={(event) => updateGroupLine(line.id, { categoryId: event.target.value })}><option value="">{t("tickets.chooseCategory")}</option>{visibleVisitorCategories.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</SelectField></Field>
               <Field label={t("tickets.quantity")} error={attemptedSubmit && (!line.quantity || line.quantity < 1) ? t("tickets.atLeastOne") : undefined}><TextField type="number" min={1} max={category?.maxPerBooking ?? undefined} value={line.quantity} onChange={(event) => updateGroupLine(line.id, { quantity: Math.max(0, Math.floor(Number(event.target.value) || 0)) })} className={attemptedSubmit && (!line.quantity || line.quantity < 1) ? "border-danger ring-1 ring-danger/30" : undefined}/></Field>
             </div>
-            {price ? <p className="mt-3 text-[11px] leading-4 text-muted">{category?.name} · {money(price.unitPrice)} {t("tickets.eachOf")} — {line.quantity || 0} {t("tickets.ticketsCount")} {t("tickets.ofThisType")}{category?.maxPerBooking ? ` · ${t("tickets.maxPerBookingHint", { max: category.maxPerBooking })}` : ""}</p> : <p className="mt-3 text-[11px] leading-4 text-danger">{!effectiveTicketTypeId ? t("tickets.chooseTicketTypeFirst") : t("tickets.noPriceConfigured")}</p>}
+            {price ? <p className="mt-3 text-[11px] leading-4 text-muted">{category?.name} · {money(price.unitPrice)} {t("tickets.eachOf")} — {line.quantity || 0} {t("tickets.ticketsCount")} {t("tickets.ofThisType")}{category?.maxPerBooking ? ` · ${t("tickets.maxPerBookingHint", { max: category.maxPerBooking })}` : ""}</p> : !effectiveTicketTypeId ? <p className="mt-3 text-[11px] leading-4 text-danger">{t("tickets.chooseTicketTypeFirst")}</p>
+              // PRD Round 17, item 3.1: a fresh group line has no category
+              // picked yet, so there is no price to look up — that used to be
+              // reported as "No price is configured", which read as the Group
+              // option itself being broken. Ask for the category instead.
+              : !category ? <p className={cx("mt-3 text-[11px] leading-4", attemptedSubmit ? "text-danger" : "text-muted")}>{t("tickets.chooseCategoryForLine")}</p>
+              : <p className="mt-3 text-[11px] leading-4 text-danger">{t("tickets.noPriceConfigured")}</p>}
           </div>;
         })}<SecondaryButton onClick={addGroupLine}><Plus size={15} className="mr-2"/>{t("tickets.addGroupLine")}</SecondaryButton></div>}
         </>}

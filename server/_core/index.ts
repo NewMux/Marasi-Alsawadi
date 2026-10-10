@@ -8,6 +8,7 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { applyLegacyMigrations } from "../scripts/applyLegacyMigrations";
+import { handleBackupDownload } from "../backup";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -45,6 +46,8 @@ export function createApp() {
   // Persisted under ./uploads, which needs a Coolify persistent-storage mount
   // to survive a redeploy.
   app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
+  // PRD Round 17, item 5.4: Super Admin data backup download.
+  app.get("/api/backup", handleBackupDownload);
   // tRPC API
   app.use(
     "/api/trpc",
