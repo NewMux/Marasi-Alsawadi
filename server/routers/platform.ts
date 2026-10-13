@@ -28,7 +28,7 @@ import {
   listTicketTypes, getTicketType, getTicketTypeByCode, createTicketType, updateTicketType, deleteTicketType, listVisitorCategories, createVisitorCategory, updateVisitorCategory, listTicketPrices, upsertTicketPrice,
   summariseTicketRevenueByType, summariseFacilityRevenueByType, listRevenueCategoryOptionsForRecording, describeSettingDependents,
   getSystemSettings, setResetAllDataToolEnabled, resetAllOperationalData,
-  listPayables, recordSettlement, listSettlementsFor, businessToday, getSettledTotal, listCashFlowAdjustments, createCashFlowAdjustment, deleteCashFlowAdjustment, getCashFlowStatus, listRevenueLedger, assertValidCategoryParent, listFacilityCategories, createFacilityCategory, updateFacilityCategory, deleteFacilityCategory, getFacilityCategoryReport, getCategoryReport,
+  listPayables, recordSettlement, listSettlementsFor, businessToday, getSettledTotal, listCashFlowAdjustments, createCashFlowAdjustment, deleteCashFlowAdjustment, getCashFlowStatus, listRevenueLedger, deleteFinanceSettlementsFor, assertValidCategoryParent, listFacilityCategories, createFacilityCategory, updateFacilityCategory, deleteFacilityCategory, getFacilityCategoryReport, getCategoryReport,
   listPartnerEntities, getPartnerEntity, createPartnerEntity, updatePartnerEntity, deletePartnerEntity,
   listPartnerDiscountRules, createPartnerDiscountRule, updatePartnerDiscountRule, deletePartnerDiscountRule, resolveActivePartnerDiscountRule,
   listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
@@ -51,6 +51,7 @@ import {
 } from "../ticketingDb";
 import { applyFacilityDiscount, calculateFacilityFees, calculateFacilityLineAmount, calculateFacilityVat, calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE, minorToMoney, moneyToMinor, percentageToBasisPoints } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
+import { assertNotInSettledPeriod, SettledPeriodError, writeFinanceAudit, snapshotLedgerRecord, findPettyCashSpendForExpense, changePaymentMethod, createAccountTransfer, createAccountAdjustment, listAccountMovements, listFinanceAudit, getAccountBalancesAsAt, ADJUSTMENT_CATEGORIES } from "../financeControl";
 import { createRestoreRequest, getRestoreRequest, isRestoreSupportUser, listRestoreRequests, updateRestoreRequest } from "../backup";
 import { publicTicketUrl, requestOrigin } from "../ticketUrl";
 import { deleteAttachmentFile, isAllowedAttachmentMimeType, saveExpenseAttachment } from "../attachments";
@@ -93,6 +94,46 @@ const financeProcedure = protectedProcedure.use(({ ctx, next }) => {
 const isCashier = (role: string) => role === "cashier";
 function assertOwnTransaction(user: { id: number; role: string }, ownerId: number | null | undefined) {
   if (isCashier(user.role) && ownerId !== user.id) throw new TRPCError({ code: "FORBIDDEN", message: "Cashiers can only access their own transactions" });
+}
+
+// PRD Round 18, item 4.4: amend / delete in the General Ledger — the
+// Finance roles (Staff / Accountant, Manager, Admin, Super Admin). The
+// Cashier, Guard and Petty Cash custodian never get it.
+const ledgerEditorProcedure = financeProcedure;
+
+// PRD Round 18, item 8.7: a change inside a settled VAT period must be
+// confirmed explicitly; the client retries with confirmSettledPeriod: true.
+async function guardSettledPeriod(dates: Array<unknown>, confirmed?: boolean) {
+  for (const value of dates) {
+    if (!value) continue;
+    const date = value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
+    try { await assertNotInSettledPeriod(date, confirmed); }
+    catch (error) {
+      if (error instanceof SettledPeriodError) throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+      throw error;
+    }
+  }
+}
+
+async function auditLedgerAmend(kind: "expense" | "revenue" | "asset", before: any, after: any, reason: string | undefined, userId: number) {
+  const fields = ["businessDate", "categoryId", "categoryName", "amount", "paidAmount", "balanceAmount", "description", "receiptNumber", "payee", "source", "vendor", "location", "status", "usefulLifeYears", "paymentAccount", "paymentMethod"];
+  const pick = (row: any) => Object.fromEntries(fields.filter((field) => row && field in row).map((field) => [field, row[field] instanceof Date ? row[field].toISOString().slice(0, 10) : row[field]]));
+  const oldValues = pick(before); const newValues = pick(after);
+  const changed = Object.keys(newValues).filter((key) => String(oldValues[key] ?? "") !== String(newValues[key] ?? ""));
+  if (!changed.length) return;
+  await writeFinanceAudit({
+    action: "amend", recordType: `${kind}_record`, recordId: before.id, reference: before.description, amount: after?.amount ?? before.amount,
+    oldValues: Object.fromEntries(changed.map((key) => [key, oldValues[key]])), newValues: Object.fromEntries(changed.map((key) => [key, newValues[key]])),
+    reason, businessDate: newValues.businessDate ?? oldValues.businessDate, userId,
+  });
+}
+
+async function auditLedgerDelete(kind: "expense" | "revenue" | "asset", record: any, reason: string | undefined, userId: number) {
+  const snapshot = await snapshotLedgerRecord(kind, record);
+  await writeFinanceAudit({
+    action: "delete", recordType: `${kind}_record`, recordId: record.id, reference: record.description, amount: record.amount,
+    oldValues: snapshot, reason, businessDate: record.businessDate instanceof Date ? record.businessDate.toISOString().slice(0, 10) : String(record.businessDate).slice(0, 10), userId,
+  });
 }
 
 const gateProcedure = protectedProcedure.use(({ ctx, next }) => {
@@ -1561,6 +1602,7 @@ export const platformRouter = router({
         receiptNumber: z.string().max(64).optional(),
         paidAmount: nonNegativeMoney.optional(),
         paymentAccount: paymentAccountInput,
+        paymentMethod: z.enum(["cash", "card", "bank"]).optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
         department: z.enum(["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]).default("general"),
       })).mutation(async ({ input, ctx }) => {
@@ -1581,17 +1623,20 @@ export const platformRouter = router({
         await logActivity(ctx.user.id, "expense.create", "expense_record", expense.id, `${category.code}:${input.amount}`);
         return { ...expense, attachments: await listAttachmentsForEntry("expense", expense.id) };
       }),
-      update: managerProcedure.input(z.object({
+      update: ledgerEditorProcedure.input(z.object({
         id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals").optional(),
         payee: z.string().optional(), description: z.string().min(1).optional(), receiptNumber: z.string().max(64).optional(),
         paidAmount: nonNegativeMoney.optional(),
         paymentAccount: z.enum(["cash", "bank"]).optional(),
+        paymentMethod: z.enum(["cash", "card", "bank"]).optional(),
+        reason: z.string().max(500).optional(), confirmSettledPeriod: z.boolean().optional(),
         department: z.enum(["front_office", "housekeeping", "maintenance", "aqua_park", "fnb", "management", "general"]).optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
-        const { id, categoryId, attachments: attachmentFiles, paidAmount, ...data } = input;
+        const { id, categoryId, attachments: attachmentFiles, paidAmount, reason: amendReason, confirmSettledPeriod, ...data } = input;
         const existing = await getExpenseRecord(id);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Expense record was not found" });
+        await guardSettledPeriod([existing.businessDate, data.businessDate], confirmSettledPeriod);
         Object.assign(data, resolvePaidBalance(data.amount ?? String(existing.amount), paidAmount, existing as any));
         await assertPaidCoversSettlements("expense", id, (data as any).paidAmount);
         const category = categoryId ? await getExpenseCategory(categoryId) : undefined;
@@ -1606,11 +1651,26 @@ export const platformRouter = router({
           } as any);
         }
         await saveEntryAttachments("expense", id, attachmentFiles, ctx.user.id);
+        await auditLedgerAmend("expense", existing, await getExpenseRecord(id), amendReason, ctx.user.id);
         await logActivity(ctx.user.id, "expense.update", "expense_record", id, JSON.stringify(data));
       }),
-      delete: managerProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+      // PRD Round 18, item 4.4: Manager, Admin, Super Admin and Accountant
+      // can delete; the complete original record goes into the audit trail
+      // first, then the transaction leaves every total.
+      delete: ledgerEditorProcedure.input(z.object({ id: z.number(), reason: z.string().max(500).optional(), confirmSettledPeriod: z.boolean().optional() })).mutation(async ({ input, ctx }) => {
         const existing = await getExpenseRecord(input.id);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Expense record was not found" });
+        await guardSettledPeriod([existing.businessDate], input.confirmSettledPeriod);
+        await auditLedgerDelete("expense", existing, input.reason, ctx.user.id);
+        // A petty cash spend's expense goes together with the spend, so the
+        // custodian's balance stops counting it too.
+        const spend = await findPettyCashSpendForExpense(input.id);
+        if (spend) {
+          await deletePettyCashSpendWithExpense(spend.id);
+          await deleteFinanceSettlementsFor("expense", input.id);
+          await logActivity(ctx.user.id, "expense.delete", "expense_record", input.id, `petty cash spend ${spend.id}`);
+          return;
+        }
         await deleteExpenseRecord(input.id);
         if (existing.financeEntryId) await deleteFinanceEntry(existing.financeEntryId);
         await logActivity(ctx.user.id, "expense.delete", "expense_record", input.id);
@@ -1642,6 +1702,71 @@ export const platformRouter = router({
         return result;
       }),
     }),
+    // PRD Round 18, items 4.4 / 4.6: General Ledger corrections. Finance roles
+    // only (never Cashier); every action is written to the audit trail.
+    corrections: router({
+      changePaymentMethod: ledgerEditorProcedure.input(z.object({
+        target: z.enum(["ticket", "facility", "revenue", "expense", "asset"]), id: z.number().int().positive(),
+        method: z.enum(["cash", "card", "bank", "mixed"]), cashAmount: z.string().optional(), cardAmount: z.string().optional(), bankAmount: z.string().optional(),
+        reason: z.string().trim().min(3, "Enter a reason for the change").max(500), confirmSettledPeriod: z.boolean().optional(),
+      })).mutation(async ({ input, ctx }) => {
+        try {
+          return await changePaymentMethod({ ...input, userId: ctx.user.id });
+        } catch (error) {
+          if (error instanceof SettledPeriodError) throw new TRPCError({ code: "PRECONDITION_FAILED", message: error.message });
+          throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "The payment method could not be changed" });
+        }
+      }),
+      // Deleting a ticket- or facility-derived ledger row voids the sale
+      // itself (the ticket purchase is returned / the booking cancelled), so
+      // its revenue — and its VAT — stop counting everywhere at once.
+      voidSale: ledgerEditorProcedure.input(z.object({
+        kind: z.enum(["ticket", "facility"]), id: z.number().int().positive(),
+        reason: z.string().trim().min(3, "Enter a reason").max(500), confirmSettledPeriod: z.boolean().optional(),
+      })).mutation(async ({ input, ctx }) => {
+        if (input.kind === "ticket") {
+          const purchase = await getPrdTicketPurchase(input.id);
+          if (!purchase) throw new TRPCError({ code: "NOT_FOUND", message: "Ticket purchase was not found" });
+          if (purchase.status === "refunded") throw new TRPCError({ code: "BAD_REQUEST", message: "This purchase was already returned" });
+          await guardSettledPeriod([purchase.visitDate], input.confirmSettledPeriod);
+          const lines = await listPrdTicketLines(input.id);
+          await refundPrdTicketPurchase(input.id, ctx.user.id, `Voided from General Ledger: ${input.reason}`);
+          await deleteFinanceEntryByReference("prd_ticket_purchase", input.id);
+          await writeFinanceAudit({ action: "void_ticket_sale", recordType: "ticket_purchase", recordId: input.id, reference: (lines as any[]).map((line) => line.ticketNumber).join(", ").slice(0, 255), amount: purchase.totalAmount, oldValues: { purchase, lines }, newValues: { status: "refunded" }, reason: input.reason, businessDate: String(purchase.visitDate instanceof Date ? purchase.visitDate.toISOString() : purchase.visitDate).slice(0, 10), userId: ctx.user.id });
+          await logActivity(ctx.user.id, "prd_ticket_purchase.void", "ticket_purchase", input.id, input.reason);
+          return { success: true };
+        }
+        const booking = await getFacilityBooking(input.id);
+        if (!booking) throw new TRPCError({ code: "NOT_FOUND", message: "Facility booking was not found" });
+        if (booking.status === "cancelled") throw new TRPCError({ code: "BAD_REQUEST", message: "This booking was already cancelled" });
+        await guardSettledPeriod([booking.bookingDate, booking.paidAt], input.confirmSettledPeriod);
+        await cancelFacilityBooking(input.id, ctx.user.id, `Voided from General Ledger: ${input.reason}`);
+        await writeFinanceAudit({ action: "void_facility_booking", recordType: "facility_booking", recordId: input.id, reference: `${booking.facilityTypeName} #${booking.id}`, amount: booking.totalAmount, oldValues: { booking }, newValues: { status: "cancelled" }, reason: input.reason, businessDate: String(booking.bookingDate instanceof Date ? booking.bookingDate.toISOString() : booking.bookingDate).slice(0, 10), userId: ctx.user.id });
+        await logActivity(ctx.user.id, "facility_booking.void", "facility_booking", input.id, input.reason);
+        return { success: true };
+      }),
+      balances: ledgerEditorProcedure.input(z.object({ asAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) })).query(({ input }) => getAccountBalancesAsAt(input.asAt)),
+      transfer: ledgerEditorProcedure.input(z.object({
+        businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), fromAccount: z.enum(["cash", "bank"]),
+        amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"), reason: z.string().trim().min(3, "Enter a reason").max(500),
+      })).mutation(async ({ input, ctx }) => {
+        try { return await createAccountTransfer({ ...input, userId: ctx.user.id }); }
+        catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "The transfer could not be recorded" }); }
+      }),
+      adjust: ledgerEditorProcedure.input(z.object({
+        businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), account: z.enum(["cash", "bank"]), direction: z.enum(["increase", "decrease"]),
+        amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"), category: z.enum(ADJUSTMENT_CATEGORIES),
+        reason: z.string().trim().min(3, "Enter a reason").max(500),
+      })).mutation(async ({ input, ctx }) => {
+        try { return await createAccountAdjustment({ ...input, userId: ctx.user.id }); }
+        catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "The adjustment could not be recorded" }); }
+      }),
+      movements: ledgerEditorProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional()).query(({ input }) => listAccountMovements(input?.from, input?.to)),
+      // 4.6.4: the audit report. Read-only; there is no edit or delete.
+      auditReport: ledgerEditorProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional(), userId: z.number().int().positive().optional(), action: z.string().max(40).optional() }).optional())
+        .query(({ input }) => listFinanceAudit(input ?? {})),
+      auditUsers: ledgerEditorProcedure.query(async () => (await listUsers()).map((user) => ({ id: user.id, name: user.name || user.username }))),
+    }),
     // PRD Round 18, items 4.1 / 4.3: the General Ledger's Revenue listing —
     // ticket sales, facility bookings and manual revenue, each once.
     revenueLedger: financeProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
@@ -1660,6 +1785,7 @@ export const platformRouter = router({
         receiptNumber: z.string().max(64).optional(),
         paidAmount: nonNegativeMoney.optional(),
         paymentAccount: paymentAccountInput,
+        paymentMethod: z.enum(["cash", "card", "bank"]).optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
         const paidBalance = resolvePaidBalance(input.amount, input.paidAmount);
@@ -1678,16 +1804,19 @@ export const platformRouter = router({
         await logActivity(ctx.user.id, "revenue.create", "revenue_record", revenue.id, `${category.code}:${input.amount}`);
         return { ...revenue, attachments: await listAttachmentsForEntry("revenue", revenue.id) };
       }),
-      update: managerProcedure.input(z.object({
+      update: ledgerEditorProcedure.input(z.object({
         id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals").optional(),
         source: z.string().max(128).optional(), description: z.string().min(1).optional(), receiptNumber: z.string().max(64).optional(),
         paidAmount: nonNegativeMoney.optional(),
         paymentAccount: z.enum(["cash", "bank"]).optional(),
+        paymentMethod: z.enum(["cash", "card", "bank"]).optional(),
+        reason: z.string().max(500).optional(), confirmSettledPeriod: z.boolean().optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
-        const { id, categoryId, attachments: attachmentFiles, paidAmount, ...data } = input;
+        const { id, categoryId, attachments: attachmentFiles, paidAmount, reason: amendReason, confirmSettledPeriod, ...data } = input;
         const existing = await getRevenueRecord(id);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Revenue record was not found" });
+        await guardSettledPeriod([existing.businessDate, data.businessDate], confirmSettledPeriod);
         Object.assign(data, resolvePaidBalance(data.amount ?? String(existing.amount), paidAmount, existing as any));
         await assertPaidCoversSettlements("revenue", id, (data as any).paidAmount);
         const category = categoryId ? await getRevenueCategory(categoryId) : undefined;
@@ -1700,11 +1829,17 @@ export const platformRouter = router({
           } as any);
         }
         await saveEntryAttachments("revenue", id, attachmentFiles, ctx.user.id);
+        await auditLedgerAmend("revenue", existing, await getRevenueRecord(id), amendReason, ctx.user.id);
         await logActivity(ctx.user.id, "revenue.update", "revenue_record", id, JSON.stringify(data));
       }),
-      delete: managerProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+      // PRD Round 18, item 4.4: Manager, Admin, Super Admin and Accountant
+      // can delete; the complete original record goes into the audit trail
+      // first, then the transaction leaves every total.
+      delete: ledgerEditorProcedure.input(z.object({ id: z.number(), reason: z.string().max(500).optional(), confirmSettledPeriod: z.boolean().optional() })).mutation(async ({ input, ctx }) => {
         const existing = await getRevenueRecord(input.id);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Revenue record was not found" });
+        await guardSettledPeriod([existing.businessDate], input.confirmSettledPeriod);
+        await auditLedgerDelete("revenue", existing, input.reason, ctx.user.id);
         await deleteRevenueRecord(input.id);
         if (existing.financeEntryId) await deleteFinanceEntry(existing.financeEntryId);
         await logActivity(ctx.user.id, "revenue.delete", "revenue_record", input.id);
@@ -1748,6 +1883,7 @@ export const platformRouter = router({
         usefulLifeYears: z.number().int().min(1).max(100).optional(),
         paidAmount: nonNegativeMoney.optional(),
         paymentAccount: paymentAccountInput,
+        paymentMethod: z.enum(["cash", "card", "bank"]).optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
         const paidBalance = resolvePaidBalance(input.amount, input.paidAmount);
@@ -1761,7 +1897,7 @@ export const platformRouter = router({
         await logActivity(ctx.user.id, "asset.create", "asset_record", asset.id, `${category.code}:${input.amount}`);
         return { ...asset, attachments: await listAttachmentsForEntry("asset", asset.id) };
       }),
-      update: managerProcedure.input(z.object({
+      update: ledgerEditorProcedure.input(z.object({
         id: z.number(), businessDate: z.string().optional(), categoryId: z.number().optional(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals").optional(),
         vendor: z.string().max(128).optional(), description: z.string().min(1).optional(), receiptNumber: z.string().max(64).optional(),
         location: z.string().max(160).optional(),
@@ -1769,22 +1905,31 @@ export const platformRouter = router({
         usefulLifeYears: z.number().int().min(1).max(100).nullable().optional(),
         paidAmount: nonNegativeMoney.optional(),
         paymentAccount: z.enum(["cash", "bank"]).optional(),
+        paymentMethod: z.enum(["cash", "card", "bank"]).optional(),
+        reason: z.string().max(500).optional(), confirmSettledPeriod: z.boolean().optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
-        const { id, categoryId, attachments: attachmentFiles, paidAmount, ...data } = input;
+        const { id, categoryId, attachments: attachmentFiles, paidAmount, reason: amendReason, confirmSettledPeriod, ...data } = input;
         const existing = await getAssetRecord(id);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Asset record was not found" });
+        await guardSettledPeriod([existing.businessDate, data.businessDate], confirmSettledPeriod);
         Object.assign(data, resolvePaidBalance(data.amount ?? String(existing.amount), paidAmount, existing as any));
         await assertPaidCoversSettlements("asset", id, (data as any).paidAmount);
         const category = categoryId ? await getAssetCategory(categoryId) : undefined;
         if (categoryId && !category?.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an active asset category" });
         await updateAssetRecord(id, { ...data, ...(category ? { categoryId, categoryName: category.name } : {}) } as any);
         await saveEntryAttachments("asset", id, attachmentFiles, ctx.user.id);
+        await auditLedgerAmend("asset", existing, await getAssetRecord(id), amendReason, ctx.user.id);
         await logActivity(ctx.user.id, "asset.update", "asset_record", id, JSON.stringify(data));
       }),
-      delete: managerProcedure.input(z.object({ id: z.number() })).mutation(async ({ input, ctx }) => {
+      // PRD Round 18, item 4.4: Manager, Admin, Super Admin and Accountant
+      // can delete; the complete original record goes into the audit trail
+      // first, then the transaction leaves every total.
+      delete: ledgerEditorProcedure.input(z.object({ id: z.number(), reason: z.string().max(500).optional(), confirmSettledPeriod: z.boolean().optional() })).mutation(async ({ input, ctx }) => {
         const existing = await getAssetRecord(input.id);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Asset record was not found" });
+        await guardSettledPeriod([existing.businessDate], input.confirmSettledPeriod);
+        await auditLedgerDelete("asset", existing, input.reason, ctx.user.id);
         await deleteAssetRecord(input.id);
         await logActivity(ctx.user.id, "asset.delete", "asset_record", input.id);
       }),

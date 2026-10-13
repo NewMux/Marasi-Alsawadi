@@ -518,6 +518,12 @@ export const financeEntries = mysqlTable("finance_entries", {
   referenceId: int("referenceId"),
   referenceType: varchar("referenceType", { length: 64 }),
   sourceFile: varchar("sourceFile", { length: 512 }),
+  // PRD Round 18, Section 8: VAT split of a revenue entry. amount stays the
+  // gross; netAmount + vatAmount = amount. NULL = not split (amount is used).
+  vatAmount: decimal("vatAmount", { precision: 12, scale: 3 }),
+  netAmount: decimal("netAmount", { precision: 12, scale: 3 }),
+  vatSource: varchar("vatSource", { length: 16 }),
+  vatAppliedAt: timestamp("vatAppliedAt"),
   createdBy: int("createdBy"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
@@ -648,6 +654,8 @@ export const expenseRecords = mysqlTable("expense_records", {
   balanceAmount: decimal("balanceAmount", { precision: 12, scale: 3 }).default("0").notNull(),
   // PRD Round 17, item 5.1: which ledger the paid amount moved through.
   paymentAccount: mysqlEnum("paymentAccount", ["cash", "bank"]).default("cash").notNull(),
+  // PRD Round 18, items 5.3 / 4.6.1: the method actually used (NULL = paymentAccount).
+  paymentMethod: mysqlEnum("paymentMethod", ["cash", "card", "bank"]),
   payee: varchar("payee", { length: 128 }),
   description: varchar("description", { length: 256 }).notNull(),
   receiptNumber: varchar("receiptNumber", { length: 64 }),
@@ -691,6 +699,8 @@ export const revenueRecords = mysqlTable("revenue_records", {
   balanceAmount: decimal("balanceAmount", { precision: 12, scale: 3 }).default("0").notNull(),
   // PRD Round 17, item 5.1: which ledger the paid amount moved through.
   paymentAccount: mysqlEnum("paymentAccount", ["cash", "bank"]).default("cash").notNull(),
+  // PRD Round 18, items 5.3 / 4.6.1: the method actually used (NULL = paymentAccount).
+  paymentMethod: mysqlEnum("paymentMethod", ["cash", "card", "bank"]),
   source: varchar("source", { length: 128 }),
   description: varchar("description", { length: 256 }).notNull(),
   receiptNumber: varchar("receiptNumber", { length: 64 }),
@@ -855,6 +865,11 @@ export const systemSettings = mysqlTable("system_settings", {
   resetAllDataToolEnabled: boolean("resetAllDataToolEnabled").default(true).notNull(),
   lastResetAt: timestamp("lastResetAt"),
   lastResetBy: int("lastResetBy"),
+  // PRD Round 18, Section 8: VAT settings.
+  vatRatePercent: decimal("vatRatePercent", { precision: 5, scale: 2 }).default("5.00").notNull(),
+  vatPeriodStartMonth: int("vatPeriodStartMonth").default(1).notNull(),
+  vatStartDate: date("vatStartDate").default("2026-10-08" as any).notNull(),
+  vatSettledThrough: date("vatSettledThrough"),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 export type SystemSettings = typeof systemSettings.$inferSelect;
@@ -984,6 +999,8 @@ export const assetRecords = mysqlTable("asset_records", {
   balanceAmount: decimal("balanceAmount", { precision: 12, scale: 3 }).default("0").notNull(),
   // PRD Round 17, item 5.1: which ledger the paid amount moved through.
   paymentAccount: mysqlEnum("paymentAccount", ["cash", "bank"]).default("cash").notNull(),
+  // PRD Round 18, items 5.3 / 4.6.1: the method actually used (NULL = paymentAccount).
+  paymentMethod: mysqlEnum("paymentMethod", ["cash", "card", "bank"]),
   vendor: varchar("vendor", { length: 128 }),
   description: varchar("description", { length: 256 }).notNull(),
   receiptNumber: varchar("receiptNumber", { length: 64 }),
@@ -1115,3 +1132,65 @@ export const dataRestoreRequests = mysqlTable("data_restore_requests", {
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 export type DataRestoreRequest = typeof dataRestoreRequests.$inferSelect;
+
+// PRD Round 18, items 4.4 / 4.6.4: append-only finance audit trail. No
+// endpoint edits or deletes these rows; a deleted transaction's complete
+// original record is kept in oldValues.
+export const financeAuditLog = mysqlTable("finance_audit_log", {
+  id: int("id").autoincrement().primaryKey(),
+  action: varchar("action", { length: 40 }).notNull(),
+  recordType: varchar("recordType", { length: 40 }).notNull(),
+  recordId: int("recordId"),
+  reference: varchar("reference", { length: 255 }),
+  amount: decimal("amount", { precision: 12, scale: 3 }),
+  oldValues: text("oldValues"),
+  newValues: text("newValues"),
+  reason: text("reason"),
+  businessDate: date("businessDate"),
+  userId: int("userId").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type FinanceAuditLog = typeof financeAuditLog.$inferSelect;
+
+// PRD Round 18, items 4.6.2 / 4.6.3 / 8.3: Cash <-> Bank transfers, balance
+// adjustments and VAT payments — never revenue or expense.
+export const accountMovements = mysqlTable("account_movements", {
+  id: int("id").autoincrement().primaryKey(),
+  kind: mysqlEnum("kind", ["transfer", "adjustment", "vat_payment"]).notNull(),
+  businessDate: date("businessDate").notNull(),
+  fromAccount: mysqlEnum("fromAccount", ["cash", "bank"]),
+  toAccount: mysqlEnum("toAccount", ["cash", "bank"]),
+  account: mysqlEnum("account", ["cash", "bank"]),
+  direction: mysqlEnum("direction", ["increase", "decrease"]),
+  category: varchar("category", { length: 40 }),
+  amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
+  reason: text("reason").notNull(),
+  vatPeriodFrom: date("vatPeriodFrom"),
+  vatPeriodTo: date("vatPeriodTo"),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type AccountMovement = typeof accountMovements.$inferSelect;
+
+// PRD Round 18, item 7.1: a security deposit held against a facility
+// booking — a liability, not revenue.
+export const facilityDeposits = mysqlTable("facility_deposits", {
+  id: int("id").autoincrement().primaryKey(),
+  bookingId: int("bookingId").notNull(),
+  amount: decimal("amount", { precision: 12, scale: 3 }).notNull(),
+  paymentMethod: mysqlEnum("paymentMethod", ["cash", "card"]).notNull(),
+  businessDate: date("businessDate").notNull(),
+  status: mysqlEnum("status", ["held", "returned", "returned_partial", "forfeited"]).default("held").notNull(),
+  refundAmount: decimal("refundAmount", { precision: 12, scale: 3 }),
+  deductionAmount: decimal("deductionAmount", { precision: 12, scale: 3 }),
+  deductionReason: text("deductionReason"),
+  refundMethod: mysqlEnum("refundMethod", ["cash", "card"]),
+  settledDate: date("settledDate"),
+  settledAt: timestamp("settledAt"),
+  settledBy: int("settledBy"),
+  deductionFinanceEntryId: int("deductionFinanceEntryId"),
+  createdBy: int("createdBy").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type FacilityDeposit = typeof facilityDeposits.$inferSelect;
+

@@ -39,6 +39,22 @@ describe("Commercial Settings configuration boundary", () => {
     await expectForbidden(caller.platform.settings.systemReset.execute({ confirmationPhrase: "RESET" }));
   });
 
+  // PRD Round 18, items 4.4 / 4.6: General Ledger corrections are for the
+  // Finance roles only — never the Cashier, Guard or Petty Cash custodian.
+  it("keeps General Ledger corrections away from the Cashier, Guard and Petty Cash custodian", async () => {
+    const custodian = { id: 8, role: "petty_cash", name: "Custodian", passwordHash: null };
+    for (const user of [cashier, guard, custodian]) {
+      const caller = callerFor(user);
+      await expectForbidden(caller.platform.finance.corrections.changePaymentMethod({ target: "ticket", id: 1, method: "cash", reason: "wrong method" }));
+      await expectForbidden(caller.platform.finance.corrections.voidSale({ kind: "ticket", id: 1, reason: "test void" }));
+      await expectForbidden(caller.platform.finance.corrections.transfer({ businessDate: "2026-10-13", fromAccount: "cash", amount: "1.000", reason: "deposit" }));
+      await expectForbidden(caller.platform.finance.corrections.adjust({ businessDate: "2026-10-13", account: "cash", direction: "increase", amount: "1.000", category: "other", reason: "count" }));
+      await expectForbidden(caller.platform.finance.corrections.auditReport({}));
+      await expectForbidden(caller.platform.finance.revenues.delete({ id: 1 }));
+      await expectForbidden(caller.platform.finance.expenses.update({ id: 1, description: "x" }));
+    }
+  });
+
   // PRD Round 17, item 5.4: restore requests are Super-Admin-only to file,
   // and only NewMux support accounts may change their status — never the
   // client's own Super Admin.

@@ -4,7 +4,7 @@ import { alias } from "drizzle-orm/mysql-core";
 import {
   addonServices, assetAdjustments, assetCategories, assetRecords, attachments, expenseAdjustments, expenseCategories, expenseRecords, facilityBookingAddons, facilityBookings, facilityTypes, guests, partnerEntities, partnerDiscountRules, pettyCashAllocations, pettyCashFunds, pettyCashSpends, revenueAdjustments, revenueCategories, revenueRecords, salesTicketSequences, salesTransactionLines, salesTransactions,
   serviceRateFees, serviceRates, ticketFeeDefinitions, ticketCheckIns, ticketNumberSequences, ticketDiscountTiers, ticketTypes, visitorCategories, ticketPrices,
-  ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries, users, systemSettings, cashFlowAdjustments, financeSettlements, facilityCategories,
+  ticketPurchases, ticketPurchaseLines, ticketPurchaseFees, financeEntries, users, systemSettings, cashFlowAdjustments, financeSettlements, facilityCategories, accountMovements, facilityDeposits, financeAuditLog,
 } from "../drizzle/schema";
 import { getDb } from "./db";
 import { calculateOperationalNet, calculatePrdPurchasePricing, decideGateEntry, formatPrdTicketNumber, formatTicketNumber, minorToMoney, moneyToMinor, validateMixedPaymentBreakdown, type PrdDiscountTierInput, type PrdTicketLineInput } from "./ticketingRules";
@@ -2203,7 +2203,13 @@ export async function deleteCashFlowAdjustment(id: number) {
 
 // PRD Round 17, item 5.1: every movement also carries how much of it went
 // through the Bank Account (card counts as bank); the rest is Cash Account.
-type CashMovement = { date: string; kind: "tickets" | "facilities" | "otherRevenue" | "expense" | "capex" | "adjustment"; description: string; inAmount: number; outAmount: number; bankIn: number; bankOut: number };
+// PRD Round 18: also Cash <-> Bank transfers (no change to the combined
+// position), balance adjustments, VAT payments and security deposits. cashIn
+// / cashOut are explicit so a transfer can move money between the two
+// accounts while inAmount / outAmount (the combined position) stay at zero.
+type CashMovementKind = "tickets" | "facilities" | "otherRevenue" | "expense" | "capex" | "adjustment" | "transfer" | "accountAdjustment" | "vatPayment" | "deposit";
+type CashMovement = { date: string; kind: CashMovementKind; description: string; inAmount: number; outAmount: number; bankIn: number; bankOut: number; cashIn: number; cashOut: number };
+type CashMovementDraft = Omit<CashMovement, "cashIn" | "cashOut"> & { cashIn?: number; cashOut?: number };
 type PaymentSplitSource = { paymentMethod: string | null; totalAmount: unknown; cashAmount: unknown; cardAmount: unknown; bankAmount: unknown };
 
 // Fraction of a ticket purchase / facility booking paid through the bank:
@@ -2240,7 +2246,9 @@ async function listCashMovements(range: { before?: string; from?: string; to?: s
   const [revenueRows, expenseRows, assetRows, adjustmentRows, revenueSettlements, expenseSettlements, assetSettlements] = await Promise.all([
     db.select({ date: dateOf(financeEntries.date), description: financeEntries.description, referenceType: financeEntries.referenceType, referenceId: financeEntries.referenceId, amount: financeEntries.amount, linkedPaid: revenueRecords.paidAmount, linkedAmount: revenueRecords.amount, linkedAccount: revenueRecords.paymentAccount, settled: settledFor("revenue") })
       .from(financeEntries).leftJoin(revenueRecords, eq(revenueRecords.financeEntryId, financeEntries.id))
-      .where(and(eq(financeEntries.type, "revenue"), within(financeEntries.date), notOpening(financeEntries.description))),
+      // A deposit deduction is income for the reports, but its money was
+      // already counted when the deposit itself was received (below).
+      .where(and(eq(financeEntries.type, "revenue"), within(financeEntries.date), notOpening(financeEntries.description), sql`(${financeEntries.referenceType} IS NULL OR ${financeEntries.referenceType} != 'deposit_deduction')`)),
     db.select({ date: dateOf(financeEntries.date), description: financeEntries.description, amount: financeEntries.amount, linkedPaid: expenseRecords.paidAmount, linkedAmount: expenseRecords.amount, linkedAccount: expenseRecords.paymentAccount, settled: settledFor("expense") })
       .from(financeEntries).leftJoin(expenseRecords, eq(expenseRecords.financeEntryId, financeEntries.id))
       .where(and(eq(financeEntries.type, "expense"), within(financeEntries.date), notOpening(financeEntries.description))),
@@ -2281,7 +2289,7 @@ async function listCashMovements(range: { before?: string; from?: string; to?: s
     if (row.referenceType === "facility_booking" || row.referenceType === "facility_booking_addon") return bankFractionOf(bookingSplitById.get(row.referenceId!));
     return accountFraction(row.linkedAccount);
   };
-  const movements: CashMovement[] = [];
+  const movements: CashMovementDraft[] = [];
   for (const row of revenueRows) {
     const inAmount = paidOf(row.linkedPaid, row.linkedAmount, row.amount, row.settled);
     movements.push({ date: row.date, kind: revenueKind(row.referenceType), description: row.description || "", inAmount, outAmount: 0, bankIn: bankShare(inAmount, revenueBankFraction(row)), bankOut: 0 });
@@ -2305,7 +2313,42 @@ async function listCashMovements(range: { before?: string; from?: string; to?: s
     const outAmount = row.type === "deduct" ? amount : 0;
     movements.push({ date: row.date, kind: "adjustment", description: `${label} (${accountLabel})${row.note ? ` — ${row.note}` : ""}`, inAmount, outAmount, bankIn: row.account === "bank" ? inAmount : 0, bankOut: row.account === "bank" ? outAmount : 0 });
   }
-  return movements.sort((a, b) => a.date.localeCompare(b.date));
+  // PRD Round 18, items 4.6.2 / 4.6.3 / 8.3: transfers, balance adjustments
+  // and VAT payments; item 7.1: deposits received and refunded.
+  const [movementRows, depositsReceived, depositsSettled] = await Promise.all([
+    db.select({ date: dateOf(accountMovements.businessDate), kind: accountMovements.kind, fromAccount: accountMovements.fromAccount, toAccount: accountMovements.toAccount, account: accountMovements.account, direction: accountMovements.direction, category: accountMovements.category, amount: accountMovements.amount, reason: accountMovements.reason })
+      .from(accountMovements).where(within(accountMovements.businessDate)),
+    db.select({ date: dateOf(facilityDeposits.businessDate), id: facilityDeposits.id, bookingId: facilityDeposits.bookingId, amount: facilityDeposits.amount, method: facilityDeposits.paymentMethod })
+      .from(facilityDeposits).where(within(facilityDeposits.businessDate)),
+    db.select({ date: dateOf(facilityDeposits.settledDate), id: facilityDeposits.id, bookingId: facilityDeposits.bookingId, refundAmount: facilityDeposits.refundAmount, refundMethod: facilityDeposits.refundMethod })
+      .from(facilityDeposits).where(and(sql`${facilityDeposits.settledDate} IS NOT NULL`, within(facilityDeposits.settledDate))),
+  ]);
+  const accountName = (account: unknown) => account === "bank" ? "Bank Account" : "Cash Account";
+  for (const row of movementRows) {
+    const amount = Number(row.amount || 0);
+    if (row.kind === "transfer") {
+      const toBank = row.toAccount === "bank";
+      movements.push({ date: row.date, kind: "transfer", description: `Transfer ${accountName(row.fromAccount)} → ${accountName(row.toAccount)} — ${row.reason}`, inAmount: 0, outAmount: 0, bankIn: toBank ? amount : 0, bankOut: toBank ? 0 : amount, cashIn: toBank ? 0 : amount, cashOut: toBank ? amount : 0 });
+    } else if (row.kind === "adjustment") {
+      const increase = row.direction === "increase";
+      const bank = row.account === "bank";
+      movements.push({ date: row.date, kind: "accountAdjustment", description: `Balance adjustment (${accountName(row.account)}, ${row.category || "other"}) — ${row.reason}`, inAmount: increase ? amount : 0, outAmount: increase ? 0 : amount, bankIn: bank && increase ? amount : 0, bankOut: bank && !increase ? amount : 0 });
+    } else {
+      const bank = row.fromAccount === "bank";
+      movements.push({ date: row.date, kind: "vatPayment", description: `VAT payment to the tax authority — ${row.reason}`, inAmount: 0, outAmount: amount, bankIn: 0, bankOut: bank ? amount : 0 });
+    }
+  }
+  for (const row of depositsReceived) {
+    const amount = Number(row.amount || 0);
+    movements.push({ date: row.date, kind: "deposit", description: `Security deposit received — booking #${row.bookingId}`, inAmount: amount, outAmount: 0, bankIn: row.method === "card" ? amount : 0, bankOut: 0 });
+  }
+  for (const row of depositsSettled) {
+    const amount = Number(row.refundAmount || 0);
+    if (!(amount > 0)) continue;
+    movements.push({ date: row.date, kind: "deposit", description: `Security deposit refunded — booking #${row.bookingId}`, inAmount: 0, outAmount: amount, bankIn: 0, bankOut: row.refundMethod === "card" ? amount : 0 });
+  }
+  return movements.map((row) => ({ ...row, cashIn: row.cashIn ?? round3(row.inAmount - row.bankIn), cashOut: row.cashOut ?? round3(row.outAmount - row.bankOut) }))
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 export async function getCashFlowStatus(from: string, to: string) {
@@ -2319,24 +2362,32 @@ export async function getCashFlowStatus(from: string, to: string) {
   const adjustments = { added: byKind("adjustment", "inAmount"), deducted: byKind("adjustment", "outAmount") };
   const totalIn = round(inflows.tickets + inflows.facilities + inflows.otherRevenue);
   const totalOut = round(outflows.expenses + outflows.capex);
-  const closingBalance = round(openingBalance + totalIn - totalOut + adjustments.added - adjustments.deducted);
+  // PRD Round 18: money that is neither revenue nor expense, on its own lines.
+  const accountAdjustments = { added: byKind("accountAdjustment", "inAmount"), deducted: byKind("accountAdjustment", "outAmount") };
+  const vatPaid = byKind("vatPayment", "outAmount");
+  const deposits = { received: byKind("deposit", "inAmount"), refunded: byKind("deposit", "outAmount") };
+  const closingBalance = round(openingBalance + totalIn - totalOut + adjustments.added - adjustments.deducted + accountAdjustments.added - accountAdjustments.deducted - vatPaid + deposits.received - deposits.refunded);
   // PRD Round 17, items 5.1/5.2: the same figures per ledger — the Bank
   // Account (bank transfers and card) and the Cash Account (the rest). The
   // two always add up to the combined figures above.
   const accountSummary = (bank: boolean) => {
-    const inOf = (row: CashMovement) => bank ? row.bankIn : round(row.inAmount - row.bankIn);
-    const outOf = (row: CashMovement) => bank ? row.bankOut : round(row.outAmount - row.bankOut);
-    const nonAdjustment = period.filter((row) => row.kind !== "adjustment");
-    const adjustmentRows = period.filter((row) => row.kind === "adjustment");
+    const inOf = (row: CashMovement) => bank ? row.bankIn : row.cashIn;
+    const outOf = (row: CashMovement) => bank ? row.bankOut : row.cashOut;
+    const isAdjustment = (row: CashMovement) => row.kind === "adjustment" || row.kind === "accountAdjustment";
+    const regular = period.filter((row) => !isAdjustment(row) && row.kind !== "transfer");
+    const adjustmentRows = period.filter(isAdjustment);
+    const transferRows = period.filter((row) => row.kind === "transfer");
     const opening = sumOf(before, (row) => inOf(row) - outOf(row));
-    const moneyIn = sumOf(nonAdjustment, inOf);
-    const moneyOut = sumOf(nonAdjustment, outOf);
+    const moneyIn = sumOf(regular, inOf);
+    const moneyOut = sumOf(regular, outOf);
     const added = sumOf(adjustmentRows, inOf);
     const deducted = sumOf(adjustmentRows, outOf);
-    return { openingBalance: opening, moneyIn, moneyOut, added, deducted, closingBalance: round(opening + moneyIn - moneyOut + added - deducted) };
+    const transfersIn = sumOf(transferRows, inOf);
+    const transfersOut = sumOf(transferRows, outOf);
+    return { openingBalance: opening, moneyIn, moneyOut, added, deducted, transfersIn, transfersOut, closingBalance: round(opening + moneyIn - moneyOut + added - deducted + transfersIn - transfersOut) };
   };
   return {
-    from, to, openingBalance, inflows: { ...inflows, total: totalIn }, outflows: { ...outflows, total: totalOut }, adjustments, closingBalance,
+    from, to, openingBalance, inflows: { ...inflows, total: totalIn }, outflows: { ...outflows, total: totalOut }, adjustments, accountAdjustments, vatPaid, deposits, closingBalance,
     accounts: { cash: accountSummary(false), bank: accountSummary(true) },
     receivable: receivablePayable.receivable, payable: receivablePayable.payable,
     movements: period,
@@ -2558,7 +2609,7 @@ export async function listRevenueLedger(from?: string, to?: string) {
         ...base, ledgerSource: "ticket" as RevenueLedgerSource, readOnly: true, id: null as number | null,
         categoryName: names.join(", ") || "Tickets", paymentMethod: purchase?.paymentMethod ?? null,
         cashAmount: purchase?.cashAmount ?? null, cardAmount: purchase?.cardAmount ?? null, bankAmount: purchase?.bankAmount ?? null,
-        reference: ticketRange(purchaseLines.map((line) => line.ticketNumber)), paidAmount: String(entry.amount), balanceAmount: "0.000",
+        reference: ticketRange(purchaseLines.map((line) => line.ticketNumber)), saleTotal: purchase ? String(purchase.totalAmount) : String(entry.amount), paidAmount: String(entry.amount), balanceAmount: "0.000",
         payee: null as string | null, receiptNumber: null as string | null, attachmentPath: null as string | null,
       };
     }
@@ -2568,7 +2619,7 @@ export async function listRevenueLedger(from?: string, to?: string) {
         ...base, ledgerSource: (entry.referenceType === "facility_booking" ? "facility" : "facility_addon") as RevenueLedgerSource, readOnly: true, id: record?.id ?? null,
         categoryName: record?.categoryName || booking?.facilityTypeName || "Facility", paymentMethod: booking?.paymentMethod ?? null,
         cashAmount: booking?.cashAmount ?? null, cardAmount: booking?.cardAmount ?? null, bankAmount: booking?.bankAmount ?? null,
-        reference: booking ? `${booking.facilityTypeName} #${booking.id}${booking.customerName ? ` — ${booking.customerName}` : ""}` : "", paidAmount: String(record?.paidAmount ?? entry.amount), balanceAmount: String(record?.balanceAmount ?? "0.000"),
+        reference: booking ? `${booking.facilityTypeName} #${booking.id}${booking.customerName ? ` — ${booking.customerName}` : ""}` : "", saleTotal: booking ? String(booking.totalAmount) : String(entry.amount), paidAmount: String(record?.paidAmount ?? entry.amount), balanceAmount: String(record?.balanceAmount ?? "0.000"),
         payee: null, receiptNumber: null, attachmentPath: null,
       };
     }
@@ -2583,3 +2634,8 @@ export async function listRevenueLedger(from?: string, to?: string) {
   });
 }
 
+
+export async function deleteFinanceSettlementsFor(recordType: "expense" | "revenue" | "asset", recordId: number) {
+  const db = await getDb(); if (!db) throw new Error("Database is unavailable");
+  await db.delete(financeSettlements).where(and(eq(financeSettlements.recordType, recordType), eq(financeSettlements.recordId, recordId)));
+}
