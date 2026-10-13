@@ -1031,9 +1031,9 @@ export async function listFacilityBookingsForFacility(facilityTypeId: number) {
   });
 }
 
-export async function findFacilityBookingConflict(facilityTypeId: number, fromDate: string, toDate: string) {
+export async function findFacilityBookingConflict(facilityTypeId: number, fromDate: string, toDate: string, excludeBookingId?: number) {
   const candidates = await listFacilityBookingsForFacility(facilityTypeId);
-  return candidates.find((candidate) => candidate.start <= toDate && fromDate <= candidate.end);
+  return candidates.find((candidate) => candidate.booking.id !== excludeBookingId && candidate.start <= toDate && fromDate <= candidate.end);
 }
 
 const cancellers = alias(users, "cancellers");
@@ -1081,7 +1081,10 @@ export async function getUserDisplayName(id: number) {
 // from the facility's current rate and re-applies the booking's own
 // (unchanged) discountPercentage snapshot, then keeps the linked
 // finance_entries/revenue_records rows in sync so reports reflect the edit.
-export async function updateFacilityBookingDetails(id: number, data: { bookingDate: string; quantity: string; facilityAmount: string; vatAmount: string; feeAmount: string; totalAmount: string; customerName?: string | null }) {
+export async function updateFacilityBookingDetails(id: number, data: {
+  bookingDate: string; quantity: string; facilityAmount: string; vatAmount: string; feeAmount: string; totalAmount: string; customerName?: string | null;
+  startTime?: string | null; notes?: string | null; partnerEntityId?: number | null; partnerEntityName?: string | null; discountPercentage?: string | null;
+}) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
   const facilityRevenueAmount = minorToMoney(moneyToMinor(data.facilityAmount) + moneyToMinor(data.vatAmount) + moneyToMinor(data.feeAmount));
   return db.transaction(async (tx) => {
@@ -1092,6 +1095,9 @@ export async function updateFacilityBookingDetails(id: number, data: { bookingDa
     await tx.update(facilityBookings).set({
       bookingDate: data.bookingDate as any, quantity: data.quantity, facilityAmount: data.facilityAmount, vatAmount: data.vatAmount, feeAmount: data.feeAmount, totalAmount: data.totalAmount,
       ...(data.customerName !== undefined ? { customerName: data.customerName } : {}),
+      ...(data.startTime !== undefined ? { startTime: data.startTime } : {}),
+      ...(data.notes !== undefined ? { notes: data.notes } : {}),
+      ...(data.partnerEntityId !== undefined ? { partnerEntityId: data.partnerEntityId, partnerEntityName: data.partnerEntityName ?? null, discountPercentage: data.discountPercentage ?? null } : {}),
     }).where(eq(facilityBookings.id, id));
     await tx.update(financeEntries).set({ date: data.bookingDate as any, amount: facilityRevenueAmount }).where(and(eq(financeEntries.referenceType, "facility_booking"), eq(financeEntries.referenceId, id)));
     const financeRows = await tx.select().from(financeEntries).where(and(eq(financeEntries.referenceType, "facility_booking"), eq(financeEntries.referenceId, id))).limit(1);

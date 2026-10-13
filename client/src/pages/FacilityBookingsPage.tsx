@@ -42,6 +42,13 @@ function hoursBetween(fromTime: string, toTime: string) {
   return diff > 0 ? diff : 0;
 }
 
+function addDaysIso(date: string, days: number) {
+  const base = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(base.getTime())) return date;
+  base.setUTCDate(base.getUTCDate() + days);
+  return base.toISOString().slice(0, 10);
+}
+
 export default function FacilityBookingsPage() {
   const t = useT();
   const utils = trpc.useUtils();
@@ -92,6 +99,12 @@ export default function FacilityBookingsPage() {
   const [editDate, setEditDate] = useState(today);
   const [editQuantity, setEditQuantity] = useState("1");
   const [editCustomerName, setEditCustomerName] = useState("");
+  // PRD Round 18, item 4.5: an unpaid booking's partner, start time and notes
+  // are editable too (a partner discount added before payment now applies).
+  const [editPartnerEntityId, setEditPartnerEntityId] = useState("");
+  const [editStartTime, setEditStartTime] = useState("");
+  const [editNotes, setEditNotes] = useState("");
+  const [editingBooking, setEditingBooking] = useState<any>(null);
   const [cancelingBooking, setCancelingBooking] = useState<any>(null);
   const [cancelReason, setCancelReason] = useState("");
   const [payingBooking, setPayingBooking] = useState<any>(null);
@@ -218,6 +231,14 @@ export default function FacilityBookingsPage() {
     { facilityTypeId: Number(facilityTypeId) || 0, fromDate: conflictFromDate, toDate: conflictToDate },
     { enabled: bookingMode === "new" && Boolean(facilityTypeId && conflictFromDate && conflictToDate) },
   );
+  // PRD Round 18, item 4.5: the same conflict warning while editing, with
+  // the booking's own current slot excluded.
+  const editFacility = editingBooking ? facilityTypes.find((entry) => entry.id === editingBooking.facilityTypeId) : null;
+  const editToDate = editFacility?.pricingMethod === "daily" && Number(editQuantity) > 0 ? addDaysIso(editDate, Number(editQuantity) - 1) : editDate;
+  const { data: editConflict } = trpc.platform.facilityBookings.checkConflict.useQuery(
+    { facilityTypeId: editingBooking?.facilityTypeId || 0, fromDate: editDate, toDate: editToDate, excludeBookingId: editingBooking?.id },
+    { enabled: Boolean(editingBookingId && editingBooking && editDate && editToDate) },
+  );
   // PRD Round 14 follow-up, item 2: visual availability calendar/timeline —
   // fetched as soon as a facility is picked, before any date is chosen, so
   // the From/To calendar can highlight already-booked days immediately.
@@ -231,7 +252,7 @@ export default function FacilityBookingsPage() {
   const showDayInfo = (date: Date) => setDayInfo(dailyAvailability.byDate.get(toIsoDateLocal(date)) || null);
   const dayHasBooking = (date: Date) => dailyAvailability.byDate.has(toIsoDateLocal(date));
   const dayInfoFooter = dayInfo && <div className="border-t border-divider"><BookingInfoList bookings={dayInfo}/></div>;
-  const startEdit = (booking: any) => { setEditingBookingId(booking.id); setEditDate(toIsoDateString(booking.bookingDate)); setEditQuantity(String(booking.quantity)); setEditCustomerName(booking.customerName || ""); };
+  const startEdit = (booking: any) => { setEditingBookingId(booking.id); setEditingBooking(booking); setEditDate(toIsoDateString(booking.bookingDate)); setEditQuantity(String(booking.quantity)); setEditCustomerName(booking.customerName || ""); setEditPartnerEntityId(booking.partnerEntityId ? String(booking.partnerEntityId) : ""); setEditStartTime(booking.startTime || ""); setEditNotes(booking.notes || ""); };
   // PRD Round 6, item 3: reprint a past facility booking's receipt — data
   // (booking + addons) is already returned by facilityBookings.list, so this
   // mirrors TicketDeskPage's reprintPurchase without needing an extra fetch.
@@ -289,7 +310,12 @@ export default function FacilityBookingsPage() {
   const saveEdit = (booking: any) => {
     const facility = facilityTypes.find((entry) => entry.id === booking.facilityTypeId);
     if (facility?.pricingMethod !== "fixed" && !(Number(editQuantity) > 0)) return toast.error(t("facility.enterQuantity"));
-    updateBooking.mutate({ id: booking.id, bookingDate: editDate, quantity: facility?.pricingMethod === "fixed" ? undefined : Number(editQuantity), customerName: editCustomerName.trim() });
+    updateBooking.mutate({
+      id: booking.id, bookingDate: editDate, quantity: facility?.pricingMethod === "fixed" ? undefined : Number(editQuantity), customerName: editCustomerName.trim(),
+      notes: editNotes,
+      ...(facility?.pricingMethod === "hourly" && editStartTime ? { startTime: editStartTime } : {}),
+      ...(booking.status === "booking" ? { partnerEntityId: editPartnerEntityId ? Number(editPartnerEntityId) : null } : {}),
+    });
   };
   const confirmCancelBooking = () => {
     if (!cancelingBooking) return;
@@ -460,6 +486,12 @@ export default function FacilityBookingsPage() {
               {editing && <div className="mt-4 border-t border-divider pt-4">
                 <div className="mb-2 text-[11px] font-semibold uppercase tracking-[.14em] text-subtle">{t("facility.editBooking")}</div>
                 <div className="mb-2"><TextField value={editCustomerName} onChange={(event) => setEditCustomerName(event.target.value)} placeholder={t("facility.purchaserNamePlaceholder")}/></div>
+                <div className="mb-2 grid gap-2 sm:grid-cols-2">
+                  {awaitingPayment && partnerEntities.length > 0 && <Field label={t("tickets.partnerEntity")} hint={t("facility.editPartnerHint")}><SelectField value={editPartnerEntityId} onChange={(event) => setEditPartnerEntityId(event.target.value)}><option value="">{t("facility.noPartner")}</option>{partnerEntities.map((entity: any) => <option key={entity.id} value={entity.id}>{entity.name}</option>)}</SelectField></Field>}
+                  {rowFacility?.pricingMethod === "hourly" && <Field label={t("facility.startTimeLabel")}><TextField type="time" value={editStartTime} onChange={(event) => setEditStartTime(event.target.value)}/></Field>}
+                </div>
+                <div className="mb-2"><TextField value={editNotes} onChange={(event) => setEditNotes(event.target.value)} placeholder={t("facility.notesPlaceholder")}/></div>
+                {editConflict && <div className="mb-2 rounded-xl bg-warning-bg px-3 py-2 text-xs text-warning">{t("facility.editConflict", { ref: editConflict.referenceNumber, name: editConflict.customerName || "—" })}</div>}
                 <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
                   <DateField value={editDate} onChange={setEditDate}/>
                   {rowFacility && rowFacility.pricingMethod !== "fixed" && <TextField type="number" min={0.5} step={rowFacility.pricingMethod === "hourly" ? "0.5" : "1"} value={editQuantity} onChange={(event) => setEditQuantity(event.target.value)} placeholder={rowFacility.pricingMethod === "daily" ? t("facility.newDurationDays") : t("facility.newDurationHours")}/>}

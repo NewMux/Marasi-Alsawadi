@@ -729,9 +729,12 @@ export const platformRouter = router({
     // client calls this as the facility+date are picked, before Create.
     checkConflict: protectedProcedure.input(z.object({
       facilityTypeId: z.number().int().positive(), fromDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), toDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      // PRD Round 18, item 4.5: when an existing booking is edited, its own
+      // current slot is never reported as a conflict with itself.
+      excludeBookingId: z.number().int().positive().optional(),
     })).query(async ({ input }) => {
       await autoCancelOverdueFacilityBookings();
-      const conflict = await findFacilityBookingConflict(input.facilityTypeId, input.fromDate, input.toDate);
+      const conflict = await findFacilityBookingConflict(input.facilityTypeId, input.fromDate, input.toDate, input.excludeBookingId);
       if (!conflict) return null;
       const facility = await getFacilityType(input.facilityTypeId);
       const hoursRemaining = conflict.booking.status === "booking" && facility?.autoCancelEnabled
@@ -807,6 +810,13 @@ export const platformRouter = router({
       // PRD Round 7, Section 3: the purchaser name can be added or corrected
       // from the Edit action too, not only at booking creation time.
       customerName: z.string().trim().max(160).optional(),
+      // PRD Round 18, item 4.5: while a booking is unpaid it can also be
+      // re-priced for a partner (null removes the partner), moved to another
+      // start time, and have its notes changed. Add-ons keep their own
+      // "Add add-on" action on the same booking.
+      partnerEntityId: z.number().int().positive().nullable().optional(),
+      startTime: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
+      notes: z.string().max(1000).optional(),
     })).mutation(async ({ input, ctx }) => {
       const booking = await getFacilityBooking(input.id);
       if (!booking) throw new TRPCError({ code: "NOT_FOUND", message: "Facility booking was not found" });
@@ -814,10 +824,26 @@ export const platformRouter = router({
       if (booking.status === "cancelled") throw new TRPCError({ code: "BAD_REQUEST", message: "This booking has been cancelled and can no longer be edited" });
       const facility = await getFacilityType(booking.facilityTypeId);
       if (!facility) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "This booking's facility is missing" });
+      const partnerChanged = input.partnerEntityId !== undefined && (input.partnerEntityId ?? null) !== (booking.partnerEntityId ?? null);
+      // Once paid, the price is settled: partner changes go through the
+      // General Ledger amend rules instead (Round 18, item 4.4).
+      if (partnerChanged && booking.status !== "booking") throw new TRPCError({ code: "BAD_REQUEST", message: "The partner can only be changed before the booking is paid" });
+      let partnerFields: { partnerEntityId?: number | null; partnerEntityName?: string | null; discountPercentage?: string | null } = {};
+      if (partnerChanged) {
+        if (input.partnerEntityId) {
+          const entity = await getPartnerEntity(input.partnerEntityId);
+          if (!entity || !entity.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected partner entity is no longer active" });
+          const rule = await resolveActivePartnerDiscountRule(entity.id, "facility", { facilityTypeId: facility.id });
+          partnerFields = { partnerEntityId: entity.id, partnerEntityName: entity.name, discountPercentage: rule ? String(rule.discountPercentage) : null };
+        } else {
+          partnerFields = { partnerEntityId: null, partnerEntityName: null, discountPercentage: null };
+        }
+      }
+      const discountPercentage = partnerChanged ? partnerFields.discountPercentage ?? null : booking.discountPercentage;
       const quantity = facility.pricingMethod === "fixed" ? 1 : (input.quantity ?? Number(booking.quantity));
       if (facility.pricingMethod !== "fixed" && !(quantity > 0)) throw new TRPCError({ code: "BAD_REQUEST", message: "Enter a valid duration" });
       const fullFacilityAmount = calculateFacilityLineAmount(String(facility.rate), quantity);
-      const { discountedAmount: facilityAmount } = applyFacilityDiscount(fullFacilityAmount, booking.discountPercentage as any);
+      const { discountedAmount: facilityAmount } = applyFacilityDiscount(fullFacilityAmount, discountPercentage as any);
       const { vatAmount: facilityVatAmount } = calculateFacilityVat(facilityAmount, facility.applyVat, String(facility.vatPercent));
       const facilityFees = (await listApplicableFees("facility_type", facility.id)).map((fee: any) => ({ ...fee, value: String(fee.value) }));
       const { feeAmount } = calculateFacilityFees(facilityAmount, facilityFees);
@@ -829,8 +855,14 @@ export const platformRouter = router({
       const addonsVatAmount = (existingAddons as any[]).reduce((sum, addon) => sum + Number(addon.vatAmount || 0), 0);
       const vatAmount = (Number(facilityVatAmount) + addonsVatAmount).toFixed(3);
       const totalAmount = (Number(facilityAmount) + Number(vatAmount) + Number(feeAmount) + Number(booking.addonsAmount)).toFixed(3);
-      const updated = await updateFacilityBookingDetails(input.id, { bookingDate: input.bookingDate, quantity: String(quantity), facilityAmount, vatAmount, feeAmount, totalAmount, customerName: input.customerName !== undefined ? (input.customerName || null) : undefined });
-      await logActivity(ctx.user.id, "facility_booking.update", "facility_booking", input.id, `${input.bookingDate}:${totalAmount}`);
+      const updated = await updateFacilityBookingDetails(input.id, {
+        bookingDate: input.bookingDate, quantity: String(quantity), facilityAmount, vatAmount, feeAmount, totalAmount,
+        customerName: input.customerName !== undefined ? (input.customerName || null) : undefined,
+        startTime: input.startTime !== undefined ? input.startTime : undefined,
+        notes: input.notes !== undefined ? (input.notes.trim() || null) : undefined,
+        ...partnerFields,
+      });
+      await logActivity(ctx.user.id, "facility_booking.update", "facility_booking", input.id, `${input.bookingDate}:${totalAmount}${partnerChanged ? `:partner=${partnerFields.partnerEntityName ?? "none"}` : ""}`);
       return { booking: updated, addons: await listFacilityBookingAddons(updated.id) };
     }),
     // PRD Round 4, Section 9.1/9.4: cancel a booking — its status flips to
