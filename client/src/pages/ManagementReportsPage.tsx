@@ -8,13 +8,14 @@ import { useT, type TranslationKey } from "@/lib/i18n";
 import { exportSpreadsheet } from "@/lib/spreadsheetExport";
 import { categoryOptionLabel, orderCategoriesAsTree } from "@/lib/categoryTree";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { omanToday } from "@/lib/omanDate";
 
 const REVENUE_STREAM_KEYS: Record<string, TranslationKey> = { rooms: "reports.streamRooms", aqua_park: "reports.streamAquaPark", fnb: "reports.streamFnb", extras: "reports.streamExtras" };
 const assetStatusReportKeys: Record<string, TranslationKey> = { active: "finance.assetStatusActive", under_maintenance: "finance.assetStatusUnderMaintenance", disposed: "finance.assetStatusDisposed" };
 const isoDate = (value: unknown) => value instanceof Date ? value.toISOString().slice(0, 10) : String(value ?? "").slice(0, 10);
 const dateLabel = (value: unknown) => value ? new Date(value as string).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "—";
 
-const today = new Date().toISOString().slice(0, 10);
+const today = omanToday();
 const money = (value: unknown) => `OMR ${Number(value ?? 0).toLocaleString("en-OM", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
 // PRD Round 16, item 15: real Excel workbooks, one value per column.
 const exportCsv = exportSpreadsheet;

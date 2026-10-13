@@ -28,7 +28,7 @@ import {
   listTicketTypes, getTicketType, getTicketTypeByCode, createTicketType, updateTicketType, deleteTicketType, listVisitorCategories, createVisitorCategory, updateVisitorCategory, listTicketPrices, upsertTicketPrice,
   summariseTicketRevenueByType, summariseFacilityRevenueByType, listRevenueCategoryOptionsForRecording, describeSettingDependents,
   getSystemSettings, setResetAllDataToolEnabled, resetAllOperationalData,
-  listPayables, recordSettlement, listSettlementsFor, getSettledTotal, listCashFlowAdjustments, createCashFlowAdjustment, deleteCashFlowAdjustment, getCashFlowStatus, assertValidCategoryParent, listFacilityCategories, createFacilityCategory, updateFacilityCategory, deleteFacilityCategory, getFacilityCategoryReport, getCategoryReport,
+  listPayables, recordSettlement, listSettlementsFor, businessToday, getSettledTotal, listCashFlowAdjustments, createCashFlowAdjustment, deleteCashFlowAdjustment, getCashFlowStatus, listRevenueLedger, assertValidCategoryParent, listFacilityCategories, createFacilityCategory, updateFacilityCategory, deleteFacilityCategory, getFacilityCategoryReport, getCategoryReport,
   listPartnerEntities, getPartnerEntity, createPartnerEntity, updatePartnerEntity, deletePartnerEntity,
   listPartnerDiscountRules, createPartnerDiscountRule, updatePartnerDiscountRule, deletePartnerDiscountRule, resolveActivePartnerDiscountRule,
   listFacilityTypes, getFacilityType, createFacilityType, updateFacilityType, deleteFacilityType,
@@ -1142,7 +1142,8 @@ export const platformRouter = router({
         publicToken,
         scannedBy: ctx.user.id,
         requestKey: input.requestKey || randomUUID(),
-        today: new Date().toISOString().slice(0, 10),
+        // PRD Round 18, item 5.1: "today" is the resort's day (Asia/Muscat).
+        today: businessToday(),
       });
       if (!("ticket" in result)) {
         await logActivity(ctx.user.id, "gate.scan", "sales_transaction", undefined, result.reason);
@@ -1609,6 +1610,15 @@ export const platformRouter = router({
         return result;
       }),
     }),
+    // PRD Round 18, items 4.1 / 4.3: the General Ledger's Revenue listing —
+    // ticket sales, facility bookings and manual revenue, each once.
+    revenueLedger: financeProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
+      .query(async ({ input }) => {
+        const rows = await listRevenueLedger(input?.from, input?.to);
+        const manualIds = rows.filter((row) => row.id && !row.readOnly).map((row) => row.id!) as number[];
+        const attachments = await listAttachmentsForEntries("revenue", manualIds);
+        return rows.map((row) => ({ ...row, attachments: row.id && !row.readOnly ? attachments.filter((attachment) => attachment.entryId === row.id) : [] }));
+      }),
     revenues: router({
       list: financeProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional())
         .query(async ({ input }) => withAttachments("revenue", await listRevenueRecords(input?.from, input?.to))),
@@ -1834,7 +1844,9 @@ export const platformRouter = router({
         return rows;
       }),
     }),
-    operationalSummary: managerProcedure.input(z.object({ from: z.string(), to: z.string() }))
+    // PRD Round 18, item 6.1: Staff / Accountant print the Daily / Monthly
+    // report too — read-only totals, the same Finance roles as the ledger.
+    operationalSummary: financeProcedure.input(z.object({ from: z.string(), to: z.string() }))
       .query(({ input }) => getOperationalFinancialSummary(input.from, input.to)),
     pettyCash: router({
       list: managerProcedure.query(() => listPettyCashRequests()),

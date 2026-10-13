@@ -115,18 +115,21 @@ button:active { transform: scale(.98); }
   #print-ticket .logo { margin-bottom: 1mm; }
   #print-ticket .brand-ar { font-weight: 700; font-size: 12pt; line-height: 1.5; }
   #print-ticket .brand-en { font-weight: 700; font-size: 9.5pt; letter-spacing: .05em; }
-  #print-ticket .sub { font-size: 7.5pt; color: #333; margin-top: .5mm; letter-spacing: .1em; }
-  #print-ticket .divider { border-top: 1px dashed #999; margin: 2.5mm 0; }
+  #print-ticket .sub { font-size: 7.5pt; color: #000; margin-top: .5mm; letter-spacing: .1em; }
+  #print-ticket .divider { border-top: 1px dashed #000; margin: 2.5mm 0; }
   #print-ticket .title-ar { font-weight: 700; font-size: 9.5pt; }
   #print-ticket .title-en { font-weight: 700; font-size: 8pt; letter-spacing: .04em; margin-top: .5mm; }
   #print-ticket table { width: 100%; font-size: 8.5pt; border-collapse: collapse; }
   #print-ticket td { padding: .8mm 0; vertical-align: top; }
-  #print-ticket td.label { color: #333; text-align: right; }
+  #print-ticket td.label { color: #000; text-align: right; }
   #print-ticket td.value { text-align: left; font-weight: 700; direction: ltr; white-space: nowrap; }
   #print-ticket .price { font-size: 13pt; font-weight: 700; }
-  #print-ticket .price-note { font-size: 6.5pt; color: #333; margin-top: .5mm; }
-  #print-ticket .terms { font-size: 6.3pt; color: #444; line-height: 1.6; }
-  #print-ticket .contact { font-size: 7pt; color: #333; line-height: 1.7; }
+  #print-ticket .price-note { font-size: 7pt; color: #000; margin-top: .5mm; }
+  /* PRD Round 18, item 7.2: the resort details and terms printed too small
+     and grey for a thermal printer — solid black, larger and bold now. */
+  #print-ticket .terms { font-size: 7.5pt; color: #000; font-weight: 600; line-height: 1.55; }
+  #print-ticket .contact { font-size: 9pt; color: #000; font-weight: 700; line-height: 1.6; overflow-wrap: anywhere; }
+  #print-ticket.receipt-58 .contact { font-size: 8pt; }
 
   /* A4 printable reports (Command Center comprehensive report, Revenue
      Report exports) — a second, independent print target from the 80mm

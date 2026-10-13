@@ -202,10 +202,12 @@ export function TicketReceiptTicket({ data }: { data: TicketReceiptData }) {
       <div className="divider"/>
 
       <div className="center contact" dir="ltr">
-        📞 +968-98044556<br/>
-        ✉️ info@marasiresort.com<br/>
-        📍 Alsawadi, Oman<br/>
-        📷 @marasiwaterpark
+        {/* PRD Round 18, item 7.2: plain text labels — emoji icons print
+            as smudges on thermal paper and blurred the "+" of the number. */}
+        Tel: +968-98044556<br/>
+        info@marasiresort.com<br/>
+        Alsawadi, Oman<br/>
+        Instagram: @marasiwaterpark
       </div>
       <img src={instagramQrDataUri} alt="" width="56" height="56" style={{ display: "block", margin: "2mm auto 0" }}/>
     </div>;

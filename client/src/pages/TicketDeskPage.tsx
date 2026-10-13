@@ -10,15 +10,16 @@ import { printViaAgent } from "@/lib/printAgent";
 import { applyCountryDialCode, COUNTRY_DIAL_CODES, DEFAULT_COUNTRY } from "@/lib/countries";
 import { useT } from "@/lib/i18n";
 import { blankMixedPaymentValues, isMixedPaymentValid, MixedPaymentFields, type MixedPaymentValues } from "@/components/MixedPaymentFields";
+import { omanToday } from "@/lib/omanDate";
 
-const today = new Date().toISOString().slice(0, 10);
+const today = omanToday();
 const money = (value: unknown) => `OMR ${Number(value || 0).toLocaleString("en-OM", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
 const dateLabel = (value: unknown) => value ? new Date(value as string).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "—";
 type TicketGroup = "water_park" | "other_tickets";
 type GroupLine = { id: number; categoryId: string; quantity: number };
 type PurchaseMode = "individual" | "group";
 type FormState = { customerId: string; customerName: string; customerPhone: string; customerEmail: string; customerCountry: string; groupName: string; visitDate: string; paymentMethod: "cash" | "card" | "bank" | "mixed"; notes: string };
-const blankForm: FormState = { customerId: "", customerName: "", customerPhone: `${COUNTRY_DIAL_CODES[DEFAULT_COUNTRY]} `, customerEmail: "", customerCountry: DEFAULT_COUNTRY, groupName: "", visitDate: today, paymentMethod: "cash", notes: "" };
+const blankForm: FormState = { customerId: "", customerName: "", customerPhone: `${COUNTRY_DIAL_CODES[DEFAULT_COUNTRY]} `, customerEmail: "", customerCountry: DEFAULT_COUNTRY, groupName: "", visitDate: today, paymentMethod: "card", notes: "" };
 const blankGroupLine = (id: number): GroupLine => ({ id, categoryId: "", quantity: 1 });
 
 function Step({ number, title, detail, active }: { number: string; title: string; detail: string; active?: boolean }) {

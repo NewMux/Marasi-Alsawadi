@@ -17,18 +17,18 @@ export const STANDALONE_RECEIPT_STYLES = `
   .logo { margin-bottom: 8px; }
   .brand-ar { font-weight: 700; font-size: 30px; line-height: 1.5; }
   .brand-en { font-weight: 700; font-size: 24px; letter-spacing: .05em; }
-  .sub { font-size: 18px; color: #333; margin-top: 4px; letter-spacing: .1em; }
-  .divider { border-top: 2px dashed #999; margin: 18px 0; }
+  .sub { font-size: 18px; color: #000; margin-top: 4px; letter-spacing: .1em; }
+  .divider { border-top: 2px dashed #000; margin: 18px 0; }
   .title-ar { font-weight: 700; font-size: 24px; }
   .title-en { font-weight: 700; font-size: 19px; letter-spacing: .04em; margin-top: 4px; }
   table { width: 100%; font-size: 20px; border-collapse: collapse; }
   td { padding: 6px 0; vertical-align: top; }
-  td.label { color: #333; text-align: right; }
+  td.label { color: #000; text-align: right; }
   td.value { text-align: left; font-weight: 700; direction: ltr; white-space: nowrap; }
   .price { font-size: 32px; font-weight: 700; }
-  .price-note { font-size: 15px; color: #333; margin-top: 4px; }
-  .terms { font-size: 14px; color: #444; line-height: 1.6; }
-  .contact { font-size: 16px; color: #333; line-height: 1.7; }
+  .price-note { font-size: 17px; color: #000; margin-top: 4px; }
+  .terms { font-size: 18px; color: #000; font-weight: 600; line-height: 1.55; }
+  .contact { font-size: 22px; color: #000; font-weight: 700; line-height: 1.6; overflow-wrap: anywhere; }
 `;
 
 /** Renders a full, standalone HTML document containing just the `.ticket` markup — used by the local print agent to screenshot the receipt. */

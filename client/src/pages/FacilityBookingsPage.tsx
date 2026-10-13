@@ -11,8 +11,9 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { applyCountryDialCode, COUNTRY_DIAL_CODES, DEFAULT_COUNTRY } from "@/lib/countries";
 import { useT, type TranslationKey } from "@/lib/i18n";
 import { blankMixedPaymentValues, isMixedPaymentValid, MixedPaymentFields, type MixedPaymentValues } from "@/components/MixedPaymentFields";
+import { omanToday } from "@/lib/omanDate";
 
-const today = new Date().toISOString().slice(0, 10);
+const today = omanToday();
 const money = (value: unknown) => `OMR ${Number(value || 0).toLocaleString("en-OM", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
 const dateLabel = (value: unknown) => value ? new Date(value as string).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "—";
 
@@ -77,7 +78,7 @@ export default function FacilityBookingsPage() {
   const [customerPhone, setCustomerPhone] = useState(`${COUNTRY_DIAL_CODES[DEFAULT_COUNTRY]} `);
   const [customerEmail, setCustomerEmail] = useState("");
   const [customerCountry, setCustomerCountry] = useState(DEFAULT_COUNTRY);
-  const [paymentMethod, setPaymentMethod] = useState<"cash" | "card" | "bank" | "mixed">("cash");
+  const [paymentMethod, setPaymentMethod] = useState<"cash" | "card" | "bank" | "mixed">("card");
   const [notes, setNotes] = useState("");
   const [addonLines, setAddonLines] = useState<AddonLine[]>([]);
   const [attemptedSubmit, setAttemptedSubmit] = useState(false);
@@ -94,7 +95,7 @@ export default function FacilityBookingsPage() {
   const [cancelingBooking, setCancelingBooking] = useState<any>(null);
   const [cancelReason, setCancelReason] = useState("");
   const [payingBooking, setPayingBooking] = useState<any>(null);
-  const [paymentMethodForPayment, setPaymentMethodForPayment] = useState<"cash" | "card" | "bank" | "mixed">("cash");
+  const [paymentMethodForPayment, setPaymentMethodForPayment] = useState<"cash" | "card" | "bank" | "mixed">("card");
   const [mixedPaymentForPayment, setMixedPaymentForPayment] = useState<MixedPaymentValues>(blankMixedPaymentValues);
   const [paymentAttempted, setPaymentAttempted] = useState(false);
 
@@ -147,7 +148,7 @@ export default function FacilityBookingsPage() {
   const removeAddonLine = (id: number) => setAddonLines((current) => current.filter((line) => line.id !== id));
   const resetForm = () => {
     setFacilityTypeId(""); setFromDate(today); setToDate(today); setFromTime("09:00"); setToTime("17:00");
-    setCustomerId(""); setCustomerName(""); setCustomerPhone(`${COUNTRY_DIAL_CODES[DEFAULT_COUNTRY]} `); setCustomerEmail(""); setCustomerCountry(DEFAULT_COUNTRY); setPaymentMethod("cash");
+    setCustomerId(""); setCustomerName(""); setCustomerPhone(`${COUNTRY_DIAL_CODES[DEFAULT_COUNTRY]} `); setCustomerEmail(""); setCustomerCountry(DEFAULT_COUNTRY); setPaymentMethod("card");
     setNotes(""); setAddonLines([]); setAttemptedSubmit(false); setExistingBookingId(""); setExistingBookingQuery(""); setPartnerEntityId(""); setDayInfo(null);
   };
 
@@ -346,7 +347,7 @@ export default function FacilityBookingsPage() {
   };
 
   return <>
-    <PageHeader eyebrow={t("facility.eyebrow")} title={t("facility.title")} description={t("facility.description")} actions={<StatusPill tone="info">{t("facility.noCalendarBadge")}</StatusPill>}/>
+    <PageHeader eyebrow={t("facility.eyebrow")} title={t("facility.title")} description={t("facility.description")}/>
     <div className="grid gap-6 xl:grid-cols-[.88fr_1.12fr]">
       <div className="space-y-6">
         <Surface>
@@ -447,7 +448,7 @@ export default function FacilityBookingsPage() {
               </div>
               <div className="mt-4 flex flex-wrap gap-2 border-t border-divider pt-4">
                 <SecondaryButton onClick={() => reprintBooking(row)} disabled={reprintingId === row.booking.id}><Printer size={14} className="mr-1.5"/>{t("facility.reprintReceipt")}</SecondaryButton>
-                {awaitingPayment && <PrimaryButton onClick={() => { setPaymentMethodForPayment(row.booking.paymentMethod || "cash"); setMixedPaymentForPayment(blankMixedPaymentValues); setPaymentAttempted(false); setPayingBooking(row.booking); }}>{t("facility.addPayment")}</PrimaryButton>}
+                {awaitingPayment && <PrimaryButton onClick={() => { setPaymentMethodForPayment(row.booking.paymentMethod || "card"); setMixedPaymentForPayment(blankMixedPaymentValues); setPaymentAttempted(false); setPayingBooking(row.booking); }}>{t("facility.addPayment")}</PrimaryButton>}
                 {!cancelled && <SecondaryButton onClick={() => (editing ? setEditingBookingId(null) : startEdit(row.booking))}><Pencil size={14} className="mr-1.5"/>{t("facility.editBooking")}</SecondaryButton>}
                 {!cancelled && <SecondaryButton onClick={() => { setCancelReason(""); setCancelingBooking(row.booking); }} className="text-danger hover:bg-danger-bg"><Ban size={14} className="mr-1.5"/>{t("facility.cancelBooking")}</SecondaryButton>}
                 {cancelled && <SecondaryButton onClick={() => confirmDeleteBooking(row.booking)} disabled={deleteBooking.isPending} className="text-danger hover:bg-danger-bg"><Trash2 size={14} className="mr-1.5"/>{t("facility.deleteBooking")}</SecondaryButton>}

@@ -2501,3 +2501,79 @@ export async function getFacilityCategoryReport(from: string, to: string, facili
   const totals = rows.reduce((sum, row) => ({ bookings: sum.bookings + row.bookings, paidBookings: sum.paidBookings + row.paidBookings, paidAmount: round(sum.paidAmount + row.paidAmount), unpaidAmount: round(sum.unpaidAmount + row.unpaidAmount) }), { bookings: 0, paidBookings: 0, paidAmount: 0, unpaidAmount: 0 });
   return { rows, totals };
 }
+
+// ─── PRD Round 18, items 4.1 / 4.3: General Ledger revenue view ─────────────
+// Every revenue the reports count, listed once. Built from the same
+// finance_entries rows the Finance Reports and Command Centre total, so the
+// ledger can never disagree with them or double-count: a ticket purchase's
+// single finance entry shows here as one read-only row linked to its sale,
+// a facility booking's entries link to their booking, and manual revenue
+// rows keep their own record (editable as before).
+export type RevenueLedgerSource = "manual" | "ticket" | "facility" | "facility_addon" | "opening" | "other";
+export async function listRevenueLedger(from?: string, to?: string) {
+  const db = await getDb(); if (!db) return [];
+  const conditions: any[] = [eq(financeEntries.type, "revenue")];
+  if (from) conditions.push(sql`${financeEntries.date} >= ${from}`);
+  if (to) conditions.push(sql`${financeEntries.date} <= ${to}`);
+  const rows = await db.select({ entry: financeEntries, record: revenueRecords }).from(financeEntries)
+    .leftJoin(revenueRecords, eq(revenueRecords.financeEntryId, financeEntries.id))
+    .where(and(...conditions))
+    .orderBy(desc(financeEntries.date), desc(financeEntries.id));
+  const purchaseIds = Array.from(new Set(rows.filter((row) => row.entry.referenceType === "prd_ticket_purchase" && row.entry.referenceId).map((row) => row.entry.referenceId!)));
+  const bookingIds = Array.from(new Set(rows.filter((row) => (row.entry.referenceType === "facility_booking" || row.entry.referenceType === "facility_booking_addon") && row.entry.referenceId).map((row) => row.entry.referenceId!)));
+  const [purchases, lines, bookings] = await Promise.all([
+    purchaseIds.length ? db.select().from(ticketPurchases).where(inArray(ticketPurchases.id, purchaseIds)) : Promise.resolve([]),
+    purchaseIds.length ? db.select({ purchaseId: ticketPurchaseLines.purchaseId, ticketTypeId: ticketPurchaseLines.ticketTypeId, ticketNumber: ticketPurchaseLines.ticketNumber }).from(ticketPurchaseLines).where(inArray(ticketPurchaseLines.purchaseId, purchaseIds)) : Promise.resolve([]),
+    bookingIds.length ? db.select().from(facilityBookings).where(inArray(facilityBookings.id, bookingIds)) : Promise.resolve([]),
+  ]);
+  const typeIds = Array.from(new Set(lines.map((line) => line.ticketTypeId).filter((id): id is number => Boolean(id))));
+  const types = typeIds.length ? await db.select({ id: ticketTypes.id, name: ticketTypes.name }).from(ticketTypes).where(inArray(ticketTypes.id, typeIds)) : [];
+  const typeName = new Map(types.map((type) => [type.id, type.name]));
+  const purchaseById = new Map(purchases.map((purchase) => [purchase.id, purchase]));
+  const bookingById = new Map(bookings.map((booking) => [booking.id, booking]));
+  const linesByPurchase = new Map<number, typeof lines>();
+  for (const line of lines) linesByPurchase.set(line.purchaseId, [...(linesByPurchase.get(line.purchaseId) ?? []), line]);
+  const dateOnly = (value: unknown) => value instanceof Date ? value.toISOString().slice(0, 10) : String(value ?? "").slice(0, 10);
+  const ticketRange = (numbers: string[]) => {
+    if (numbers.length <= 2) return numbers.join(", ");
+    const sorted = [...numbers].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    return `${sorted[0]}–${sorted[sorted.length - 1]} (×${numbers.length})`;
+  };
+  return rows.map(({ entry, record }) => {
+    const base = {
+      ledgerKey: `entry-${entry.id}`, financeEntryId: entry.id, businessDate: dateOnly(entry.date), amount: String(entry.amount),
+      description: entry.description || "", referenceType: entry.referenceType, referenceId: entry.referenceId,
+    };
+    if (entry.referenceType === "prd_ticket_purchase") {
+      const purchase = entry.referenceId ? purchaseById.get(entry.referenceId) : undefined;
+      const purchaseLines = entry.referenceId ? linesByPurchase.get(entry.referenceId) ?? [] : [];
+      const names = Array.from(new Set(purchaseLines.map((line) => line.ticketTypeId ? typeName.get(line.ticketTypeId) : undefined).filter(Boolean)));
+      return {
+        ...base, ledgerSource: "ticket" as RevenueLedgerSource, readOnly: true, id: null as number | null,
+        categoryName: names.join(", ") || "Tickets", paymentMethod: purchase?.paymentMethod ?? null,
+        cashAmount: purchase?.cashAmount ?? null, cardAmount: purchase?.cardAmount ?? null, bankAmount: purchase?.bankAmount ?? null,
+        reference: ticketRange(purchaseLines.map((line) => line.ticketNumber)), paidAmount: String(entry.amount), balanceAmount: "0.000",
+        payee: null as string | null, receiptNumber: null as string | null, attachmentPath: null as string | null,
+      };
+    }
+    if (entry.referenceType === "facility_booking" || entry.referenceType === "facility_booking_addon") {
+      const booking = entry.referenceId ? bookingById.get(entry.referenceId) : undefined;
+      return {
+        ...base, ledgerSource: (entry.referenceType === "facility_booking" ? "facility" : "facility_addon") as RevenueLedgerSource, readOnly: true, id: record?.id ?? null,
+        categoryName: record?.categoryName || booking?.facilityTypeName || "Facility", paymentMethod: booking?.paymentMethod ?? null,
+        cashAmount: booking?.cashAmount ?? null, cardAmount: booking?.cardAmount ?? null, bankAmount: booking?.bankAmount ?? null,
+        reference: booking ? `${booking.facilityTypeName} #${booking.id}${booking.customerName ? ` — ${booking.customerName}` : ""}` : "", paidAmount: String(record?.paidAmount ?? entry.amount), balanceAmount: String(record?.balanceAmount ?? "0.000"),
+        payee: null, receiptNumber: null, attachmentPath: null,
+      };
+    }
+    const isOpening = String(entry.description || "").startsWith("Opening balance");
+    return {
+      ...base, ledgerSource: (record ? (isOpening ? "opening" : "manual") : (isOpening ? "opening" : "other")) as RevenueLedgerSource, readOnly: !record, id: record?.id ?? null,
+      categoryName: record?.categoryName || entry.stream, paymentMethod: record?.paymentAccount === "bank" ? "bank" : record ? "cash" : null,
+      cashAmount: null, cardAmount: null, bankAmount: null, reference: "", paidAmount: String(record?.paidAmount ?? record?.amount ?? entry.amount), balanceAmount: String(record?.balanceAmount ?? "0.000"),
+      payee: record?.source ?? null, receiptNumber: record?.receiptNumber ?? null, attachmentPath: record?.attachmentPath ?? null,
+      categoryId: record?.categoryId ?? null, paymentAccount: record?.paymentAccount ?? null,
+    };
+  });
+}
+

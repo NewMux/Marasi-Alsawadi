@@ -9,9 +9,10 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { categoryOptionLabel, orderCategoriesAsTree } from "@/lib/categoryTree";
 import { toast } from "sonner";
 import { useT, type TranslationKey } from "@/lib/i18n";
+import { omanToday } from "@/lib/omanDate";
 
 const money = (value: unknown) => `OMR ${Number(value || 0).toFixed(3)}`;
-const today = new Date().toISOString().slice(0, 10);
+const today = omanToday();
 const OPENING_BALANCE_MARKER = "Opening balance";
 type Tab = "pricing" | "categoryPricing" | "fees" | "discounts" | "partnerEntities" | "facilityTypes" | "facilityCategories" | "addonServices" | "categories" | "revenueCategories" | "assetCategories" | "opening" | "users" | "audit" | "dangerZone" | "backup";
 type Role = "staff" | "manager" | "admin" | "guard" | "super_admin" | "petty_cash" | "cashier";

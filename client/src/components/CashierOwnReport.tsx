@@ -6,8 +6,9 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { DateField, Field, formatDateDmy, PrimaryButton, SecondaryButton } from "@/components/MarasiUI";
 import { printReport, ReportDocument, ReportSection, ReportStat, ReportStatGrid, ReportTable } from "@/components/PrintableReport";
 import { useT } from "@/lib/i18n";
+import { omanToday } from "@/lib/omanDate";
 
-const today = new Date().toISOString().slice(0, 10);
+const today = omanToday();
 const money = (value: unknown) => `OMR ${Number(value || 0).toLocaleString("en-OM", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
 const isoDate = (value: unknown) => { const date = new Date(value as string); return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(0, 10); };
 

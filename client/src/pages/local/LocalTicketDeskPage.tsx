@@ -16,7 +16,7 @@ type TicketLine = { id: number; rateId: string; ticketType: PrdTicketType; freeE
 type GroupLine = { id: number; ticketType: PrdTicketType; freeEntryCategory: FreeEntryCategory; quantity: number };
 type PurchaseMode = "individual" | "group";
 type FormState = { customerId: string; customerName: string; customerPhone: string; customerEmail: string; customerCountry: string; groupName: string; visitDate: string; paymentMethod: "cash" | "card" | "bank" | "mixed"; notes: string };
-const blankForm = (): FormState => ({ customerId: "", customerName: "", customerPhone: "", customerEmail: "", customerCountry: DEFAULT_COUNTRY, groupName: "", visitDate: today(), paymentMethod: "cash", notes: "" });
+const blankForm = (): FormState => ({ customerId: "", customerName: "", customerPhone: "", customerEmail: "", customerCountry: DEFAULT_COUNTRY, groupName: "", visitDate: today(), paymentMethod: "card", notes: "" });
 const blankLine = (id: number): TicketLine => ({ id, rateId: "", ticketType: "waterpark", freeEntryCategory: "" });
 const blankGroupLine = (id: number): GroupLine => ({ id, ticketType: "waterpark", freeEntryCategory: "", quantity: 1 });
 const freeKeys: Record<PrdFreeEntryCategory, TranslationKey> = { under_two: "tickets.underTwo", person_of_determination: "tickets.pod", senior: "tickets.senior" };

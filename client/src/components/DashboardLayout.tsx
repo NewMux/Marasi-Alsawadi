@@ -22,7 +22,7 @@ const backendItems: NavItem[] = [
   { label: "Ticket Desk", arabicLabel: "التذاكر", mobileLabel: "Tickets", path: "/tickets", icon: Ticket, roles: ["staff", "cashier", "manager", "admin", "super_admin"], group: "Front office" },
   { label: "Customer Directory", arabicLabel: "العملاء", mobileLabel: "Customers", path: "/customers", icon: Search, roles: ["staff", "cashier", "manager", "admin", "super_admin"], group: "Front office" },
   { label: "Facility Bookings", arabicLabel: "حجوزات المرافق", mobileLabel: "Facilities", path: "/facility-bookings", icon: Building2, roles: ["staff", "cashier", "manager", "admin", "super_admin"], group: "Front office" },
-  { label: "Finance Control", arabicLabel: "المصروفات", mobileLabel: "Finance", path: "/finance", icon: DollarSign, roles: ["staff", "manager", "admin", "super_admin"], group: "Finance" },
+  { label: "Finance Control", arabicLabel: "الرقابة المالية", mobileLabel: "Finance", path: "/finance", icon: DollarSign, roles: ["staff", "manager", "admin", "super_admin"], group: "Finance" },
   { label: "Finance Reports", arabicLabel: "التقارير المالية", mobileLabel: "Reports", path: "/reports", icon: BarChart3, roles: ["manager", "admin", "super_admin"], group: "Finance" },
   { label: "Petty Cash", arabicLabel: "العهدة النقدية", mobileLabel: "Petty Cash", path: "/petty-cash", icon: Wallet, roles: ["petty_cash", "manager", "admin", "super_admin"], group: "Finance" },
   { label: "Commercial Settings", arabicLabel: "الإعدادات", mobileLabel: "Settings", path: "/settings", icon: Settings, roles: ["admin", "super_admin"], group: "Admin" },

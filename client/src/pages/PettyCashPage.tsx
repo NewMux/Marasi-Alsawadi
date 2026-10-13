@@ -10,8 +10,9 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { LanguageToggle } from "@/contexts/LanguageContext";
 import { useT } from "@/lib/i18n";
 import marasiLogoIcon from "@/assets/marasi-logo-icon.webp";
+import { omanToday } from "@/lib/omanDate";
 
-const today = new Date().toISOString().slice(0, 10);
+const today = omanToday();
 const money = (value: unknown) => `OMR ${Number(value || 0).toLocaleString("en-OM", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
 const dateLabel = (value: unknown) => value ? new Date(value as string).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "—";
 // PRD Round 5, Section 3: the allocation log needs the time an allocation
