@@ -6,6 +6,7 @@ import {
   recordVatPayment, refreshEntryVat, refreshVatForReference, revenueCategoryCarriesVat, rollbackVatMigration, setVatSettledThrough, updateVatSettings,
 } from "../vat";
 import { listDeposits, recordDeposit, settleDeposit } from "../deposits";
+import { verifyData } from "../dataVerification";
 import {
   createAquaTicket, createDailyTask, createFinanceEntry, createGuest, createLocalUser, createPettyCashRequest, deleteFinanceEntry, deleteFinanceEntryByReference,
   createHousekeepingTask, createInventoryItem, createMaintenanceRequest,
@@ -1775,6 +1776,9 @@ export const platformRouter = router({
         return { ...plan, lastRun: await getLastVatMigrationRun() };
       }),
       items: financeProcedure.query(() => listVatItemConfiguration()),
+      // Section 9: read-only verification of the data (per day, consistency
+      // across screens, orphaned records).
+      verifyData: superAdminProcedure.input(z.object({ days: z.array(dateInput).max(31).optional() }).optional()).query(({ input }) => verifyData({ days: input?.days })),
       applyMigration: superAdminProcedure.input(z.object({ confirmBackup: z.literal(true) })).mutation(async ({ input, ctx }) => {
         const result = await applyVatMigration(ctx.user.id, input.confirmBackup).catch((error: Error) => { throw new TRPCError({ code: "BAD_REQUEST", message: error.message }); });
         await logActivity(ctx.user.id, result.applied ? "vat.migration_applied" : "vat.migration_failed", "system_settings", 1, String(result.totalVat));

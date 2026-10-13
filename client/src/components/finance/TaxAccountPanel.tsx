@@ -122,6 +122,7 @@ export function TaxAccountPanel() {
     </div>
 
     {isSuperAdmin && <VatMigrationPanel onDone={refresh}/>}
+    {isSuperAdmin && <DataVerificationPanel/>}
 
     <ReportDocument title={`${t("vat.reportTitle")} — ${periodLabel}`} generatedLabel={t("cc.reportGenerated")} generatedByLabel={t("cc.reportGeneratedBy")} generatedBy={user?.name || "—"}>
       <ReportStatGrid>
@@ -180,5 +181,25 @@ function VatMigrationPanel({ onDone }: { onDone: () => void }) {
     </div>}
     {shown?.checks && <div className="mt-4 border-t border-divider pt-4"><h3 className="mb-2 text-sm font-semibold">{t("vat.checksTitle")}</h3><ul className="grid gap-1 text-xs">{(shown.checks as any[]).map((check) => <li key={check.name} className={check.passed ? "text-success" : "text-danger"}>{check.passed ? "✓" : "✗"} {check.name}: {check.before} → {check.after} ({t("vat.expected")} {check.expected})</li>)}</ul></div>}
     {plan.active && <div className="mt-4 border-t border-divider pt-4"><SecondaryButton disabled={rollback.isPending} onClick={() => { const reason = window.prompt(t("vat.rollbackReason")); if (reason && reason.trim().length >= 3) rollback.mutate({ reason: reason.trim() }); }}>{t("vat.rollback")}</SecondaryButton><p className="mt-2 text-[11px] leading-4 text-muted">{t("vat.rollbackHint")}</p></div>}
+  </Surface>;
+}
+
+// PRD Round 18, Section 9: read-only check of the data — each real day,
+// the same totals across screens, and no orphaned records. Changes nothing.
+function DataVerificationPanel() {
+  const t = useT();
+  const [days, setDays] = useState("2026-10-08, 2026-10-09, 2026-10-10");
+  const [run, setRun] = useState(0);
+  const dayList = days.split(",").map((day) => day.trim()).filter((day) => /^\d{4}-\d{2}-\d{2}$/.test(day));
+  const { data, isFetching } = trpc.platform.finance.vat.verifyData.useQuery({ days: dayList }, { enabled: run > 0 });
+  return <Surface>
+    <div className="mb-4"><h2 className="font-serif text-2xl tracking-[-.04em]">{t("verify.title")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("verify.hint")}</p></div>
+    <div className="flex flex-wrap items-end gap-2"><Field label={t("verify.days")}><TextField value={days} onChange={(event) => setDays(event.target.value)}/></Field><PrimaryButton pending={isFetching} onClick={() => setRun((count) => count + 1)}>{t("verify.run")}</PrimaryButton></div>
+    {data && <div className="mt-4 grid gap-4 text-xs">
+      <StatusPill tone={data.passed ? "success" : "danger"}>{data.passed ? t("verify.allGood") : t("verify.needsAttention")}</StatusPill>
+      <div><h3 className="mb-1 font-semibold">{t("verify.perDay")}</h3>{data.perDay.map((day: any) => <div key={day.date} className="py-1">{day.date}: <b>{day.transactions}</b> {t("verify.transactions")} · {t("vat.gross")} {num(day.gross)} · {t("finance.revenue")} {num(day.revenue)} · {t("vat.vat")} {num(day.vat)}</div>)}</div>
+      <div><h3 className="mb-1 font-semibold">{t("verify.consistency")}</h3>{data.consistency.map((check: any) => <div key={check.name} className={check.passed ? "text-success" : "text-danger"}>{check.passed ? "✓" : "✗"} {check.name}: {num(check.a)} / {num(check.b)}</div>)}</div>
+      <div><h3 className="mb-1 font-semibold">{t("verify.orphans")}</h3>{data.orphans.map((check: any) => <div key={check.name} className={check.count ? "text-danger" : "text-muted"}>{check.count ? `✗ ${check.count}` : "✓"} {check.name}{check.count ? ` — ${check.sample.map((row: any) => `#${row.id}${row.date ? ` ${row.date}` : ""}${row.amount ? ` ${row.amount}` : ""}`).join(", ")}` : ""}</div>)}</div>
+    </div>}
   </Surface>;
 }

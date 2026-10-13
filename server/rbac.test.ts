@@ -55,6 +55,25 @@ describe("Commercial Settings configuration boundary", () => {
     }
   });
 
+  // PRD Round 18, Section 8: the Tax Account is for the Finance roles; the
+  // VAT migration and the data verification for the Super Admin only.
+  it("keeps the Tax Account from the Cashier and the VAT migration to Super Admins", async () => {
+    for (const user of [cashier, guard]) {
+      const caller = callerFor(user);
+      await expectForbidden(caller.platform.finance.vat.account({ asAt: "2026-10-13" }));
+      await expectForbidden(caller.platform.finance.vat.recordPayment({ businessDate: "2026-10-13", fromAccount: "bank", amount: "1.000", periodFrom: "2026-10-08", periodTo: "2026-12-31", reason: "" }));
+      await expectForbidden(caller.platform.finance.vat.settleThrough({ through: "2026-12-31" }));
+    }
+    for (const user of [staff, manager, admin]) {
+      const caller = callerFor(user);
+      await expectForbidden(caller.platform.finance.vat.applyMigration({ confirmBackup: true }));
+      await expectForbidden(caller.platform.finance.vat.rollbackMigration({ reason: "test rollback" }));
+      await expectForbidden(caller.platform.finance.vat.migrationPlan());
+      await expectForbidden(caller.platform.finance.vat.verifyData());
+    }
+    await expectForbidden(callerFor(staff).platform.finance.vat.updateSettings({ vatRatePercent: "5", vatPeriodStartMonth: 1 }));
+  });
+
   // PRD Round 17, item 5.4: restore requests are Super-Admin-only to file,
   // and only NewMux support accounts may change their status — never the
   // client's own Super Admin.
