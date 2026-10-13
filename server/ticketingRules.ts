@@ -49,6 +49,26 @@ export function minorToMoney(value: number) {
   return (value / 1000).toFixed(3);
 }
 
+// PRD Round 18, Section 8.1: split a gross amount (what the customer paid)
+// into VAT and net revenue. VAT = round(gross - gross / (1 + rate), 3) and
+// NET = gross - VAT, worked in baisa so NET + VAT always equals GROSS
+// exactly. Applied per transaction line, never to daily totals.
+export function splitGrossVat(gross: string, ratePercent: string) {
+  const grossMinor = moneyToMinor(Number(gross).toFixed(3));
+  const rate = Number(ratePercent);
+  if (!(rate > 0)) return { vatAmount: "0.000", netAmount: minorToMoney(grossMinor) };
+  const vatMinor = Math.round(grossMinor - grossMinor / (1 + rate / 100));
+  return { vatAmount: minorToMoney(vatMinor), netAmount: minorToMoney(grossMinor - vatMinor) };
+}
+
+// A VAT amount already stored on the sale (tickets, facilities): NET is
+// simply GROSS minus it.
+export function netOfStoredVat(gross: string, vatAmount: string) {
+  const grossMinor = moneyToMinor(Number(gross).toFixed(3));
+  const vatMinor = Math.min(grossMinor, moneyToMinor(Number(vatAmount || 0).toFixed(3)));
+  return { vatAmount: minorToMoney(vatMinor), netAmount: minorToMoney(grossMinor - vatMinor) };
+}
+
 // PRD Round 14, Section 6: whenever "Mixed" is the chosen payment method,
 // the staff-entered Cash/Card/Bank split must add up to the transaction
 // total before the payment can be confirmed — shared by both the ticket

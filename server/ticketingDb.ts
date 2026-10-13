@@ -1086,12 +1086,17 @@ export async function updateFacilityBookingDetails(id: number, data: {
   startTime?: string | null; notes?: string | null; partnerEntityId?: number | null; partnerEntityName?: string | null; discountPercentage?: string | null;
 }) {
   const db = await getDb(); if (!db) throw new Error("Database is unavailable");
-  const facilityRevenueAmount = minorToMoney(moneyToMinor(data.facilityAmount) + moneyToMinor(data.vatAmount) + moneyToMinor(data.feeAmount));
   return db.transaction(async (tx) => {
     const rows = await tx.select().from(facilityBookings).where(eq(facilityBookings.id, id)).limit(1);
     const booking = rows[0];
     if (!booking) throw new Error("Facility booking was not found");
     if (booking.status === "cancelled") throw new Error("This booking has been cancelled and can no longer be edited");
+    // data.vatAmount is the booking's whole VAT (facility + add-ons); the
+    // facility revenue entry carries the facility line's VAT only — the
+    // add-ons have their own entries — exactly as when it was paid.
+    const addonRows = await tx.select({ vatAmount: facilityBookingAddons.vatAmount }).from(facilityBookingAddons).where(eq(facilityBookingAddons.bookingId, id));
+    const addonsVatMinor = addonRows.reduce((sum, addon) => sum + moneyToMinor(String(addon.vatAmount)), 0);
+    const facilityRevenueAmount = minorToMoney(moneyToMinor(data.facilityAmount) + moneyToMinor(data.vatAmount) - addonsVatMinor + moneyToMinor(data.feeAmount));
     await tx.update(facilityBookings).set({
       bookingDate: data.bookingDate as any, quantity: data.quantity, facilityAmount: data.facilityAmount, vatAmount: data.vatAmount, feeAmount: data.feeAmount, totalAmount: data.totalAmount,
       ...(data.customerName !== undefined ? { customerName: data.customerName } : {}),
@@ -1625,16 +1630,18 @@ export async function createAssetTransfer(data: {
 }
 
 export async function getOperationalFinancialSummary(from: string, to: string) {
-  const db = await getDb(); if (!db) return { revenue: 0, expenses: 0, net: 0 };
+  const db = await getDb(); if (!db) return { revenue: 0, expenses: 0, net: 0, revenueGross: 0, vat: 0 };
+  // PRD Round 18, Section 8.2: revenue is NET of VAT (gross for entries not
+  // split yet). The gross and the VAT are returned alongside.
   const [revenueRows, expenseRows] = await Promise.all([
-    db.select({ total: sql<number>`COALESCE(SUM(${financeEntries.amount}), 0)` }).from(financeEntries)
+    db.select({ total: sql<number>`COALESCE(SUM(COALESCE(${financeEntries.netAmount}, ${financeEntries.amount})), 0)`, gross: sql<number>`COALESCE(SUM(${financeEntries.amount}), 0)`, vat: sql<number>`COALESCE(SUM(${financeEntries.vatAmount}), 0)` }).from(financeEntries)
       .where(and(eq(financeEntries.type, "revenue"), sql`${financeEntries.date} >= ${from} AND ${financeEntries.date} <= ${to}`)),
     db.select({ total: sql<number>`COALESCE(SUM(${financeEntries.amount}), 0)` }).from(financeEntries)
       .where(and(eq(financeEntries.type, "expense"), sql`${financeEntries.date} >= ${from} AND ${financeEntries.date} <= ${to}`)),
   ]);
   const revenue = Number(revenueRows[0]?.total ?? 0);
   const expenseTotal = Number(expenseRows[0]?.total ?? 0);
-  return { revenue, expenses: expenseTotal, net: calculateOperationalNet(revenue, expenseTotal) };
+  return { revenue, expenses: expenseTotal, net: calculateOperationalNet(revenue, expenseTotal), revenueGross: Number(revenueRows[0]?.gross ?? 0), vat: Number(revenueRows[0]?.vat ?? 0) };
 }
 
 // ─── Petty cash custodian funds ─────────────────────────────────────────────
@@ -1887,14 +1894,19 @@ export async function summariseTicketRevenueByType(range: { from: string; to: st
     ticketCount: sql<number>`COUNT(*)`,
     baseSubtotal: sql<string>`SUM(${ticketPurchaseLines.basePrice})`,
     discountAmount: sql<string>`SUM(${ticketPurchaseLines.discountAmount})`,
-    totalAmount: sql<string>`SUM(${ticketPurchaseLines.totalAmount})`,
+    // PRD Round 18, Section 8.2: NET of VAT once the purchase's revenue
+    // entry is split; gross kept alongside.
+    totalAmount: sql<string>`SUM(${ticketLineNetSql})`,
+    grossAmount: sql<string>`SUM(${ticketPurchaseLines.totalAmount})`,
+    vatAmount: sql<string>`SUM(${ticketPurchaseLines.totalAmount} - ${ticketLineNetSql})`,
   })
     .from(ticketPurchaseLines)
     .innerJoin(ticketPurchases, eq(ticketPurchaseLines.purchaseId, ticketPurchases.id))
     .leftJoin(ticketTypes, eq(ticketPurchaseLines.ticketTypeId, ticketTypes.id))
+    .leftJoin(financeEntries, and(eq(financeEntries.referenceType, "prd_ticket_purchase"), eq(financeEntries.referenceId, ticketPurchases.id)))
     .where(and(eq(ticketPurchases.status, "issued"), sql`${ticketPurchases.visitDate} >= ${range.from}`, sql`${ticketPurchases.visitDate} <= ${range.to}`))
     .groupBy(ticketPurchaseLines.ticketTypeId, ticketTypes.name, ticketTypes.ticketGroup)
-    .orderBy(desc(sql`SUM(${ticketPurchaseLines.totalAmount})`));
+    .orderBy(desc(sql`SUM(${ticketLineNetSql})`));
   return rows.map((row) => ({
     ticketTypeId: row.ticketTypeId,
     // Purchases issued before Round 7 carry no ticketTypeId — they are still
@@ -1905,8 +1917,16 @@ export async function summariseTicketRevenueByType(range: { from: string; to: st
     baseSubtotal: Number(row.baseSubtotal || 0).toFixed(3),
     discountAmount: Number(row.discountAmount || 0).toFixed(3),
     totalAmount: Number(row.totalAmount || 0).toFixed(3),
+    grossAmount: Number(row.grossAmount || 0).toFixed(3),
+    vatAmount: Number(row.vatAmount || 0).toFixed(3),
   }));
 }
+
+// A ticket line's NET revenue: its total minus its share of the VAT on the
+// purchase's revenue entry — the line's own stored VAT when the entry used
+// the stored figure, otherwise its proportional share. Gross while the entry
+// is not split (before the VAT migration).
+const ticketLineNetSql = sql`(CASE WHEN ${financeEntries.netAmount} IS NULL THEN ${ticketPurchaseLines.totalAmount} WHEN ${financeEntries.vatSource} = 'stored' THEN ${ticketPurchaseLines.totalAmount} - ${ticketPurchaseLines.vatAmount} WHEN ${financeEntries.amount} > 0 THEN ${ticketPurchaseLines.totalAmount} - ROUND(${ticketPurchaseLines.totalAmount} * ${financeEntries.vatAmount} / ${financeEntries.amount}, 3) ELSE ${ticketPurchaseLines.totalAmount} END)`;
 
 // PRD Round 15, Section 7.2: the Facility Type equivalent of the per-ticket-
 // type breakdown above — grouped by the facility's own dedicated revenue
@@ -1922,7 +1942,9 @@ export async function summariseFacilityRevenueByType(range: { from: string; to: 
     facilityTypeId: facilityTypes.id,
     facilityTypeName: facilityTypes.name,
     bookingCount: sql<number>`COUNT(*)`,
-    totalAmount: sql<string>`SUM(${revenueRecords.amount})`,
+    totalAmount: sql<string>`SUM(${revenueRecords.amount} - COALESCE(${financeEntries.vatAmount}, 0))`,
+    grossAmount: sql<string>`SUM(${revenueRecords.amount})`,
+    vatAmount: sql<string>`SUM(COALESCE(${financeEntries.vatAmount}, 0))`,
   })
     .from(revenueRecords)
     .innerJoin(financeEntries, eq(revenueRecords.financeEntryId, financeEntries.id))
@@ -1933,12 +1955,14 @@ export async function summariseFacilityRevenueByType(range: { from: string; to: 
       sql`${revenueRecords.businessDate} <= ${range.to}`,
     ))
     .groupBy(facilityTypes.id, facilityTypes.name)
-    .orderBy(desc(sql`SUM(${revenueRecords.amount})`));
+    .orderBy(desc(sql`SUM(${revenueRecords.amount} - COALESCE(${financeEntries.vatAmount}, 0))`));
   return rows.map((row) => ({
     facilityTypeId: row.facilityTypeId,
     facilityTypeName: row.facilityTypeName,
     bookingCount: Number(row.bookingCount || 0),
     totalAmount: Number(row.totalAmount || 0).toFixed(3),
+    grossAmount: Number(row.grossAmount || 0).toFixed(3),
+    vatAmount: Number(row.vatAmount || 0).toFixed(3),
   }));
 }
 
@@ -2352,7 +2376,7 @@ async function listCashMovements(range: { before?: string; from?: string; to?: s
 }
 
 export async function getCashFlowStatus(from: string, to: string) {
-  const [before, period, receivablePayable] = await Promise.all([listCashMovements({ before: from }), listCashMovements({ from, to }), getReceivablePayableAsAt(to)]);
+  const [before, period, receivablePayable, depositsHeld] = await Promise.all([listCashMovements({ before: from }), listCashMovements({ from, to }), getReceivablePayableAsAt(to), getDepositsHeldAsAt(to)]);
   const round = (value: number) => Math.round(value * 1000) / 1000;
   const sumOf = (rows: CashMovement[], pick: (row: CashMovement) => number) => round(rows.reduce((total, row) => total + pick(row), 0));
   const openingBalance = sumOf(before, (row) => row.inAmount - row.outAmount);
@@ -2389,9 +2413,19 @@ export async function getCashFlowStatus(from: string, to: string) {
   return {
     from, to, openingBalance, inflows: { ...inflows, total: totalIn }, outflows: { ...outflows, total: totalOut }, adjustments, accountAdjustments, vatPaid, deposits, closingBalance,
     accounts: { cash: accountSummary(false), bank: accountSummary(true) },
-    receivable: receivablePayable.receivable, payable: receivablePayable.payable,
+    receivable: receivablePayable.receivable, payable: receivablePayable.payable, depositsHeld,
     movements: period,
   };
+}
+
+// PRD Round 18, item 7.1: security deposits held for visitors at the end of
+// `asAt` — received on or before it and not yet settled by then. Money held,
+// not revenue.
+export async function getDepositsHeldAsAt(asAt: string) {
+  const db = await getDb(); if (!db) return { total: 0, count: 0 };
+  const [row] = await db.select({ total: sql<string>`COALESCE(SUM(${facilityDeposits.amount}), 0)`, count: sql<number>`COUNT(*)` }).from(facilityDeposits)
+    .where(and(sql`${facilityDeposits.businessDate} <= ${asAt}`, sql`(${facilityDeposits.settledDate} IS NULL OR ${facilityDeposits.settledDate} > ${asAt})`));
+  return { total: Math.round(Number(row?.total || 0) * 1000) / 1000, count: Number(row?.count || 0) };
 }
 
 // PRD Round 17, item 5.2: Account Receivable (revenue recorded but not yet
@@ -2454,14 +2488,23 @@ export async function getCategoryReport(kind: "expense" | "revenue" | "asset", c
   if (from) conditions.push(sql`${recordTable.businessDate} >= ${from}`);
   if (to) conditions.push(sql`${recordTable.businessDate} <= ${to}`);
   const records = await db.select().from(recordTable).where(and(...conditions)).orderBy(desc(recordTable.businessDate), desc(recordTable.id));
-  const rows = records.map((record: any) => ({
-    date: String(record.businessDate instanceof Date ? record.businessDate.toISOString() : record.businessDate).slice(0, 10),
-    categoryName: record.categoryName,
-    description: record.description || record.payee || record.source || record.vendor || "",
-    amount: String(record.amount),
-    paidAmount: String(record.paidAmount ?? record.amount),
-    balanceAmount: String(record.balanceAmount ?? "0.000"),
-  }));
+  // PRD Round 18, Section 8.2: a revenue category's figures are NET of VAT
+  // (the Paid / Balance columns stay the money actually received / owed).
+  const entryIds = kind === "revenue" ? records.map((record: any) => record.financeEntryId).filter(Boolean) as number[] : [];
+  const vatByEntry = new Map((entryIds.length ? await db.select({ id: financeEntries.id, vatAmount: financeEntries.vatAmount }).from(financeEntries).where(inArray(financeEntries.id, entryIds)) : []).map((entry) => [entry.id, Number(entry.vatAmount || 0)]));
+  const rows = records.map((record: any) => {
+    const vat = record.financeEntryId ? vatByEntry.get(record.financeEntryId) ?? 0 : 0;
+    return {
+      date: String(record.businessDate instanceof Date ? record.businessDate.toISOString() : record.businessDate).slice(0, 10),
+      categoryName: record.categoryName,
+      description: record.description || record.payee || record.source || record.vendor || "",
+      amount: (Number(record.amount) - vat).toFixed(3),
+      vatAmount: vat.toFixed(3),
+      grossAmount: Number(record.amount).toFixed(3),
+      paidAmount: String(record.paidAmount ?? record.amount),
+      balanceAmount: String(record.balanceAmount ?? "0.000"),
+    };
+  });
   if (kind === "revenue") {
     const ticketConditions: any[] = [eq(ticketPurchases.status, "issued"), inArray(ticketTypes.revenueCategoryId, categoryIds)];
     if (from) ticketConditions.push(sql`${ticketPurchases.visitDate} >= ${from}`);
@@ -2471,16 +2514,19 @@ export async function getCategoryReport(kind: "expense" | "revenue" | "asset", c
       date: sql<string>`DATE_FORMAT(${ticketPurchases.visitDate}, '%Y-%m-%d')`,
       ticketTypeName: ticketTypes.name,
       ticketCount: sql<number>`COUNT(*)`,
-      totalAmount: sql<string>`SUM(${ticketPurchaseLines.totalAmount})`,
+      totalAmount: sql<string>`SUM(${ticketLineNetSql})`,
+      grossAmount: sql<string>`SUM(${ticketPurchaseLines.totalAmount})`,
     })
       .from(ticketPurchaseLines)
       .innerJoin(ticketPurchases, eq(ticketPurchaseLines.purchaseId, ticketPurchases.id))
       .innerJoin(ticketTypes, eq(ticketPurchaseLines.ticketTypeId, ticketTypes.id))
+      .leftJoin(financeEntries, and(eq(financeEntries.referenceType, "prd_ticket_purchase"), eq(financeEntries.referenceId, ticketPurchases.id)))
       .where(and(...ticketConditions))
       .groupBy(ticketPurchases.id, ticketPurchases.visitDate, ticketTypes.name);
     for (const row of ticketRows) {
       const amount = Number(row.totalAmount || 0).toFixed(3);
-      rows.push({ date: row.date, categoryName: row.ticketTypeName, description: `Ticket sale #${row.purchaseId} — ${row.ticketCount} × ${row.ticketTypeName}`, amount, paidAmount: amount, balanceAmount: "0.000" });
+      const gross = Number(row.grossAmount || 0).toFixed(3);
+      rows.push({ date: row.date, categoryName: row.ticketTypeName, description: `Ticket sale #${row.purchaseId} — ${row.ticketCount} × ${row.ticketTypeName}`, amount, vatAmount: (Number(gross) - Number(amount)).toFixed(3), grossAmount: gross, paidAmount: gross, balanceAmount: "0.000" });
     }
     rows.sort((a, b) => b.date.localeCompare(a.date));
   }
@@ -2599,6 +2645,8 @@ export async function listRevenueLedger(from?: string, to?: string) {
   return rows.map(({ entry, record }) => {
     const base = {
       ledgerKey: `entry-${entry.id}`, financeEntryId: entry.id, businessDate: dateOnly(entry.date), amount: String(entry.amount),
+      // PRD Round 18, Section 8: amount is the gross; netAmount is the revenue.
+      vatAmount: entry.vatAmount === null ? null : String(entry.vatAmount), netAmount: entry.netAmount === null ? String(entry.amount) : String(entry.netAmount), vatSource: entry.vatSource,
       description: entry.description || "", referenceType: entry.referenceType, referenceId: entry.referenceId,
     };
     if (entry.referenceType === "prd_ticket_purchase") {

@@ -445,7 +445,11 @@ export async function getRevenueSummary(from: string, to: string) {
   return db.select({
     stream: financeEntries.stream,
     type: financeEntries.type,
-    total: sql<number>`COALESCE(SUM(${financeEntries.amount}),0)`,
+    // PRD Round 18, Section 8.2: revenue NET of VAT (expense entries are
+    // never split, so they keep their amount).
+    total: sql<number>`COALESCE(SUM(COALESCE(${financeEntries.netAmount}, ${financeEntries.amount})),0)`,
+    gross: sql<number>`COALESCE(SUM(${financeEntries.amount}),0)`,
+    vat: sql<number>`COALESCE(SUM(${financeEntries.vatAmount}),0)`,
   }).from(financeEntries)
     .where(sql`${financeEntries.date} >= ${from} AND ${financeEntries.date} <= ${to}`)
     .groupBy(financeEntries.stream, financeEntries.type);

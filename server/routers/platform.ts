@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
+  applyVatMigration, entryIncludesVat, getLastVatMigrationRun, getTaxAccount, getVatReport, listVatItemConfiguration, listVatPayments, listVatPeriods, planVatMigration,
+  recordVatPayment, refreshEntryVat, refreshVatForReference, revenueCategoryCarriesVat, rollbackVatMigration, setVatSettledThrough, updateVatSettings,
+} from "../vat";
+import {
   createAquaTicket, createDailyTask, createFinanceEntry, createGuest, createLocalUser, createPettyCashRequest, deleteFinanceEntry, deleteFinanceEntryByReference,
   createHousekeepingTask, createInventoryItem, createMaintenanceRequest,
   createLeaveRequest, createReservation, createShift, createStaffProfile, createUnit,
@@ -51,7 +55,7 @@ import {
 } from "../ticketingDb";
 import { applyFacilityDiscount, calculateFacilityFees, calculateFacilityLineAmount, calculateFacilityVat, calculatePrdPurchasePricing, calculateTicketPricing, extractTicketToken, isPositiveMoney, MAX_TICKETS_PER_PURCHASE, minorToMoney, moneyToMinor, percentageToBasisPoints } from "../ticketingRules";
 import { normalizeRateCode } from "../rateCatalogRules";
-import { assertNotInSettledPeriod, SettledPeriodError, writeFinanceAudit, snapshotLedgerRecord, findPettyCashSpendForExpense, changePaymentMethod, createAccountTransfer, createAccountAdjustment, listAccountMovements, listFinanceAudit, getAccountBalancesAsAt, ADJUSTMENT_CATEGORIES } from "../financeControl";
+import { assertNotInSettledPeriod, getVatSettings, SettledPeriodError, writeFinanceAudit, snapshotLedgerRecord, findPettyCashSpendForExpense, changePaymentMethod, createAccountTransfer, createAccountAdjustment, listAccountMovements, listFinanceAudit, getAccountBalancesAsAt, ADJUSTMENT_CATEGORIES } from "../financeControl";
 import { createRestoreRequest, getRestoreRequest, isRestoreSupportUser, listRestoreRequests, updateRestoreRequest } from "../backup";
 import { publicTicketUrl, requestOrigin } from "../ticketUrl";
 import { deleteAttachmentFile, isAllowedAttachmentMimeType, saveExpenseAttachment } from "../attachments";
@@ -100,6 +104,7 @@ function assertOwnTransaction(user: { id: number; role: string }, ownerId: numbe
 // Finance roles (Staff / Accountant, Manager, Admin, Super Admin). The
 // Cashier, Guard and Petty Cash custodian never get it.
 const ledgerEditorProcedure = financeProcedure;
+const dateInput = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Choose a valid date");
 
 // PRD Round 18, item 8.7: a change inside a settled VAT period must be
 // confirmed explicitly; the client retries with confirmSettledPeriod: true.
@@ -903,6 +908,7 @@ export const platformRouter = router({
         notes: input.notes !== undefined ? (input.notes.trim() || null) : undefined,
         ...partnerFields,
       });
+      await refreshVatForReference(["facility_booking", "facility_booking_addon"], input.id);
       await logActivity(ctx.user.id, "facility_booking.update", "facility_booking", input.id, `${input.bookingDate}:${totalAmount}${partnerChanged ? `:partner=${partnerFields.partnerEntityName ?? "none"}` : ""}`);
       return { booking: updated, addons: await listFacilityBookingAddons(updated.id) };
     }),
@@ -953,6 +959,7 @@ export const platformRouter = router({
         return { addonServiceId: addon.id, addonServiceName: addon.name, categoryId: category.id, categoryName: category.name, quantity: String(quantity), amount, vatAmount };
       }));
       const updated = await addFacilityBookingAddons({ bookingId: booking.id, businessDate: input.businessDate, addons, createdBy: ctx.user.id });
+      await refreshVatForReference(["facility_booking", "facility_booking_addon"], booking.id);
       await logActivity(ctx.user.id, "facility_booking.add_addon", "facility_booking", booking.id, addons.map((a) => a.addonServiceId).join(","));
       return { booking: updated, addons: await listFacilityBookingAddons(booking.id) };
     }),
@@ -973,6 +980,7 @@ export const platformRouter = router({
       }).catch((error: Error) => {
         throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
       });
+      await refreshVatForReference(["facility_booking", "facility_booking_addon"], input.bookingId);
       await logActivity(ctx.user.id, "facility_booking.add_payment", "facility_booking", input.bookingId, `${input.paymentMethod}:${updated.totalAmount}`);
       return { booking: updated, addons: await listFacilityBookingAddons(updated.id) };
     }),
@@ -1126,7 +1134,8 @@ export const platformRouter = router({
         notes: input.notes?.trim(), issuedBy: ctx.user.id,
         overrideDiscountByTicketType: resolved.overrideDiscountByTicketType, partnerEntity: resolved.partnerEntity,
       }).catch((error: Error) => { throw new TRPCError({ code: "BAD_REQUEST", message: error.message }); });
-      await createFinanceEntry({ date: input.visitDate, stream: "aqua_park", type: "revenue", amount: result.purchase.totalAmount, description: `Ticket purchase – ${customer.fullName}`, referenceId: result.purchase.id, referenceType: "prd_ticket_purchase", createdBy: ctx.user.id } as any);
+      const purchaseEntry = await createFinanceEntry({ date: input.visitDate, stream: "aqua_park", type: "revenue", amount: result.purchase.totalAmount, description: `Ticket purchase – ${customer.fullName}`, referenceId: result.purchase.id, referenceType: "prd_ticket_purchase", createdBy: ctx.user.id } as any);
+      await refreshEntryVat([purchaseEntry.id]);
       await logActivity(ctx.user.id, "prd_ticket_purchase.issue", "ticket_purchase", result.purchase.id, `${result.lines.map((line) => line.ticketNumber).join(",")}:${result.purchase.totalAmount}`);
       return { ...result, customer };
     }),
@@ -1524,7 +1533,12 @@ export const platformRouter = router({
     // PRD Round 16, items 6/7/10: Cash Flow status (Finance Reports) plus the
     // Admin's opening balance / manual adjustments (Commercial Settings).
     cashFlow: router({
-      status: managerProcedure.input(z.object({ from: z.string(), to: z.string() })).query(({ input }) => getCashFlowStatus(input.from, input.to)),
+      status: managerProcedure.input(z.object({ from: z.string(), to: z.string() })).query(async ({ input }) => {
+        // PRD Round 18, item 8.3: the Tax Account (VAT owed to the authority)
+        // as a line next to Payable — money held that is not the resort's own.
+        const [status, taxAccount] = await Promise.all([getCashFlowStatus(input.from, input.to), getTaxAccount(input.to, input.from)]);
+        return { ...status, taxAccount };
+      }),
       adjustments: configAdminProcedure.query(() => listCashFlowAdjustments()),
       adjust: configAdminProcedure.input(z.object({
         businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), type: z.enum(["opening", "add", "deduct"]),
@@ -1704,6 +1718,47 @@ export const platformRouter = router({
     }),
     // PRD Round 18, items 4.4 / 4.6: General Ledger corrections. Finance roles
     // only (never Cashier); every action is written to the audit trail.
+    // PRD Round 18, Section 8: Tax Account (VAT).
+    vat: router({
+      settings: financeProcedure.query(() => getVatSettings()),
+      updateSettings: configAdminProcedure.input(z.object({ vatRatePercent: z.string().regex(/^\d{1,2}(\.\d{1,2})?$/), vatPeriodStartMonth: z.number().int().min(1).max(12) }))
+        .mutation(async ({ input, ctx }) => { await updateVatSettings(input, ctx.user.id); await logActivity(ctx.user.id, "vat.settings", "system_settings", 1, JSON.stringify(input)); }),
+      account: financeProcedure.input(z.object({ asAt: dateInput, from: dateInput.optional() })).query(({ input }) => getTaxAccount(input.asAt, input.from)),
+      periods: financeProcedure.query(() => listVatPeriods()),
+      report: financeProcedure.input(z.object({ from: dateInput, to: dateInput })).query(({ input }) => getVatReport(input.from, input.to)),
+      payments: financeProcedure.input(z.object({ from: dateInput.optional(), to: dateInput.optional() }).optional()).query(({ input }) => listVatPayments(input?.from, input?.to)),
+      categoryCarriesVat: financeProcedure.input(z.object({ categoryId: z.number().int().positive() })).query(({ input }) => revenueCategoryCarriesVat(input.categoryId)),
+      recordPayment: ledgerEditorProcedure.input(z.object({
+        businessDate: dateInput, fromAccount: z.enum(["cash", "bank"]), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
+        periodFrom: dateInput, periodTo: dateInput, reason: z.string().max(500).default(""),
+      })).mutation(async ({ input, ctx }) => {
+        const movement = await recordVatPayment({ ...input, userId: ctx.user.id }).catch((error: Error) => { throw new TRPCError({ code: "BAD_REQUEST", message: error.message }); });
+        await logActivity(ctx.user.id, "vat.payment", "account_movement", movement.id, `${input.fromAccount}:${input.amount}`);
+        return movement;
+      }),
+      // 8.7: settling is for the finance roles; reopening a settled period
+      // is an Admin decision.
+      settleThrough: ledgerEditorProcedure.input(z.object({ through: dateInput, reason: z.string().max(500).optional() }))
+        .mutation(async ({ input, ctx }) => { await setVatSettledThrough(input.through, ctx.user.id, input.reason); }),
+      reopen: configAdminProcedure.input(z.object({ reason: z.string().min(3).max(500) }))
+        .mutation(async ({ input, ctx }) => { await setVatSettledThrough(null, ctx.user.id, input.reason); }),
+      // 8.4: the migration of the existing transactions. Super Admin only.
+      migrationPlan: superAdminProcedure.query(async () => {
+        const plan = await planVatMigration();
+        return { ...plan, lastRun: await getLastVatMigrationRun() };
+      }),
+      items: financeProcedure.query(() => listVatItemConfiguration()),
+      applyMigration: superAdminProcedure.input(z.object({ confirmBackup: z.literal(true) })).mutation(async ({ input, ctx }) => {
+        const result = await applyVatMigration(ctx.user.id, input.confirmBackup).catch((error: Error) => { throw new TRPCError({ code: "BAD_REQUEST", message: error.message }); });
+        await logActivity(ctx.user.id, result.applied ? "vat.migration_applied" : "vat.migration_failed", "system_settings", 1, String(result.totalVat));
+        return result;
+      }),
+      rollbackMigration: superAdminProcedure.input(z.object({ reason: z.string().min(3).max(500) })).mutation(async ({ input, ctx }) => {
+        const result = await rollbackVatMigration(ctx.user.id, input.reason);
+        await logActivity(ctx.user.id, "vat.migration_rolled_back", "system_settings", 1, input.reason);
+        return result;
+      }),
+    }),
     corrections: router({
       changePaymentMethod: ledgerEditorProcedure.input(z.object({
         target: z.enum(["ticket", "facility", "revenue", "expense", "asset"]), id: z.number().int().positive(),
@@ -1786,6 +1841,9 @@ export const platformRouter = router({
         paidAmount: nonNegativeMoney.optional(),
         paymentAccount: paymentAccountInput,
         paymentMethod: z.enum(["cash", "card", "bank"]).optional(),
+        // PRD Round 18, Section 8: whether the amount includes VAT (omitted =
+        // whether the category carries VAT).
+        includesVat: z.boolean().optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
         const paidBalance = resolvePaidBalance(input.amount, input.paidAmount);
@@ -1795,11 +1853,12 @@ export const platformRouter = router({
           date: input.businessDate, stream: "extras", type: "revenue", amount: input.amount,
           description: input.description, referenceType: "revenue_record", createdBy: ctx.user.id,
         } as any);
-        const { attachments: attachmentFiles, ...revenueInput } = input;
+        const { attachments: attachmentFiles, includesVat, ...revenueInput } = input;
         const revenue = await createRevenueRecord({
           ...revenueInput, ...paidBalance, businessDate: input.businessDate as any, categoryName: category.name,
           financeEntryId: financeEntry.id, createdBy: ctx.user.id,
         } as any);
+        await refreshEntryVat([financeEntry.id], includesVat);
         await saveEntryAttachments("revenue", revenue.id, attachmentFiles, ctx.user.id);
         await logActivity(ctx.user.id, "revenue.create", "revenue_record", revenue.id, `${category.code}:${input.amount}`);
         return { ...revenue, attachments: await listAttachmentsForEntry("revenue", revenue.id) };
@@ -1811,9 +1870,10 @@ export const platformRouter = router({
         paymentAccount: z.enum(["cash", "bank"]).optional(),
         paymentMethod: z.enum(["cash", "card", "bank"]).optional(),
         reason: z.string().max(500).optional(), confirmSettledPeriod: z.boolean().optional(),
+        includesVat: z.boolean().optional(),
         attachments: z.array(attachmentInputSchema).max(10).optional(),
       })).mutation(async ({ input, ctx }) => {
-        const { id, categoryId, attachments: attachmentFiles, paidAmount, reason: amendReason, confirmSettledPeriod, ...data } = input;
+        const { id, categoryId, attachments: attachmentFiles, paidAmount, reason: amendReason, confirmSettledPeriod, includesVat, ...data } = input;
         const existing = await getRevenueRecord(id);
         if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Revenue record was not found" });
         await guardSettledPeriod([existing.businessDate, data.businessDate], confirmSettledPeriod);
@@ -1827,6 +1887,9 @@ export const platformRouter = router({
             date: (data.businessDate ?? existing.businessDate) as any, amount: data.amount ?? existing.amount,
             description: data.description ?? existing.description,
           } as any);
+          // Section 8.3: an amended amount re-splits its VAT, keeping the
+          // with / without VAT choice unless it was changed.
+          await refreshEntryVat([existing.financeEntryId], includesVat ?? await entryIncludesVat(existing.financeEntryId));
         }
         await saveEntryAttachments("revenue", id, attachmentFiles, ctx.user.id);
         await auditLedgerAmend("revenue", existing, await getRevenueRecord(id), amendReason, ctx.user.id);

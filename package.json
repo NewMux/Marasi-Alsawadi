@@ -16,7 +16,8 @@
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "db:migrate:legacy": "tsx server/scripts/applyLegacyMigrations.ts",
     "db:reset:dangerous": "tsx server/scripts/resetDatabase.ts",
-    "auth:bootstrap": "tsx server/scripts/bootstrapSuperAdmin.ts"
+    "auth:bootstrap": "tsx server/scripts/bootstrapSuperAdmin.ts",
+    "vat:migrate": "tsx server/scripts/vatMigrate.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

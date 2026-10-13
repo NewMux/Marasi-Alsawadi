@@ -8,7 +8,7 @@ import { DateField, EmptyState, Field, LoadingState, SecondaryButton, SelectFiel
 import { printReport, ReportDocument, ReportSection, ReportTable } from "@/components/PrintableReport";
 
 const money = (value: unknown) => value === null || value === undefined ? "—" : `OMR ${Number(value).toLocaleString("en-OM", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
-const ACTIONS = ["amend", "delete", "void_ticket_sale", "void_facility_booking", "payment_method_change", "transfer", "balance_adjustment", "vat_payment", "vat_period_settled", "deposit_received", "deposit_returned", "deposit_returned_partial", "deposit_forfeited"] as const;
+const ACTIONS = ["amend", "delete", "void_ticket_sale", "void_facility_booking", "payment_method_change", "transfer", "balance_adjustment", "vat_payment", "vat_period_settled", "deposit_received", "deposit_returned", "deposit_returned_partial", "deposit_forfeited", "vat_settings", "vat_period_reopened", "vat_migration_applied", "vat_migration_rolled_back"] as const;
 // An adjustment at or above this is flagged so large corrections stand out
 // (PRD Round 18, item 4.6.3).
 const LARGE_AMOUNT = 100;

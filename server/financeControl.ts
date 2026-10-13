@@ -14,7 +14,8 @@ import { minorToMoney, moneyToMinor } from "./ticketingRules";
 export type FinanceAuditAction =
   | "amend" | "delete" | "void_ticket_sale" | "void_facility_booking" | "payment_method_change"
   | "transfer" | "balance_adjustment" | "vat_payment" | "vat_period_settled"
-  | "deposit_received" | "deposit_returned" | "deposit_returned_partial" | "deposit_forfeited";
+  | "deposit_received" | "deposit_returned" | "deposit_returned_partial" | "deposit_forfeited"
+  | "vat_settings" | "vat_period_reopened" | "vat_migration_applied" | "vat_migration_rolled_back";
 
 export async function writeFinanceAudit(entry: {
   action: FinanceAuditAction; recordType: string; recordId?: number | null; reference?: string | null; amount?: string | number | null;
@@ -56,6 +57,10 @@ export async function getVatSettings() {
     vatPeriodStartMonth: Number(row?.vatPeriodStartMonth ?? 1),
     vatStartDate: dateOnly(row?.vatStartDate) ?? "2026-10-08",
     vatSettledThrough: dateOnly(row?.vatSettledThrough),
+    // Section 8.4: revenue is split into net + VAT only once the migration
+    // of the existing transactions has been applied.
+    vatActive: Boolean(row?.vatActivatedAt),
+    vatActivatedAt: row?.vatActivatedAt ?? null,
   };
 }
 

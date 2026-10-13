@@ -870,6 +870,9 @@ export const systemSettings = mysqlTable("system_settings", {
   vatPeriodStartMonth: int("vatPeriodStartMonth").default(1).notNull(),
   vatStartDate: date("vatStartDate").default("2026-10-08" as any).notNull(),
   vatSettledThrough: date("vatSettledThrough"),
+  // Set when the VAT migration is applied (Section 8.4); NULL = revenue not split yet.
+  vatActivatedAt: timestamp("vatActivatedAt"),
+  vatActivatedBy: int("vatActivatedBy"),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 export type SystemSettings = typeof systemSettings.$inferSelect;
