@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Ban, Pencil, Plus, Printer, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Ban, KeyRound, Pencil, Plus, Printer, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { CountryField, DateField, EmptyState, Field, LoadingState, PageHeader, PrimaryButton, SearchField, SecondaryButton, SelectField, StatusPill, Surface, TableFrame, TableHeader, TableRow, TextField, toIsoDateLocal, toIsoDateString, cx } from "@/components/MarasiUI";
@@ -12,6 +12,8 @@ import { applyCountryDialCode, COUNTRY_DIAL_CODES, DEFAULT_COUNTRY } from "@/lib
 import { useT, type TranslationKey } from "@/lib/i18n";
 import { blankMixedPaymentValues, isMixedPaymentValid, MixedPaymentFields, type MixedPaymentValues } from "@/components/MixedPaymentFields";
 import { omanToday } from "@/lib/omanDate";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { DepositReceipt, type DepositReceiptData } from "@/components/DepositReceipt";
 
 const today = omanToday();
 const money = (value: unknown) => `OMR ${Number(value || 0).toLocaleString("en-OM", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
@@ -58,7 +60,36 @@ export default function FacilityBookingsPage() {
   const partnerEntities = (catalog?.partnerEntities || []) as any[];
   const [partnerEntityId, setPartnerEntityId] = useState("");
   const [bookingListQuery, setBookingListQuery] = useState("");
-  const { data: bookingRows = [], isLoading: bookingsLoading } = trpc.platform.facilityBookings.list.useQuery({ query: bookingListQuery.trim() || undefined });
+  const { data: allBookingRows = [], isLoading: bookingsLoading } = trpc.platform.facilityBookings.list.useQuery({ query: bookingListQuery.trim() || undefined });
+  // PRD Round 18, item 7.1: security deposits, shown on each booking; the
+  // filter lists only bookings whose deposit is still held.
+  const { user } = useAuth();
+  const canDeductDeposit = ["manager", "admin", "super_admin", "staff"].includes(user?.role ?? "");
+  const { data: deposits = [] } = trpc.platform.facilityBookings.deposits.list.useQuery();
+  const depositByBooking = new Map<number, any>();
+  for (const deposit of deposits as any[]) if (!depositByBooking.has(deposit.bookingId) || deposit.status === "held") depositByBooking.set(deposit.bookingId, deposit);
+  const [heldDepositsOnly, setHeldDepositsOnly] = useState(false);
+  const bookingRows = heldDepositsOnly ? (allBookingRows as any[]).filter((row: any) => depositByBooking.get(row.booking.id)?.status === "held") : allBookingRows;
+  const heldDepositCount = (deposits as any[]).filter((deposit) => deposit.status === "held").length;
+  const [depositBooking, setDepositBooking] = useState<any>(null);
+  const [depositForm, setDepositForm] = useState({ amount: "", paymentMethod: "card" as "cash" | "card", businessDate: today });
+  const [settlingDeposit, setSettlingDeposit] = useState<{ deposit: any; booking: any } | null>(null);
+  const [settleForm, setSettleForm] = useState({ outcome: "returned" as "returned" | "returned_partial" | "forfeited", deductionAmount: "", deductionReason: "", refundMethod: "card" as "cash" | "card", businessDate: today });
+  const [depositPrint, setDepositPrint] = useState<DepositReceiptData | null>(null);
+  useEffect(() => { const clear = () => setDepositPrint(null); window.addEventListener("afterprint", clear); return () => window.removeEventListener("afterprint", clear); }, []);
+  const depositReceiptData = (deposit: any, booking: any, kind: "received" | "settled"): DepositReceiptData => ({
+    kind, bookingId: booking.id, facilityName: booking.facilityTypeName, customerName: booking.customerName ?? null, date: kind === "received" ? deposit.businessDate : (deposit.settledDate ?? today),
+    amount: String(deposit.amount), paymentMethod: deposit.paymentMethod, status: deposit.status, refundAmount: deposit.refundAmount, refundMethod: deposit.refundMethod, deductionAmount: deposit.deductionAmount, deductionReason: deposit.deductionReason,
+  });
+  const printDeposit = (data: DepositReceiptData) => { setDepositPrint(data); requestAnimationFrame(() => requestAnimationFrame(() => window.print())); };
+  const recordDeposit = trpc.platform.facilityBookings.deposits.record.useMutation({
+    onSuccess: (deposit) => { utils.platform.facilityBookings.deposits.invalidate(); utils.platform.finance.invalidate(); toast.success(t("deposit.recorded")); const booking = depositBooking; setDepositBooking(null); if (booking) printDeposit(depositReceiptData({ ...deposit, businessDate: depositForm.businessDate }, booking, "received")); },
+    onError: (error) => toast.error(error.message),
+  });
+  const settleDeposit = trpc.platform.facilityBookings.deposits.settle.useMutation({
+    onSuccess: (deposit) => { utils.platform.facilityBookings.deposits.invalidate(); utils.platform.finance.invalidate(); toast.success(t("deposit.settled")); const current = settlingDeposit; setSettlingDeposit(null); if (current) printDeposit(depositReceiptData({ ...current.deposit, ...deposit, settledDate: settleForm.businessDate }, current.booking, "settled")); },
+    onError: (error) => toast.error(error.message),
+  });
   const [expandedBookingId, setExpandedBookingId] = useState<number | null>(null);
   const [rowAddonServiceId, setRowAddonServiceId] = useState("");
   const [rowAddonQuantity, setRowAddonQuantity] = useState("1");
@@ -454,9 +485,10 @@ export default function FacilityBookingsPage() {
         <Surface>
           <div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-serif text-2xl tracking-[-.04em]">{t("facility.bookingsList")}</h2><p className="mt-1.5 text-xs leading-5 text-muted">{t("facility.bookingsListHint")}</p></div><StatusPill>{bookingRows.length}</StatusPill></div>
           <SearchField value={bookingListQuery} onChange={setBookingListQuery} placeholder={t("facility.findBookingPlaceholder")}/>
+          <label className="mt-3 flex items-center gap-2 text-xs"><input type="checkbox" checked={heldDepositsOnly} onChange={(event) => setHeldDepositsOnly(event.target.checked)}/>{t("deposit.filterHeld")}{heldDepositCount > 0 && <StatusPill tone="info">{heldDepositCount}</StatusPill>}</label>
           <div className="mt-4">{bookingsLoading ? <LoadingState/> : bookingRows.length ? <div className="divide-y divide-divider">{(bookingRows as any[]).slice(0, 30).map((row: any) => { const expanded = expandedBookingId === row.booking.id; const cancelled = row.booking.status === "cancelled"; const awaitingPayment = row.booking.status === "booking"; const editing = editingBookingId === row.booking.id; const rowFacility = facilityTypes.find((entry) => entry.id === row.booking.facilityTypeId); return <div key={row.booking.id} className="py-3">
             <button onClick={() => { setExpandedBookingId(expanded ? null : row.booking.id); setRowAddonServiceId(""); setRowAddonQuantity("1"); setEditingBookingId(null); }} className="grid w-full grid-cols-[1fr_.7fr_.6fr] items-center gap-3 rounded-xl px-2 py-1.5 text-left hover:bg-fill">
-              <div className="min-w-0"><div className="flex items-center gap-2"><span className="truncate text-sm font-medium">{row.booking.facilityTypeName}</span>{cancelled && <StatusPill tone="danger">{t("facility.statusCancelledPill")}</StatusPill>}{awaitingPayment && <StatusPill tone="warning">{t("facility.statusBookingPill")}</StatusPill>}</div><div className="mt-1 truncate text-xs text-muted">{row.customer?.fullName || row.booking.customerName || t("facility.noCustomerName")}</div></div>
+              <div className="min-w-0"><div className="flex items-center gap-2"><span className="truncate text-sm font-medium">{row.booking.facilityTypeName}</span>{cancelled && <StatusPill tone="danger">{t("facility.statusCancelledPill")}</StatusPill>}{awaitingPayment && <StatusPill tone="warning">{t("facility.statusBookingPill")}</StatusPill>}{depositByBooking.get(row.booking.id)?.status === "held" && <StatusPill tone="info">{t("deposit.heldPill")}</StatusPill>}</div><div className="mt-1 truncate text-xs text-muted">{row.customer?.fullName || row.booking.customerName || t("facility.noCustomerName")}</div></div>
               <span className="text-xs text-muted">{dateLabel(row.booking.bookingDate)}</span>
               <b className={cx("text-right text-sm", cancelled && "text-muted line-through")}>{money(row.booking.totalAmount)}</b>
             </button>
@@ -472,6 +504,16 @@ export default function FacilityBookingsPage() {
                 {cancelled && <div className="mt-1 text-danger">{row.booking.cancelKind === "auto" ? t("facility.cancelledAutoNote") : t("facility.cancelledManualNote", { name: row.cancelledByName || t("facility.staffFallback") })}</div>}
                 {cancelled && row.booking.cancelKind !== "auto" && row.booking.cancelReason && <div className="mt-1 text-danger">{t("facility.cancelReasonNote")}: {row.booking.cancelReason}</div>}
               </div>
+              {(() => { const deposit = depositByBooking.get(row.booking.id); if (!deposit && cancelled) return null; return <div className="mt-3 rounded-xl border border-divider bg-white px-3 py-2.5 text-xs">
+                <div className="flex items-center justify-between gap-2"><span className="flex items-center gap-1.5 font-semibold"><KeyRound size={13} className="text-accent"/>{t("deposit.title")}</span>{deposit ? <StatusPill tone={deposit.status === "held" ? "info" : deposit.status === "returned" ? "success" : "warning"}>{t(`deposit.status_${deposit.status}` as TranslationKey)}</StatusPill> : <span className="text-muted">{t("deposit.none")}</span>}</div>
+                {deposit && <div className="mt-1.5 text-muted">{money(deposit.amount)} · {deposit.paymentMethod === "card" ? t("tickets.card") : t("tickets.cash")} · {dateLabel(deposit.businessDate)}{deposit.status !== "held" && <> · {t("deposit.refunded")} {money(deposit.refundAmount)}{Number(deposit.deductionAmount) > 0 ? ` · ${t("deposit.deducted")} ${money(deposit.deductionAmount)}${deposit.deductionReason ? ` (${deposit.deductionReason})` : ""}` : ""}</>}</div>}
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {!deposit && !cancelled && <SecondaryButton onClick={() => { setDepositForm({ amount: "", paymentMethod: "card", businessDate: today }); setDepositBooking(row.booking); }}>{t("deposit.add")}</SecondaryButton>}
+                  {deposit?.status === "held" && <PrimaryButton onClick={() => { setSettleForm({ outcome: "returned", deductionAmount: "", deductionReason: "", refundMethod: deposit.paymentMethod, businessDate: today }); setSettlingDeposit({ deposit, booking: row.booking }); }}>{t("deposit.settle")}</PrimaryButton>}
+                  {deposit && <SecondaryButton onClick={() => printDeposit(depositReceiptData(deposit, row.booking, deposit.status === "held" ? "received" : "settled"))}><Printer size={14} className="mr-1.5"/>{deposit.status === "held" ? t("deposit.printReceipt") : t("deposit.printSettlement")}</SecondaryButton>}
+                  {deposit && deposit.status !== "held" && !cancelled && <SecondaryButton onClick={() => { setDepositForm({ amount: "", paymentMethod: "card", businessDate: today }); setDepositBooking(row.booking); }}>{t("deposit.addAnother")}</SecondaryButton>}
+                </div>
+              </div>; })()}
               <div className="mt-4 flex flex-wrap gap-2 border-t border-divider pt-4">
                 <SecondaryButton onClick={() => reprintBooking(row)} disabled={reprintingId === row.booking.id}><Printer size={14} className="mr-1.5"/>{t("facility.reprintReceipt")}</SecondaryButton>
                 {awaitingPayment && <PrimaryButton onClick={() => { setPaymentMethodForPayment(row.booking.paymentMethod || "card"); setMixedPaymentForPayment(blankMixedPaymentValues); setPaymentAttempted(false); setPayingBooking(row.booking); }}>{t("facility.addPayment")}</PrimaryButton>}
@@ -541,12 +583,54 @@ export default function FacilityBookingsPage() {
         {created && <div className="mt-5 rounded-2xl border border-[#cbead5] bg-[#effaf2] p-4"><StatusPill tone="success">{t("facility.bookingConfirmed")}</StatusPill><div className="mt-2 font-mono text-lg font-semibold text-ink">{created.facilityName}</div><p className="mt-1 text-xs leading-5 text-muted">{t("facility.receiptReadyHint")}</p></div>}
       </Surface>
     </div>
-    {created && <FacilityReceipt data={created} width={receiptWidth}/>}
+    {depositPrint ? <DepositReceipt data={depositPrint} width={receiptWidth}/> : created && <FacilityReceipt data={created} width={receiptWidth}/>}
     <Dialog open={Boolean(cancelingBooking)} onOpenChange={(open) => { if (!open) setCancelingBooking(null); }}>
       <DialogContent>
         <DialogHeader><DialogTitle>{t("facility.confirmCancelBooking")}</DialogTitle></DialogHeader>
         <Field label={t("tickets.cancelReasonLabel")}><Textarea value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} placeholder={t("tickets.cancelReasonPlaceholder")} className="min-h-[86px] rounded-xl border-line bg-well"/></Field>
         <DialogFooter><SecondaryButton onClick={() => setCancelingBooking(null)}>{t("common.close")}</SecondaryButton><PrimaryButton onClick={confirmCancelBooking} pending={cancelBooking.isPending}>{t("facility.confirmCancelBookingAction")}</PrimaryButton></DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={Boolean(depositBooking)} onOpenChange={(open) => { if (!open) setDepositBooking(null); }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>{t("deposit.addTitle")}</DialogTitle></DialogHeader>
+        {depositBooking && <div className="grid gap-3 text-sm">
+          <div className="rounded-xl bg-well p-3 text-xs">{depositBooking.facilityTypeName} #{depositBooking.id}{depositBooking.customerName ? ` — ${depositBooking.customerName}` : ""}</div>
+          <p className="text-xs leading-5 text-muted">{t("deposit.addHint")}</p>
+          <Field label={t("common.amount")}><TextField inputMode="decimal" value={depositForm.amount} onChange={(event) => setDepositForm({ ...depositForm, amount: event.target.value })} placeholder="0.000"/></Field>
+          <Field label={t("tickets.paymentMethod")}><SelectField value={depositForm.paymentMethod} onChange={(event) => setDepositForm({ ...depositForm, paymentMethod: event.target.value as "cash" | "card" })}><option value="card">{t("tickets.card")}</option><option value="cash">{t("tickets.cash")}</option></SelectField></Field>
+          <Field label={t("common.date")}><DateField value={depositForm.businessDate} onChange={(value) => setDepositForm({ ...depositForm, businessDate: value })}/></Field>
+        </div>}
+        <DialogFooter><SecondaryButton onClick={() => setDepositBooking(null)}>{t("finance.cancel")}</SecondaryButton><PrimaryButton pending={recordDeposit.isPending} onClick={() => {
+          if (!/^\d+(\.\d{1,3})?$/.test(depositForm.amount.trim()) || !(Number(depositForm.amount) > 0)) return toast.error(t("finance.enterValidAmount"));
+          recordDeposit.mutate({ bookingId: depositBooking.id, amount: Number(depositForm.amount).toFixed(3), paymentMethod: depositForm.paymentMethod, businessDate: depositForm.businessDate });
+        }}>{t("deposit.record")}</PrimaryButton></DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={Boolean(settlingDeposit)} onOpenChange={(open) => { if (!open) setSettlingDeposit(null); }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>{t("deposit.settleTitle")}</DialogTitle></DialogHeader>
+        {settlingDeposit && <div className="grid gap-3 text-sm">
+          <div className="rounded-xl bg-well p-3 text-xs">{settlingDeposit.booking.facilityTypeName} #{settlingDeposit.booking.id} · {t("deposit.title")} <b>{money(settlingDeposit.deposit.amount)}</b> ({settlingDeposit.deposit.paymentMethod === "card" ? t("tickets.card") : t("tickets.cash")})</div>
+          <Field label={t("deposit.outcome")}><SelectField value={settleForm.outcome} onChange={(event) => setSettleForm({ ...settleForm, outcome: event.target.value as typeof settleForm.outcome })}>
+            <option value="returned">{t("deposit.status_returned")}</option>
+            {canDeductDeposit && <option value="returned_partial">{t("deposit.status_returned_partial")}</option>}
+            {canDeductDeposit && <option value="forfeited">{t("deposit.status_forfeited")}</option>}
+          </SelectField></Field>
+          {!canDeductDeposit && <p className="-mt-1 text-[11px] leading-4 text-subtle">{t("deposit.deductionRoles")}</p>}
+          {settleForm.outcome === "returned_partial" && <Field label={t("deposit.deductionAmount")}><TextField inputMode="decimal" value={settleForm.deductionAmount} onChange={(event) => setSettleForm({ ...settleForm, deductionAmount: event.target.value })} placeholder="0.000"/></Field>}
+          {settleForm.outcome !== "returned" && <Field label={t("deposit.deductionReason")}><TextField value={settleForm.deductionReason} onChange={(event) => setSettleForm({ ...settleForm, deductionReason: event.target.value })} placeholder={t("deposit.deductionReasonPlaceholder")}/></Field>}
+          {settleForm.outcome !== "forfeited" && <Field label={t("deposit.refundMethod")}><SelectField value={settleForm.refundMethod} onChange={(event) => setSettleForm({ ...settleForm, refundMethod: event.target.value as "cash" | "card" })}><option value="card">{t("tickets.card")}</option><option value="cash">{t("tickets.cash")}</option></SelectField></Field>}
+          <Field label={t("common.date")}><DateField value={settleForm.businessDate} onChange={(value) => setSettleForm({ ...settleForm, businessDate: value })}/></Field>
+          <div className="rounded-xl border border-line px-3 py-2 text-xs">{t("deposit.refundPreview", { amount: money(settleForm.outcome === "forfeited" ? 0 : Math.max(0, Number(settlingDeposit.deposit.amount) - (settleForm.outcome === "returned_partial" ? Number(settleForm.deductionAmount || 0) : 0))) })}</div>
+          {settleForm.outcome !== "returned" && <p className="text-[11px] leading-4 text-muted">{t("deposit.deductionIncomeHint")}</p>}
+        </div>}
+        <DialogFooter><SecondaryButton onClick={() => setSettlingDeposit(null)}>{t("finance.cancel")}</SecondaryButton><PrimaryButton pending={settleDeposit.isPending} onClick={() => {
+          if (!settlingDeposit) return;
+          if (settleForm.outcome === "returned_partial" && (!/^\d+(\.\d{1,3})?$/.test(settleForm.deductionAmount.trim()) || !(Number(settleForm.deductionAmount) > 0) || Number(settleForm.deductionAmount) >= Number(settlingDeposit.deposit.amount))) return toast.error(t("deposit.invalidDeduction"));
+          if (settleForm.outcome !== "returned" && settleForm.deductionReason.trim().length < 3) return toast.error(t("deposit.reasonRequired"));
+          settleDeposit.mutate({ depositId: settlingDeposit.deposit.id, outcome: settleForm.outcome, deductionAmount: settleForm.outcome === "returned_partial" ? Number(settleForm.deductionAmount).toFixed(3) : undefined, deductionReason: settleForm.outcome === "returned" ? undefined : settleForm.deductionReason.trim(), refundMethod: settleForm.outcome === "forfeited" ? undefined : settleForm.refundMethod, businessDate: settleForm.businessDate });
+        }}>{t("deposit.confirmSettle")}</PrimaryButton></DialogFooter>
       </DialogContent>
     </Dialog>
     <Dialog open={Boolean(payingBooking)} onOpenChange={(open) => { if (!open) setPayingBooking(null); }}>

@@ -5,6 +5,7 @@ import {
   applyVatMigration, entryIncludesVat, getLastVatMigrationRun, getTaxAccount, getVatReport, listVatItemConfiguration, listVatPayments, listVatPeriods, planVatMigration,
   recordVatPayment, refreshEntryVat, refreshVatForReference, revenueCategoryCarriesVat, rollbackVatMigration, setVatSettledThrough, updateVatSettings,
 } from "../vat";
+import { listDeposits, recordDeposit, settleDeposit } from "../deposits";
 import {
   createAquaTicket, createDailyTask, createFinanceEntry, createGuest, createLocalUser, createPettyCashRequest, deleteFinanceEntry, deleteFinanceEntryByReference,
   createHousekeepingTask, createInventoryItem, createMaintenanceRequest,
@@ -911,6 +912,32 @@ export const platformRouter = router({
       await refreshVatForReference(["facility_booking", "facility_booking_addon"], input.id);
       await logActivity(ctx.user.id, "facility_booking.update", "facility_booking", input.id, `${input.bookingDate}:${totalAmount}${partnerChanged ? `:partner=${partnerFields.partnerEntityName ?? "none"}` : ""}`);
       return { booking: updated, addons: await listFacilityBookingAddons(updated.id) };
+    }),
+    // PRD Round 18, item 7.1: security deposits — held for the visitor, never
+    // revenue or VAT. Recording and a full return by anyone handling
+    // bookings; a deduction or forfeit by Manager / Admin / Accountant
+    // (enforced in settleDeposit). All audited.
+    deposits: router({
+      list: protectedProcedure.input(z.object({ bookingIds: z.array(z.number().int().positive()).max(500).optional(), unsettledOnly: z.boolean().optional() }).optional())
+        .query(({ input }) => listDeposits(input ?? {})),
+      record: protectedProcedure.input(z.object({
+        bookingId: z.number().int().positive(), amount: z.string().refine(isPositiveMoney, "Enter a positive amount with up to three decimals"),
+        paymentMethod: z.enum(["cash", "card"]).default("card"), businessDate: dateInput,
+      })).mutation(async ({ input, ctx }) => {
+        const deposit = await recordDeposit({ ...input, userId: ctx.user.id }).catch((error: Error) => { throw new TRPCError({ code: "BAD_REQUEST", message: error.message }); });
+        await logActivity(ctx.user.id, "facility_deposit.record", "facility_deposit", deposit.id, `${input.bookingId}:${input.amount}:${input.paymentMethod}`);
+        return deposit;
+      }),
+      settle: protectedProcedure.input(z.object({
+        depositId: z.number().int().positive(), outcome: z.enum(["returned", "returned_partial", "forfeited"]),
+        deductionAmount: z.string().optional(), deductionReason: z.string().max(500).optional(), refundMethod: z.enum(["cash", "card"]).optional(), businessDate: dateInput,
+      })).mutation(async ({ input, ctx }) => {
+        const deposit = await settleDeposit({ ...input, userId: ctx.user.id, userRole: ctx.user.role }).catch((error: Error) => {
+          throw new TRPCError({ code: error.message.startsWith("Only a Manager") ? "FORBIDDEN" : "BAD_REQUEST", message: error.message });
+        });
+        await logActivity(ctx.user.id, `facility_deposit.${input.outcome}`, "facility_deposit", deposit.id, `${deposit.refundAmount}:${deposit.deductionAmount}`);
+        return deposit;
+      }),
     }),
     // PRD Round 4, Section 9.1/9.4: cancel a booking — its status flips to
     // "cancelled" (kept for record-keeping) and its revenue is reversed out

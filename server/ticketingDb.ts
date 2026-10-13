@@ -2612,7 +2612,7 @@ export async function getFacilityCategoryReport(from: string, to: string, facili
 // single finance entry shows here as one read-only row linked to its sale,
 // a facility booking's entries link to their booking, and manual revenue
 // rows keep their own record (editable as before).
-export type RevenueLedgerSource = "manual" | "ticket" | "facility" | "facility_addon" | "opening" | "other";
+export type RevenueLedgerSource = "manual" | "ticket" | "facility" | "facility_addon" | "opening" | "deposit_deduction" | "other";
 export async function listRevenueLedger(from?: string, to?: string) {
   const db = await getDb(); if (!db) return [];
   const conditions: any[] = [eq(financeEntries.type, "revenue")];
@@ -2672,9 +2672,11 @@ export async function listRevenueLedger(from?: string, to?: string) {
       };
     }
     const isOpening = String(entry.description || "").startsWith("Opening balance");
+    // PRD Round 18, item 7.1: the amount kept from a security deposit.
+    const isDeduction = entry.referenceType === "deposit_deduction";
     return {
-      ...base, ledgerSource: (record ? (isOpening ? "opening" : "manual") : (isOpening ? "opening" : "other")) as RevenueLedgerSource, readOnly: !record, id: record?.id ?? null,
-      categoryName: record?.categoryName || entry.stream, paymentMethod: record?.paymentAccount === "bank" ? "bank" : record ? "cash" : null,
+      ...base, ledgerSource: (isDeduction ? "deposit_deduction" : record ? (isOpening ? "opening" : "manual") : (isOpening ? "opening" : "other")) as RevenueLedgerSource, readOnly: !record, id: record?.id ?? null,
+      categoryName: record?.categoryName || (isDeduction ? "Deposit deductions" : entry.stream), paymentMethod: record?.paymentAccount === "bank" ? "bank" : record ? "cash" : null,
       cashAmount: null, cardAmount: null, bankAmount: null, reference: "", paidAmount: String(record?.paidAmount ?? record?.amount ?? entry.amount), balanceAmount: String(record?.balanceAmount ?? "0.000"),
       payee: record?.source ?? null, receiptNumber: record?.receiptNumber ?? null, attachmentPath: record?.attachmentPath ?? null,
       categoryId: record?.categoryId ?? null, paymentAccount: record?.paymentAccount ?? null,

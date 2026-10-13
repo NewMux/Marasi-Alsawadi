@@ -176,7 +176,7 @@ export default function FinanceControlPage() {
   // Revenue totals are NET of VAT (Section 8.2); each row also shows its gross.
   const ledgerTotal = filteredLedger.reduce((sum: number, entry: any) => sum + Number((transactionForm.categoryType === "revenue" ? entry.netAmount ?? entry.amount : entry.amount) || 0), 0);
   const methodLabel = (method: unknown) => method === "card" ? t("finance.methodCard") : method === "bank" ? t("finance.methodBank") : method === "mixed" ? t("finance.methodMixed") : method === "cash" ? t("finance.methodCash") : "";
-  const sourceLabel = (source: unknown) => source === "ticket" ? t("finance.sourceTicket") : source === "facility" ? t("finance.sourceFacility") : source === "facility_addon" ? t("finance.sourceFacilityAddon") : source === "opening" ? t("finance.sourceOpening") : source === "other" ? t("finance.sourceOther") : "";
+  const sourceLabel = (source: unknown) => source === "ticket" ? t("finance.sourceTicket") : source === "facility" ? t("finance.sourceFacility") : source === "facility_addon" ? t("finance.sourceFacilityAddon") : source === "opening" ? t("finance.sourceOpening") : source === "deposit_deduction" ? t("deposit.sourceLabel") : source === "other" ? t("finance.sourceOther") : "";
   const editing = Boolean(transactionForm.id);
   const formBalance = (Number(transactionForm.amount) || 0) - (transactionForm.paidAmount.trim() === "" ? (Number(transactionForm.amount) || 0) : (Number(transactionForm.paidAmount) || 0));
   const revenue = Number(summary?.revenue || 0); const expenseTotal = Number(summary?.expenses || 0); const net = revenue - expenseTotal;
