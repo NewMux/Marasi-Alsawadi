@@ -68,6 +68,19 @@ For the Events season (4–6 receipt printers + the reporting printer): repeat s
 
 The kiosk flag works but depends on the browser starting fresh and on the Windows default printer. A more reliable alternative would be to extend the print agent to print to a **Windows printer by name** (so USB printers and several printers per PC work silently, without kiosk flags or default-printer changes, and reports stay on the dialog path). That is a small but real code change to live printing, so **not done**; say if you want it estimated.
 
-## 7. Time estimate
+## 7. Windows-printer option in the print agent (built)
+
+Added after the client asked for it; **opt-in per computer, nothing changes unless `PRINTER_NAME` is set in that computer's `print-agent/.env`.** Only `print-agent/` was touched — no ERP, database or financial change, and the existing network (`PRINTER_HOST`) path is the same code as before.
+
+- `src/windowsPrinter.ts` (new): sends the ESC/POS bytes to a Windows printer by name through the spooler in RAW mode (PowerShell + `winspool.drv`; no npm native module). Printer name and data file are script arguments, never pasted into the script.
+- `src/index.ts`: `PRINTER_NAME` (wins over `PRINTER_HOST` when set); startup checks (Windows only, valid name, warns if the name isn't installed); `GET /printers` lists installed Windows printers; `/health` shows the active target.
+- `.env.example` and `README.md` (section 6b): setup and "how to go back".
+- Tests: 9 new unit tests (name validation, arguments, payload untouched, cleanup, error text, list parsing); all 14 agent tests and `tsc` pass.
+
+**Not verified:** the Windows spooler call itself. Development has no Windows or PowerShell, so it has never run against a real printer. It must be tested on the spare Windows computer (ECO250 on USB first, then the XP-251B) before any live computer. The XP-251B must understand ESC/POS; if it is a label printer this option will not print the receipt correctly.
+
+Rollback on a computer: remove the `PRINTER_NAME` line, restart the agent.
+
+## 8. Time estimate
 
 No development. Roughly half a day of setup and testing on the spare PC and the XP-251B, plus a short on-site session per cashier PC — under the 2-working-day limit.
