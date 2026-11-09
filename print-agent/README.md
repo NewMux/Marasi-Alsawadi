@@ -84,6 +84,33 @@ npm start
 
 Issue a real test ticket and confirm it prints and cuts correctly.
 
+### 6b. Optional: print to a printer installed in Windows (USB, Bluetooth, any brand)
+
+Use this instead of steps 1 and 3's `PRINTER_HOST` when the printer is
+connected by USB (or is already installed in Windows) — for example the
+Xprinter XP-251B. **Windows only. Existing computers are not affected:
+nothing changes unless `PRINTER_NAME` is set in that computer's `.env`.**
+
+1. Install the printer in Windows (Settings → Printers & scanners) and
+   print Windows' own test page once. You do **not** need to make it the
+   default printer.
+2. Start the agent and open <http://127.0.0.1:7777/printers> in the browser —
+   it lists the exact printer names Windows knows.
+3. In `.env` add `PRINTER_NAME=<exact name>` (e.g. `PRINTER_NAME=Xprinter XP-251B`).
+   When it is set, `PRINTER_HOST` is ignored. Restart the agent.
+4. Test with `DRY_RUN=true` first if you like, then issue a test ticket.
+
+It sends the same ESC/POS receipt through the Windows print spooler in
+RAW mode (PowerShell + `winspool.drv`, nothing extra to install), so the
+receipt looks the same as on the network printer and is cut the same way.
+It needs a printer that understands **ESC/POS** — a label printer
+(TSPL/EPL language) will not print this correctly. Each print adds about a
+second (PowerShell starts and compiles a tiny helper). If a job fails, the
+web app falls back to the browser print window, as always.
+
+**To go back:** delete (or comment out) the `PRINTER_NAME` line and restart
+the agent — it prints to `PRINTER_HOST` again.
+
 ### 7. Keep it running automatically
 
 The agent needs to be running whenever the counter PC is in use. The
